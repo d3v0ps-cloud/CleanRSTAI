@@ -49,8 +49,39 @@ cargo bundle --release
 open target/release/bundle/osx/CleanRSTAI.app
 ```
 
-The release workflow (`.github/workflows/release.yml`, triggered by pushing a `v*` tag) builds a
-universal (Apple Silicon + Intel) `.app`, plus Linux and Windows binaries.
+## Releases
+
+Pushing a version tag runs `.github/workflows/release.yml`:
+
+```sh
+# bump `version` in Cargo.toml first; the tag must match it
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+It builds:
+
+| File | Platform |
+|---|---|
+| `CleanRSTAI-macos-universal.zip` | macOS `.app`, Apple Silicon + Intel (ad-hoc signed) |
+| `CleanRSTAI-linux-x86_64.tar.gz` | Linux x86_64 |
+| `CleanRSTAI-linux-aarch64.tar.gz` | Linux ARM64 |
+| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 |
+
+plus `SHA256SUMS.txt`, and publishes them in two places:
+
+- **GitHub Releases**: a release for the tag with the files attached (tags containing `-`, such
+  as `v0.2.0-beta.1`, are marked as pre-releases).
+- **GitHub Packages**: an OCI artifact at `ghcr.io/<owner>/cleanrstai:<tag>`. Stable versions
+  are also tagged `latest`. Download with [ORAS](https://oras.land):
+  ```sh
+  oras pull ghcr.io/aaronbolton/cleanrstai:v0.1.0
+  ```
+
+Running the workflow manually (*Actions → Release → Run workflow*) only builds; the files are
+kept as workflow artifacts and nothing is published.
+
+> The macOS app is ad-hoc signed only, so on first launch macOS will block it. Right-click the
+> app and choose **Open**, or run `xattr -dr com.apple.quarantine CleanRSTAI.app`.
 
 ### Linux
 
