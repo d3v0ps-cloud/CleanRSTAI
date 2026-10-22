@@ -58,9 +58,13 @@ macOS is the primary platform; Linux and Windows are fully supported.
   arguments and result, and asks for your approval unless you turn on auto-approve. On the
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
   for that tool or MCP server for the rest of the chat (until the app quits).
-- **Modern interface**: light and dark themes, icon set, a collapsible sidebar with chats
-  grouped by date and pinnable, compact tool-call cards, a full-page searchable settings
-  screen and a ⌘K command palette.
+- **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
+  accent; Instrument Sans for the interface and Newsreader, a serif, for the greeting and the
+  model's replies. A new chat opens on a greeting with the message box centred under it and
+  the model picker beneath; your messages sit in bubbles on the right, replies run full
+  width, and tool calls show as collapsible cards. A collapsible sidebar with search, pinned
+  chats and recents, a full-page searchable settings screen and a ⌘K command palette. Fonts
+  are bundled (SIL OFL, see `assets/fonts`).
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, or stop a generation.
 - **Markdown rendering** with syntax-highlighted code blocks, tables and images. ```` ```mermaid ````

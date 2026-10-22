@@ -154,26 +154,23 @@ impl SettingsUi {
                 ui.add_space(6.0);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(format!("{}  Search settings", icon::SEARCH))
+                        .hint_text("search settings")
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(6.0);
                 if self.search.trim().is_empty() {
-                    for (tab, ic, label) in [
-                        (Tab::Providers, icon::SERVER, "Providers"),
-                        (Tab::Mcp, icon::PLUGS, "MCP Servers"),
-                        (Tab::Tools, icon::TOOLBOX, "Built-in Tools"),
-                        (Tab::Subagents, icon::ROBOT, "Subagents"),
-                        (Tab::General, icon::GEAR, "General"),
+                    for (tab, label) in [
+                        (Tab::Providers, "Providers"),
+                        (Tab::Mcp, "MCP servers"),
+                        (Tab::Tools, "Built-in tools"),
+                        (Tab::Subagents, "Subagents"),
+                        (Tab::General, "General"),
                     ] {
                         if ui
                             .add(
-                                egui::Button::selectable(
-                                    self.tab == tab,
-                                    format!("{ic}   {label}"),
-                                )
-                                .right_text("")
-                                .min_size(egui::vec2(ui.available_width(), 32.0)),
+                                egui::Button::selectable(self.tab == tab, label)
+                                    .right_text("")
+                                    .min_size(egui::vec2(ui.available_width(), 30.0)),
                             )
                             .clicked()
                         {

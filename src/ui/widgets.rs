@@ -145,3 +145,27 @@ pub fn icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response
     resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
     resp
 }
+
+/// Muted icon buttons under a message or drawing (copy, edit, retry), each with a tooltip
+/// and an accessible name; returns which was clicked.
+pub fn quiet_icons(ui: &mut egui::Ui, items: &[(&str, &str)]) -> Option<usize> {
+    let pencil = super::theme::palette(ui.visuals().dark_mode).pencil;
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, (glyph, label)) in items.iter().enumerate() {
+            let resp = ui
+                .add(
+                    egui::Button::new(egui::RichText::new(*glyph).size(15.0).color(pencil))
+                        .frame_when_inactive(false),
+                )
+                .on_hover_text(*label);
+            let label = (*label).to_owned();
+            resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+            if resp.clicked() {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
+}

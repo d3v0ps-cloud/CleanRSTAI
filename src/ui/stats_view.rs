@@ -38,7 +38,7 @@ pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
     if let Some(c) = s.cost_usd {
         parts.push(fmt_cost(c));
     }
-    let text = format!("{}  {}", super::theme::icon::LIGHTNING, parts.join(" · "));
+    let text = parts.join(" · ");
     ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).sense(egui::Sense::hover()))
         .on_hover_ui(|ui| details(ui, s));
 }
