@@ -1,0 +1,33 @@
+[package]
+name = "cleanrstai"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A cross-platform desktop AI chat client for OpenAI-compatible endpoints with MCP support"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.37", features = ["persistence"] }
+egui_commonmark = "0.26"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+chrono = { version = "0.4", features = ["serde"] }
+which = "8"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[package.metadata.bundle]
+name = "CleanRSTAI"
+identifier = "net.bukn.cleanrstai"
+category = "public.app-category.productivity"
+short_description = "AI chat client with MCP support"
