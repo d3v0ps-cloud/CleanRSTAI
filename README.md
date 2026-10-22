@@ -139,8 +139,16 @@ Both files record the app version and export time. They are created readable onl
 macOS and Linux. On Linux the save dialog uses the desktop portal (`xdg-desktop-portal`),
 which standard desktops already provide.
 
-> API keys are stored in plain text in `settings.json`. On macOS and Linux the file is created
-> with `0600` permissions.
+### Secrets
+
+API keys, HTTP header values and MCP environment variable values are stored in the system
+keychain: the macOS Keychain, Windows Credential Manager, or the Secret Service
+(GNOME Keyring, KWallet) on Linux. `settings.json` keeps only blank placeholders, and keys
+saved in plain text by earlier versions move to the keychain on first launch.
+
+If no keychain is available, secrets stay in `settings.json` and the app says so. You can
+also turn this off in **Settings → General → Secrets**. On macOS and Linux the file is
+readable only by you.
 
 ### MCP examples
 
