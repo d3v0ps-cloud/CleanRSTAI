@@ -62,10 +62,18 @@ pub fn write_document(path: &Path, doc: &Value) -> Result<()> {
 
 /// Ask for a destination with the native save dialog. `None` if the user cancelled.
 pub fn pick_save_path(default_name: &str) -> Option<std::path::PathBuf> {
+    pick_save_path_as(default_name, "JSON", "json")
+}
+
+pub fn pick_save_path_as(
+    default_name: &str,
+    filter: &str,
+    ext: &str,
+) -> Option<std::path::PathBuf> {
     let mut dialog = rfd::FileDialog::new()
         .set_title("Export")
         .set_file_name(default_name)
-        .add_filter("JSON", &["json"]);
+        .add_filter(filter, &[ext]);
     if let Some(dirs) = directories::UserDirs::new()
         && let Some(docs) = dirs.document_dir()
     {
@@ -73,7 +81,7 @@ pub fn pick_save_path(default_name: &str) -> Option<std::path::PathBuf> {
     }
     dialog.save_file().map(|p| {
         if p.extension().is_none() {
-            p.with_extension("json")
+            p.with_extension(ext)
         } else {
             p
         }
@@ -85,6 +93,106 @@ pub fn default_file_name(kind: &str) -> String {
         "cleanrstai-{kind}-{}.json",
         chrono::Local::now().format("%Y-%m-%d")
     )
+}
+
+/// A file name derived from a chat title.
+pub fn safe_file_name(title: &str, ext: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_.".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.');
+    let base = if cleaned.is_empty() { "chat" } else { cleaned };
+    format!("{}.{ext}", base.chars().take(80).collect::<String>())
+}
+
+/// Render one conversation as a Markdown document. Images are embedded as data URLs.
+pub fn conversation_markdown(c: &Conversation) -> String {
+    use crate::types::Role;
+    use std::fmt::Write as _;
+
+    fn fence(text: &str) -> String {
+        // Use a fence longer than any backtick run in the text.
+        let longest = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+        "`".repeat((longest + 1).max(3))
+    }
+    fn attachments(out: &mut String, list: &[crate::attach::Attachment]) {
+        for a in list {
+            if let Some(url) = a.data_url().filter(|_| a.is_image()) {
+                let _ = writeln!(out, "![{}]({url})\n", a.name);
+            } else if let Some(t) = &a.text {
+                let f = fence(t);
+                let _ = writeln!(out, "**{}**\n\n{f}\n{}\n{f}\n", a.name, t.trim_end());
+            }
+        }
+    }
+
+    let mut out = String::new();
+    let _ = writeln!(out, "# {}\n", c.title);
+    let _ = writeln!(
+        out,
+        "_Exported from CleanRSTAI on {} · started {}_\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M"),
+        c.created_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+    );
+    let results: std::collections::HashMap<&str, &crate::types::ChatMessage> = c
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
+        .collect();
+    for m in &c.messages {
+        match m.role {
+            Role::User => {
+                let _ = writeln!(out, "## You\n\n{}\n", m.content.trim_end());
+                attachments(&mut out, &m.attachments);
+            }
+            Role::Assistant => {
+                let _ = writeln!(out, "## Assistant\n");
+                if let Some(r) = m.reasoning.as_deref().filter(|r| !r.trim().is_empty()) {
+                    let _ = writeln!(
+                        out,
+                        "<details><summary>Thinking</summary>\n\n{}\n\n</details>\n",
+                        r.trim_end()
+                    );
+                }
+                if !m.content.is_empty() {
+                    let _ = writeln!(out, "{}\n", m.content.trim_end());
+                }
+                for call in &m.tool_calls {
+                    let args = serde_json::from_str::<Value>(&call.arguments)
+                        .ok()
+                        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                        .unwrap_or_else(|| call.arguments.clone());
+                    let _ = writeln!(
+                        out,
+                        "**Tool call:** `{}`\n\n```json\n{args}\n```\n",
+                        call.name
+                    );
+                    if let Some(r) = results.get(call.id.as_str()) {
+                        let f = fence(&r.content);
+                        let label = if r.is_error {
+                            "Result (error)"
+                        } else {
+                            "Result"
+                        };
+                        let _ = writeln!(out, "{label}:\n\n{f}\n{}\n{f}\n", r.content.trim_end());
+                        attachments(&mut out, &r.attachments);
+                    }
+                }
+            }
+            Role::Tool | Role::System => {}
+        }
+    }
+    out
 }
 
 /// Ask for a file to import with the native open dialog. `None` if the user cancelled.
@@ -425,5 +533,35 @@ mod tests {
         assert_eq!(skipped, 1);
         assert_eq!(fresh.len(), 1);
         assert_eq!(fresh[0].id, b.id);
+    }
+
+    #[test]
+    fn markdown_export_includes_everything() {
+        use crate::types::{ChatMessage, Role, ToolCall};
+        let mut c = Conversation::new();
+        c.title = "My / chat?".into();
+        let mut u = ChatMessage::new(Role::User, "Look");
+        u.attachments = vec![crate::attach::Attachment::image(
+            "p.png".into(),
+            "image/png".into(),
+            b"x",
+        )];
+        let mut a = ChatMessage::new(Role::Assistant, "Done ```weird``` fences");
+        a.reasoning = Some("hmm".into());
+        a.tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "srv__t".into(),
+            arguments: "{\"a\":1}".into(),
+        }];
+        let t = ChatMessage::tool_result(&a.tool_calls[0], "has ``` inside", false);
+        c.messages = vec![u, a, t];
+        let md = conversation_markdown(&c);
+        assert!(md.starts_with("# My / chat?"));
+        assert!(md.contains("![p.png](data:image/png;base64,eA==)"));
+        assert!(md.contains("<summary>Thinking</summary>"));
+        assert!(md.contains("**Tool call:** `srv__t`"));
+        assert!(md.contains("````\nhas ``` inside\n````"), "{md}");
+        assert_eq!(safe_file_name(&c.title, "md"), "My - chat-.md");
+        assert_eq!(safe_file_name("..", "md"), "chat.md");
     }
 }

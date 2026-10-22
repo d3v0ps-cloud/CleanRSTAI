@@ -8,11 +8,13 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
+use crate::attach::Attachment;
 use crate::config::{Settings, Theme};
 use crate::export;
 use crate::llm;
 use crate::mcp::manager::McpManager;
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
+use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::settings::{SettingsAction, SettingsUi, Tab};
 use crate::ui::widgets::code_block;
 
@@ -30,6 +32,7 @@ enum Action {
     Copy(String),
     Regenerate(Uuid),
     EditFrom(Uuid, usize),
+    ViewImage(String, egui::load::Bytes, String),
 }
 
 pub struct ChatApp {
@@ -50,6 +53,9 @@ pub struct ChatApp {
     search: String,
     notice: Option<String>,
     keychain_warned: bool,
+    pending_attachments: Vec<Attachment>,
+    images: ImageCache,
+    viewing: Option<(String, egui::load::Bytes, String)>,
 }
 
 fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
@@ -63,6 +69,7 @@ fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
 
 impl ChatApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let loaded = Settings::load();
         let settings = loaded.settings;
         apply_appearance(&cc.egui_ctx, &settings);
@@ -96,6 +103,9 @@ impl ChatApp {
             search: String::new(),
             notice: loaded.notice,
             keychain_warned: false,
+            pending_attachments: Vec::new(),
+            images: ImageCache::new(),
+            viewing: None,
         };
         if loaded.needs_migration {
             // Move plain-text secrets from settings.json into the keychain.
@@ -145,7 +155,7 @@ impl ChatApp {
 
     fn send(&mut self, ctx: &egui::Context) {
         let text = self.input.trim().to_owned();
-        if text.is_empty() {
+        if text.is_empty() && self.pending_attachments.is_empty() {
             return;
         }
         if self.current.is_none_or(|id| self.conv_mut(id).is_none()) {
@@ -155,8 +165,11 @@ impl ChatApp {
         if self.runs.contains_key(&id) {
             return;
         }
+        let attachments = std::mem::take(&mut self.pending_attachments);
         let conv = self.conv_mut(id).unwrap();
-        conv.messages.push(ChatMessage::new(Role::User, text));
+        let mut msg = ChatMessage::new(Role::User, text);
+        msg.attachments = attachments;
+        conv.messages.push(msg);
         conv.auto_title();
         conv.updated_at = chrono::Utc::now();
         conv.save();
@@ -362,6 +375,58 @@ impl ChatApp {
         self.save_settings();
     }
 
+    fn export_markdown(&mut self, id: Uuid) {
+        let Some(c) = self.conversations.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let Some(path) =
+            export::pick_save_path_as(&export::safe_file_name(&c.title, "md"), "Markdown", "md")
+        else {
+            return;
+        };
+        let md = export::conversation_markdown(c);
+        self.notice = Some(match crate::config::write_private(&path, md.as_bytes()) {
+            Ok(()) => format!("Exported \"{}\" to {}", c.title, path.display()),
+            Err(e) => format!("Export failed: {e:#}"),
+        });
+    }
+
+    fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>) {
+        let mut errors = Vec::new();
+        for p in paths {
+            match Attachment::from_path(&p) {
+                Ok(a) => self.pending_attachments.push(a),
+                Err(e) => errors.push(format!("{e:#}")),
+            }
+        }
+        if !errors.is_empty() {
+            self.notice = Some(format!("Couldn't attach: {}", errors.join("; ")));
+        }
+    }
+
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        let mut errors = Vec::new();
+        for f in dropped {
+            let name = f
+                .path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".into());
+            let result = f
+                .bytes()
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))
+                .and_then(|bytes| Attachment::from_bytes(name, bytes));
+            match result {
+                Ok(a) => self.pending_attachments.push(a),
+                Err(e) => errors.push(format!("{e:#}")),
+            }
+        }
+        if !errors.is_empty() {
+            self.notice = Some(format!("Couldn't attach: {}", errors.join("; ")));
+        }
+    }
+
     /// Add imported chats that aren't already present; returns a status message.
     fn import_conversations(&mut self, incoming: Vec<Conversation>) -> String {
         let (fresh, skipped) = export::new_conversations(&self.conversations, incoming);
@@ -508,6 +573,7 @@ impl ChatApp {
 
         let mut select = None;
         let mut delete = None;
+        let mut export_md = None;
         let mut rename_commit = None;
         let needle = self.search.to_lowercase();
         egui::ScrollArea::vertical()
@@ -559,6 +625,10 @@ impl ChatApp {
                             self.renaming = Some((c.id, c.title.clone()));
                             ui.close();
                         }
+                        if ui.button("⬇ Export as Markdown…").clicked() {
+                            export_md = Some(c.id);
+                            ui.close();
+                        }
                         if ui.button("🗑 Delete").clicked() {
                             delete = Some(c.id);
                             ui.close();
@@ -567,6 +637,9 @@ impl ChatApp {
                 }
             });
 
+        if let Some(id) = export_md {
+            self.export_markdown(id);
+        }
         if let Some(id) = select {
             self.current = Some(id);
         }
@@ -611,6 +684,11 @@ impl ChatApp {
                     }
                 });
             }
+            if let Some(n) =
+                attach_ui::pending_chips(ui, &mut self.images, &self.pending_attachments)
+            {
+                self.pending_attachments.remove(n);
+            }
             ui.horizontal(|ui| {
                 let button_w = 80.0;
                 let hint = if self.settings.general.send_with_enter {
@@ -642,12 +720,22 @@ impl ChatApp {
                         }
                     } else if ui
                         .add_enabled(
-                            !self.input.trim().is_empty(),
+                            !self.input.trim().is_empty() || !self.pending_attachments.is_empty(),
                             egui::Button::new("Send ➤").min_size([button_w, 32.0].into()),
                         )
                         .clicked()
                     {
                         send = true;
+                    }
+                    if ui
+                        .add_sized([button_w, 24.0], egui::Button::new("📎 Attach"))
+                        .on_hover_text("Attach images or text files (or drop them on the window)")
+                        .clicked()
+                        && let Some(paths) = rfd::FileDialog::new()
+                            .set_title("Attach files")
+                            .pick_files()
+                    {
+                        self.attach_paths(paths);
                     }
                 });
             });
@@ -688,6 +776,7 @@ impl ChatApp {
             .iter()
             .rposition(|m| m.role == Role::Assistant);
         let md_cache = &mut self.md_cache;
+        let images = &mut self.images;
         let show_stats = self.settings.general.show_stats;
         if show_stats {
             let totals =
@@ -706,14 +795,21 @@ impl ChatApp {
                     for (i, msg) in conv.messages.iter().enumerate() {
                         match msg.role {
                             Role::Tool | Role::System => continue,
-                            Role::User => {
-                                user_message(ui, conv.id, i, msg, run.is_some(), &mut actions)
-                            }
+                            Role::User => user_message(
+                                ui,
+                                images,
+                                conv.id,
+                                i,
+                                msg,
+                                run.is_some(),
+                                &mut actions,
+                            ),
                             Role::Assistant => {
                                 let streaming = run.is_some() && i + 1 == conv.messages.len();
                                 assistant_message(
                                     ui,
                                     md_cache,
+                                    images,
                                     conv.id,
                                     i,
                                     msg,
@@ -804,6 +900,7 @@ impl ChatApp {
                         let _ = tx.send(ok);
                     }
                 }
+                Action::ViewImage(uri, bytes, name) => self.viewing = Some((uri, bytes, name)),
                 Action::EditFrom(conv, idx) => {
                     if self.runs.contains_key(&conv) {
                         continue;
@@ -812,9 +909,11 @@ impl ChatApp {
                         && idx < c.messages.len()
                     {
                         let text = c.messages[idx].content.clone();
+                        let attachments = c.messages[idx].attachments.clone();
                         c.messages.truncate(idx);
                         c.save();
                         self.input = text;
+                        self.pending_attachments = attachments;
                         self.errors.remove(&conv);
                         ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                     }
@@ -870,8 +969,10 @@ fn bubble(ui: &mut egui::Ui, fill: egui::Color32, add: impl FnOnce(&mut egui::Ui
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn user_message(
     ui: &mut egui::Ui,
+    images: &mut ImageCache,
     conv: Uuid,
     idx: usize,
     msg: &ChatMessage,
@@ -899,7 +1000,15 @@ fn user_message(
                 }
             });
         });
-        ui.add(egui::Label::new(&msg.content).selectable(true).wrap());
+        if !msg.content.is_empty() {
+            ui.add(egui::Label::new(&msg.content).selectable(true).wrap());
+        }
+        if !msg.attachments.is_empty()
+            && let Some((uri, bytes, name)) =
+                attach_ui::show(ui, images, &format!("{conv}-{idx}"), &msg.attachments)
+        {
+            actions.push(Action::ViewImage(uri, bytes, name));
+        }
     });
 }
 
@@ -907,6 +1016,7 @@ fn user_message(
 fn assistant_message(
     ui: &mut egui::Ui,
     md_cache: &mut CommonMarkCache,
+    images: &mut ImageCache,
     conv: Uuid,
     idx: usize,
     msg: &ChatMessage,
@@ -941,6 +1051,7 @@ fn assistant_message(
         for call in &msg.tool_calls {
             tool_call_view(
                 ui,
+                images,
                 conv,
                 call,
                 results.get(call.id.as_str()).copied(),
@@ -956,6 +1067,7 @@ fn assistant_message(
 
 fn tool_call_view(
     ui: &mut egui::Ui,
+    images: &mut ImageCache,
     conv: Uuid,
     call: &ToolCall,
     result: Option<&ChatMessage>,
@@ -1022,6 +1134,12 @@ fn tool_call_view(
                         code_block(ui, &r.content);
                     }
                 });
+            if !r.attachments.is_empty()
+                && let Some((uri, bytes, name)) =
+                    attach_ui::show(ui, images, &format!("tool-{}", call.id), &r.attachments)
+            {
+                actions.push(Action::ViewImage(uri, bytes, name));
+            }
         } else if pending_approval {
             ui.horizontal(|ui| {
                 ui.label("Allow this tool call?");
@@ -1042,6 +1160,7 @@ impl eframe::App for ChatApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_events();
         self.handle_shortcuts(ctx);
+        self.handle_dropped_files(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1062,6 +1181,28 @@ impl eframe::App for ChatApp {
             .show(ui, |ui| self.chat_view(ui))
             .inner;
         self.apply_actions(actions, &ctx);
+
+        if let Some(image) = &self.viewing
+            && !attach_ui::viewer(&ctx, image)
+        {
+            self.viewing = None;
+        }
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            // Show where dropped files will go.
+            let screen = ctx.content_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::unique("drop-overlay"),
+            ));
+            painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+            painter.text(
+                screen.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop to attach",
+                egui::FontId::proportional(28.0),
+                egui::Color32::WHITE,
+            );
+        }
 
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();

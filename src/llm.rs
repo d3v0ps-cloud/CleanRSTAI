@@ -175,7 +175,23 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
         let m = &history[i];
         match m.role {
             Role::System => out.push(json!({"role": "system", "content": m.content})),
-            Role::User => out.push(json!({"role": "user", "content": m.content})),
+            Role::User => {
+                let text = crate::attach::text_with_files(&m.content, &m.attachments);
+                let images: Vec<Value> = m
+                    .attachments
+                    .iter()
+                    .filter(|a| a.is_image())
+                    .filter_map(|a| a.data_url())
+                    .map(|url| json!({"type": "image_url", "image_url": {"url": url}}))
+                    .collect();
+                if images.is_empty() {
+                    out.push(json!({"role": "user", "content": text}));
+                } else {
+                    let mut parts = vec![json!({"type": "text", "text": text})];
+                    parts.extend(images);
+                    out.push(json!({"role": "user", "content": parts}));
+                }
+            }
             Role::Assistant if m.tool_calls.is_empty() => {
                 if !m.content.is_empty() {
                     out.push(json!({"role": "assistant", "content": m.content}));
@@ -622,5 +638,33 @@ mod server_tests {
         let log = log.lock().unwrap();
         let chat = log.iter().find(|r| r.method == "POST").unwrap();
         assert!(chat.json().get("stream_options").is_none());
+    }
+
+    #[test]
+    fn user_images_become_content_parts() {
+        let mut m = ChatMessage::new(Role::User, "What is this?");
+        m.attachments = vec![
+            crate::attach::Attachment::image("a.png".into(), "image/png".into(), b"xyz"),
+            crate::attach::Attachment {
+                name: "n.txt".into(),
+                mime: "text/plain".into(),
+                text: Some("notes".into()),
+                data: None,
+            },
+        ];
+        let msgs = to_api_messages("", &[m]);
+        let parts = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert!(
+            parts[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("<file name=\"n.txt\">")
+        );
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,eHl6");
+        // Text-only stays a plain string for servers that don't accept content arrays.
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "hi")]);
+        assert_eq!(msgs[0]["content"], "hi");
     }
 }

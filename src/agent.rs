@@ -143,7 +143,11 @@ pub async fn run(
             let result = if approved {
                 emit(ChatEvent::ToolRunning(call.id.clone()));
                 match router.call(&call.name, &call.arguments, tool_timeout).await {
-                    Ok(out) => ChatMessage::tool_result(call, out.text, out.is_error),
+                    Ok(out) => {
+                        let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
+                        msg.attachments = out.images;
+                        msg
+                    }
                     Err(e) => ChatMessage::tool_result(call, format!("Error: {e:#}"), true),
                 }
             } else {
@@ -381,5 +385,38 @@ mod tests {
         }
         let _ = child.kill().await;
         let _ = std::fs::remove_file(&stderr_path);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn e2e_mcp_tool_returns_image() {
+        let _guard = NPX_LOCK.lock().await;
+        let http = llm::build_http_client();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http);
+        mcp.sync(&[McpServerConfig {
+            name: "everything".into(),
+            transport: McpTransportConfig::Stdio {
+                command: "npx".into(),
+                args: vec![
+                    "-y".into(),
+                    "@modelcontextprotocol/server-everything".into(),
+                ],
+                env: vec![],
+                cwd: String::new(),
+            },
+            ..Default::default()
+        }]);
+        wait_connected(&mcp).await;
+        let out = mcp
+            .router()
+            .call("everything__get-tiny-image", "{}", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(!out.images.is_empty(), "{}", out.text);
+        let img = &out.images[0];
+        assert!(img.is_image());
+        let bytes = img.bytes().unwrap();
+        let decoded = crate::attach::Attachment::from_bytes("x".into(), bytes).unwrap();
+        assert_eq!(decoded.mime, img.mime, "data matches the declared type");
     }
 }
