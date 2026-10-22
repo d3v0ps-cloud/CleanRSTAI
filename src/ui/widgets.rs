@@ -145,3 +145,26 @@ pub fn icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response
     resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
     resp
 }
+
+/// Quiet text actions under a message or drawing ("copy", "edit"); returns which was clicked.
+pub fn text_actions(ui: &mut egui::Ui, labels: &[&str]) -> Option<usize> {
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+        // Line the first label's text up with the column, not its hover frame.
+        ui.add_space(-4.0);
+        for (i, label) in labels.iter().enumerate() {
+            let text = egui::RichText::new(*label)
+                .small()
+                .color(ui.visuals().weak_text_color());
+            if ui
+                .add(egui::Button::new(text).frame_when_inactive(false))
+                .clicked()
+            {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
+}

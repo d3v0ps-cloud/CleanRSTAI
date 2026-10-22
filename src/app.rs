@@ -37,7 +37,6 @@ pub(crate) struct Run {
 }
 
 pub(crate) enum Action {
-    SetInput(String),
     Approve(Uuid, String, Approval),
     Copy(String),
     Regenerate(Uuid),
@@ -259,101 +258,103 @@ impl ChatApp {
         let mut changes: Vec<(String, bool, bool)> = Vec::new();
         let mut reset = false;
         let dark = ui.visuals().dark_mode;
-        let label =
-            RichText::new(format!("{}  {}", icon::SLIDERS, builtins_on + mcp_on)).size(14.0);
+        let label = RichText::new(format!("tools {}", builtins_on + mcp_on)).small();
         let label = if overrides.is_empty() {
             label
         } else {
             label.color(theme::accent(dark))
         };
-        let (resp, _) = MenuButton::from_button(egui::Button::new(label).frame(false))
-            .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
-            .ui(ui, |ui| {
-                ui.set_min_width(280.0);
-                ui.label(RichText::new("Tools for this chat").strong());
-                ui.label(
-                    RichText::new("Applies from the next message. Defaults are in Settings.")
-                        .small()
-                        .weak(),
-                );
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .max_height(420.0)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Built-in").small().weak());
-                        for (_, key, name) in BUILTINS {
-                            let mut on = sel.builtin_on(key);
-                            let ic = match key {
-                                "time" => icon::CLOCK,
-                                "calculator" => icon::CALCULATOR,
-                                "tasks" => icon::LIST_CHECKS,
-                                _ => icon::ROBOT,
-                            };
-                            if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
-                                changes.push((
-                                    ToolOverrides::builtin_key(key),
-                                    on,
-                                    sel.builtin_default(key),
-                                ));
-                            }
-                        }
-                        for (id, name) in &servers {
-                            ui.add_space(4.0);
-                            ui.separator();
-                            let view = views.iter().find(|v| &v.id == id);
-                            let connected = view.is_some_and(|v| {
-                                v.status == crate::mcp::manager::ServerStatus::Connected
-                            });
-                            let mut on = sel.server_on(id);
-                            let resp = ui.checkbox(&mut on, RichText::new(name).strong());
-                            if resp.changed() {
-                                changes.push((ToolOverrides::server_key(id), on, true));
-                            }
-                            match view {
-                                Some(v) if connected && !v.tools.is_empty() => {
-                                    ui.indent(("tools", id), |ui| {
-                                        ui.add_enabled_ui(on, |ui| {
-                                            for t in &v.tools {
-                                                let default = sel.tool_default(id, &t.name);
-                                                let mut t_on = overrides
-                                                    .get(&ToolOverrides::tool_key(id, &t.name))
-                                                    .unwrap_or(default);
-                                                let r = ui.checkbox(&mut t_on, &t.name);
-                                                let r = if t.description.is_empty() {
-                                                    r
-                                                } else {
-                                                    r.on_hover_text(&t.description)
-                                                };
-                                                if r.changed() {
-                                                    changes.push((
-                                                        ToolOverrides::tool_key(id, &t.name),
-                                                        t_on,
-                                                        default,
-                                                    ));
-                                                }
-                                            }
-                                        });
-                                    });
-                                }
-                                Some(_) if connected => {
-                                    ui.weak("No tools");
-                                }
-                                _ => {
-                                    ui.weak("Not connected");
-                                }
-                            }
-                        }
-                    });
-                if !overrides.is_empty() {
+        let (resp, _) =
+            MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
+                .config(
+                    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                )
+                .ui(ui, |ui| {
+                    ui.set_min_width(280.0);
+                    ui.label(RichText::new("Tools for this chat").strong());
+                    ui.label(
+                        RichText::new("Applies from the next message. Defaults are in Settings.")
+                            .small()
+                            .weak(),
+                    );
                     ui.separator();
-                    if ui
-                        .button(format!("{}  Reset to defaults", icon::REGENERATE))
-                        .clicked()
-                    {
-                        reset = true;
+                    egui::ScrollArea::vertical()
+                        .max_height(420.0)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Built-in").small().weak());
+                            for (_, key, name) in BUILTINS {
+                                let mut on = sel.builtin_on(key);
+                                let ic = match key {
+                                    "time" => icon::CLOCK,
+                                    "calculator" => icon::CALCULATOR,
+                                    "tasks" => icon::LIST_CHECKS,
+                                    _ => icon::ROBOT,
+                                };
+                                if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
+                                    changes.push((
+                                        ToolOverrides::builtin_key(key),
+                                        on,
+                                        sel.builtin_default(key),
+                                    ));
+                                }
+                            }
+                            for (id, name) in &servers {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                let view = views.iter().find(|v| &v.id == id);
+                                let connected = view.is_some_and(|v| {
+                                    v.status == crate::mcp::manager::ServerStatus::Connected
+                                });
+                                let mut on = sel.server_on(id);
+                                let resp = ui.checkbox(&mut on, RichText::new(name).strong());
+                                if resp.changed() {
+                                    changes.push((ToolOverrides::server_key(id), on, true));
+                                }
+                                match view {
+                                    Some(v) if connected && !v.tools.is_empty() => {
+                                        ui.indent(("tools", id), |ui| {
+                                            ui.add_enabled_ui(on, |ui| {
+                                                for t in &v.tools {
+                                                    let default = sel.tool_default(id, &t.name);
+                                                    let mut t_on = overrides
+                                                        .get(&ToolOverrides::tool_key(id, &t.name))
+                                                        .unwrap_or(default);
+                                                    let r = ui.checkbox(&mut t_on, &t.name);
+                                                    let r = if t.description.is_empty() {
+                                                        r
+                                                    } else {
+                                                        r.on_hover_text(&t.description)
+                                                    };
+                                                    if r.changed() {
+                                                        changes.push((
+                                                            ToolOverrides::tool_key(id, &t.name),
+                                                            t_on,
+                                                            default,
+                                                        ));
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    }
+                                    Some(_) if connected => {
+                                        ui.weak("No tools");
+                                    }
+                                    _ => {
+                                        ui.weak("Not connected");
+                                    }
+                                }
+                            }
+                        });
+                    if !overrides.is_empty() {
+                        ui.separator();
+                        if ui
+                            .button(format!("{}  Reset to defaults", icon::REGENERATE))
+                            .clicked()
+                        {
+                            reset = true;
+                        }
                     }
-                }
-            });
+                });
         resp.on_hover_text(format!(
             "Tools for this chat: {} on{}",
             builtins_on + mcp_on,
@@ -680,7 +681,10 @@ impl ChatApp {
         let mut read = None;
         let mut prompt = None;
         ui.scope(|ui| {
-            ui.menu_button(RichText::new(icon::BOOKS).size(16.0), |ui| {
+            let w = &mut ui.visuals_mut().widgets.inactive;
+            w.bg_stroke = egui::Stroke::NONE;
+            w.weak_bg_fill = egui::Color32::TRANSPARENT;
+            ui.menu_button(RichText::new("mcp").small(), |ui| {
                 ui.set_max_height(420.0);
                 for v in &usable {
                     let name = names.get(v.id.as_str()).copied().unwrap_or("server");
@@ -1211,13 +1215,15 @@ impl ChatApp {
             {
                 self.sidebar_open = !self.sidebar_open;
             }
+            let p = theme::palette(dark);
+            // A plain wordmark, then where messages go: provider / model.
             ui.label(
-                RichText::new(icon::SPARKLE)
-                    .color(theme::accent(dark))
-                    .size(18.0),
+                RichText::new("cleanrstai")
+                    .family(egui::FontFamily::Name(theme::MONO_MEDIUM.into()))
+                    .size(13.5)
+                    .color(p.ink),
             );
-            ui.label(RichText::new("CleanRSTAI").strong().size(16.0));
-            ui.add_space(8.0);
+            ui.label(RichText::new("/").monospace().color(p.rule));
 
             let mut changed = false;
             let providers: Vec<(usize, String)> = self
@@ -1228,11 +1234,7 @@ impl ChatApp {
                 .map(|(i, p)| (i, p.name.clone()))
                 .collect();
             egui::ComboBox::from_id_salt("provider")
-                .selected_text(format!(
-                    "{}  {}",
-                    icon::SERVER,
-                    self.settings.provider().name
-                ))
+                .selected_text(RichText::new(&self.settings.provider().name).small())
                 .show_ui(ui, |ui| {
                     for (i, name) in providers {
                         changed |= ui
@@ -1242,6 +1244,7 @@ impl ChatApp {
                 })
                 .response
                 .on_hover_text("Provider");
+            ui.label(RichText::new("/").monospace().color(p.rule));
 
             let p = self.settings.provider_mut();
             if p.models.is_empty() {
@@ -1249,6 +1252,7 @@ impl ChatApp {
                     .add(
                         egui::TextEdit::singleline(&mut p.model)
                             .hint_text("model")
+                            .font(egui::TextStyle::Small)
                             .desired_width(200.0),
                     )
                     .on_hover_text("Model (fetch the list in Settings → Providers)")
@@ -1256,11 +1260,14 @@ impl ChatApp {
             } else {
                 let models = p.models.clone();
                 egui::ComboBox::from_id_salt("model")
-                    .selected_text(if p.model.is_empty() {
-                        "Select model".to_owned()
-                    } else {
-                        p.model.clone()
-                    })
+                    .selected_text(
+                        RichText::new(if p.model.is_empty() {
+                            "select model".to_owned()
+                        } else {
+                            p.model.clone()
+                        })
+                        .small(),
+                    )
                     .height(420.0)
                     .show_ui(ui, |ui| {
                         for m in models {
@@ -1282,7 +1289,8 @@ impl ChatApp {
                     self.palette.toggle();
                 }
                 if let Some(r) = &self.update {
-                    let text = RichText::new(format!("{}  Update {}", icon::DOWNLOAD, r.version))
+                    let text = RichText::new(format!("update {}", r.version))
+                        .small()
                         .color(theme::accent(dark));
                     let resp = ui
                         .add(egui::Button::new(text).frame(false))
@@ -1313,12 +1321,9 @@ impl ChatApp {
                     } else {
                         ui.visuals().weak_text_color()
                     };
-                    let text = RichText::new(format!(
-                        "{}  {servers}/{configured} · {tools} tools",
-                        icon::PLUGS
-                    ))
-                    .small()
-                    .color(color);
+                    let text = RichText::new(format!("mcp {servers}/{configured} · {tools} tools"))
+                        .small()
+                        .color(color);
                     let hover = if needs_sign_in {
                         "An MCP server needs you to sign in"
                     } else {
@@ -1347,14 +1352,14 @@ impl ChatApp {
     // ---------------------------------------------------------------- sidebar
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        let dark = ui.visuals().dark_mode;
-        ui.add_space(10.0);
+        let p = theme::palette(ui.visuals().dark_mode);
+        ui.add_space(12.0);
         if ui
-            .add_sized(
-                [ui.available_width(), 34.0],
-                theme::primary_button(theme::labelled(icon::PLUS, "New chat"), dark),
+            .add(
+                egui::Button::new(RichText::new("+ new chat").small())
+                    .right_text(RichText::new("⌘N").small().color(p.pencil))
+                    .min_size(egui::vec2(ui.available_width(), 28.0)),
             )
-            .on_hover_text("⌘N")
             .clicked()
         {
             self.new_chat();
@@ -1362,7 +1367,8 @@ impl ChatApp {
         ui.add_space(6.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.search)
-                .hint_text(format!("{}  Search chats", icon::SEARCH))
+                .hint_text(RichText::new("search").small())
+                .font(egui::TextStyle::Small)
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(4.0);
@@ -1392,13 +1398,14 @@ impl ChatApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if rows.is_empty() && !needle.is_empty() {
-                    ui.weak("No matching chats");
+                    ui.label(RichText::new("no matches").small().color(p.pencil));
                 }
                 let mut last_group = None;
                 for (group, c) in rows {
                     if last_group != Some(group) {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(group.label()).small().weak().strong());
+                        ui.add_space(12.0);
+                        ui.label(theme::caps(group.label()).color(p.pencil));
+                        ui.add_space(2.0);
                         last_group = Some(group);
                     }
                     if let Some((rid, text)) = &mut self.renaming
@@ -1413,25 +1420,49 @@ impl ChatApp {
                         continue;
                     }
                     let running = self.runs.contains_key(&c.id);
-                    let title = match (running, c.pinned) {
-                        (true, _) => format!("{}  {}", icon::HOURGLASS, c.title),
-                        (false, true) => format!("{}  {}", icon::PIN, c.title),
-                        _ => c.title.clone(),
+                    let selected = self.current == Some(c.id);
+                    // Titles in the reading serif; the open chat is marked by a signal bar.
+                    let title = RichText::new(&c.title)
+                        .size(14.5)
+                        .family(egui::FontFamily::Proportional)
+                        .color(if selected {
+                            p.ink
+                        } else {
+                            p.ink.gamma_multiply(0.8)
+                        });
+                    let mark = match (running, c.pinned) {
+                        (true, _) => RichText::new("…").small().color(p.signal),
+                        (false, true) => RichText::new("pin").small().color(p.pencil),
+                        _ => RichText::new(""),
                     };
-                    let resp = ui
-                        .add(
-                            egui::Button::selectable(self.current == Some(c.id), title)
-                                .truncate()
-                                .right_text("")
-                                .min_size(egui::vec2(ui.available_width(), 28.0)),
-                        )
-                        .on_hover_text(format!(
-                            "{}\n{}",
-                            c.title,
-                            c.updated_at
-                                .with_timezone(&chrono::Local)
-                                .format("%Y-%m-%d %H:%M")
-                        ));
+                    let resp = ui.add(
+                        egui::Button::new(title)
+                            .frame_when_inactive(selected)
+                            .fill(if selected {
+                                p.paper
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::NONE)
+                            .truncate()
+                            .right_text(mark)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    );
+                    if selected {
+                        let r = resp.rect;
+                        ui.painter().vline(
+                            r.left(),
+                            r.y_range().shrink(4.0),
+                            egui::Stroke::new(2.0, p.signal),
+                        );
+                    }
+                    let resp = resp.on_hover_text(format!(
+                        "{}\n{}",
+                        c.title,
+                        c.updated_at
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M")
+                    ));
                     if resp.clicked() {
                         select = Some(c.id);
                     }
@@ -1513,26 +1544,21 @@ impl ChatApp {
         centered(ui, |ui| {
             if let Some(n) = self.notice.clone() {
                 ui.horizontal(|ui| {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!("{}  {n}", icon::WARNING),
-                    );
+                    ui.label(RichText::new(n).small().color(ui.visuals().warn_fg_color));
                     if icon_button(ui, icon::CLOSE, "Dismiss").clicked() {
                         self.notice = None;
                     }
                 });
             }
+            let p = theme::palette(dark);
+            // Focus darkens the outline to ink; no glow.
             egui::Frame::new()
-                .fill(theme::card(dark))
+                .fill(p.paper)
                 .stroke(egui::Stroke::new(
                     1.0,
-                    if has_focus {
-                        theme::accent(dark).gamma_multiply(0.7)
-                    } else {
-                        theme::border(dark)
-                    },
+                    if has_focus { p.ink } else { p.rule },
                 ))
-                .corner_radius(14)
+                .corner_radius(2)
                 .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -1542,9 +1568,9 @@ impl ChatApp {
                         self.pending_attachments.remove(n);
                     }
                     let hint = if self.settings.general.send_with_enter {
-                        "Message CleanRSTAI…"
+                        "Write a message"
                     } else {
-                        "Message CleanRSTAI… (⌘/Ctrl+Enter to send)"
+                        "Write a message · ⌘/Ctrl+Enter sends"
                     };
                     egui::ScrollArea::vertical()
                         .id_salt("input-scroll")
@@ -1562,12 +1588,14 @@ impl ChatApp {
                         });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
-                        if icon_button(
-                            ui,
-                            icon::PAPERCLIP,
-                            "Attach images or text files (or drop them here)",
-                        )
-                        .clicked()
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("attach").small())
+                                    .frame_when_inactive(false),
+                            )
+                            .on_hover_text("Images or text files; you can also drop them here")
+                            .clicked()
                             && let Some(paths) = rfd::FileDialog::new()
                                 .set_title("Attach files")
                                 .pick_files()
@@ -1578,11 +1606,7 @@ impl ChatApp {
                         self.mcp_menu(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if running {
-                                if ui
-                                    .add(egui::Button::new(theme::labelled(icon::STOP, "Stop")))
-                                    .on_hover_text("Stop generating")
-                                    .clicked()
-                                {
+                                if ui.add(egui::Button::new("Stop")).clicked() {
                                     let cid = self.current.unwrap();
                                     self.stop(cid);
                                 }
@@ -1590,7 +1614,7 @@ impl ChatApp {
                                 let can_send = !self.input.trim().is_empty()
                                     || !self.pending_attachments.is_empty();
                                 if ui
-                                    .add_enabled(can_send, theme::primary_button(icon::SEND, dark))
+                                    .add_enabled(can_send, theme::primary_button("Send", dark))
                                     .on_hover_text(if self.settings.general.send_with_enter {
                                         "Send (Enter) · Shift+Enter for a new line"
                                     } else {
@@ -1626,16 +1650,18 @@ impl ChatApp {
             let local = ["localhost", "127.0.0.1", "0.0.0.0"]
                 .iter()
                 .any(|h| p.base_url.contains(h));
-            return chat_view::empty_state(
+            chat_view::empty_state(
                 ui,
                 chat_view::EmptyInfo {
                     provider: &p.name,
+                    base_url: &p.base_url,
                     model: &p.model,
                     mcp_servers: servers,
                     mcp_tools: tools,
                     missing_key: p.api_key.is_empty() && !local,
                 },
             );
+            return Vec::new();
         };
         chat_view::show(
             ui,
@@ -1658,10 +1684,6 @@ impl ChatApp {
         for a in actions {
             match a {
                 Action::Copy(text) => ctx.copy_text(text),
-                Action::SetInput(text) => {
-                    self.input = text;
-                    ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
-                }
                 Action::Regenerate(id) => self.regenerate(id, ctx),
                 Action::Approve(conv, call_id, answer) => {
                     let Some(run) = self.runs.get_mut(&conv) else {
@@ -1763,11 +1785,7 @@ impl eframe::App for ChatApp {
                 .size_range(180.0..=420.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(if dark {
-                            egui::Color32::from_rgb(18, 19, 23)
-                        } else {
-                            egui::Color32::from_rgb(244, 245, 248)
-                        })
+                        .fill(theme::palette(dark).shelf)
                         .inner_margin(egui::Margin::symmetric(10, 0)),
                 )
                 .show(ui, |ui| self.sidebar(ui));

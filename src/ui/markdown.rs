@@ -9,8 +9,8 @@ use eframe::egui::{self, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
-use super::theme::icon;
-use super::widgets::{code_block, icon_button};
+use super::theme;
+use super::widgets::{code_block, text_actions};
 use crate::app::Action;
 
 /// Larger SVGs are shown as code rather than drawn.
@@ -198,9 +198,17 @@ pub fn show(
     for (i, segment) in segments(text, remote_images).into_iter().enumerate() {
         match segment {
             Segment::Markdown(md) => {
+                // Prose in the reading serif; code and headings keep their own styles.
+                let ui = &mut *ui;
+                let previous = ui.style().override_text_style.clone();
+                ui.style_mut().override_text_style = Some(theme::reading());
                 CommonMarkViewer::new()
                     .max_image_width(Some(ui.available_width() as usize))
+                    // Warm themes to sit with the paper-and-ink palette.
+                    .syntax_theme_dark("base16-mocha.dark")
+                    .syntax_theme_light("Solarized (light)")
                     .show_with_id(id.with(i), ui, md_cache, &md);
+                ui.style_mut().override_text_style = previous;
             }
             Segment::Drawing { kind, source, raw } => {
                 drawing(ui, drawings, kind, &source, raw, actions)
@@ -225,10 +233,14 @@ fn drawing(
         Ok(d) => {
             let d = d.clone();
             ui.add_space(4.0);
-            // Drawings assume a light page, so they sit on white in both themes.
+            // Drawings assume a light page, so they sit on near-white in both themes.
             let clicked = egui::Frame::new()
-                .fill(egui::Color32::WHITE)
-                .corner_radius(8)
+                .fill(egui::Color32::from_rgb(252, 251, 247))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    theme::border(ui.visuals().dark_mode),
+                ))
+                .corner_radius(2)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -251,19 +263,15 @@ fn drawing(
                     format!("{what}.svg"),
                 ));
             }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                if icon_button(ui, icon::COPY, "Copy source").clicked() {
-                    actions.push(Action::Copy(source.to_owned()));
-                }
-                if icon_button(ui, icon::DOWNLOAD, "Save as SVG…").clicked() {
-                    actions.push(Action::SaveSvg(d.svg.to_vec()));
-                }
-            });
+            match text_actions(ui, &["copy source", "save as svg"]) {
+                Some(0) => actions.push(Action::Copy(source.to_owned())),
+                Some(1) => actions.push(Action::SaveSvg(d.svg.to_vec())),
+                _ => {}
+            }
         }
         Err(e) => {
             ui.label(
-                RichText::new(format!("{}  Couldn't draw this {what}: {e}", icon::WARNING))
+                RichText::new(format!("couldn't draw this {what}: {e}"))
                     .small()
                     .color(ui.visuals().warn_fg_color),
             );

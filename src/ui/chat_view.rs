@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::attachments::{self as attach_ui, ImageCache};
 use super::markdown::{self, DrawingCache};
 use super::theme::{self, icon};
-use super::widgets::{code_block, icon_button};
+use super::widgets::{code_block, text_actions};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::config::ReasoningDisplay;
@@ -17,7 +17,9 @@ use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
 
-pub const MAX_CONTENT_WIDTH: f32 = 820.0;
+pub const MAX_CONTENT_WIDTH: f32 = 880.0;
+/// Width of the transcript's left margin, which names who is speaking.
+const MARGIN: f32 = 84.0;
 
 /// Lay out `add` in a centred column of at most [`MAX_CONTENT_WIDTH`].
 pub fn centered<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -33,6 +35,59 @@ pub fn centered<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R
         .inner
     })
     .inner
+}
+
+/// A transcript row: `label` in the left margin, `add` in the text column beside it.
+fn margin_row<R>(
+    ui: &mut egui::Ui,
+    label: Option<egui::WidgetText>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let top = ui.cursor().min;
+    let width = ui.available_width();
+    let column = egui::Rect::from_min_max(
+        egui::pos2(top.x + MARGIN, top.y),
+        egui::pos2(top.x + width, ui.max_rect().bottom().max(top.y + 1.0)),
+    );
+    let inner = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(column)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.set_width(column.width());
+                add(ui)
+            },
+        )
+        .inner;
+    if let Some(label) = label {
+        // A child Ui, so the label doesn't move the parent's cursor.
+        let rect =
+            egui::Rect::from_min_size(top + egui::vec2(0.0, 3.0), egui::vec2(MARGIN - 14.0, 18.0));
+        ui.new_child(egui::UiBuilder::new().max_rect(rect))
+            .add(egui::Label::new(label).truncate());
+    }
+    inner
+}
+
+/// A log entry inside a reply (tool call, task list, error): content indented past a
+/// vertical hairline in `color`, no box around it.
+fn entry<R>(ui: &mut egui::Ui, color: egui::Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let inner = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 0,
+            top: 2,
+            bottom: 2,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        });
+    let r = inner.response.rect;
+    ui.painter()
+        .vline(r.left() + 1.0, r.y_range(), egui::Stroke::new(2.0, color));
+    inner.inner
 }
 
 pub struct View<'a> {
@@ -54,12 +109,6 @@ pub fn show(
 ) -> Vec<Action> {
     let mut actions = Vec::new();
     let conv = v.conv;
-    let results: HashMap<&str, &ChatMessage> = conv
-        .messages
-        .iter()
-        .filter(|m| m.role == Role::Tool)
-        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
-        .collect();
     let last_assistant = conv
         .messages
         .iter()
@@ -90,10 +139,17 @@ pub fn show(
         .show(ui, |ui| {
             ui.add_space(12.0);
             centered(ui, |ui| {
+                let mut first = true;
                 for (i, msg) in conv.messages.iter().enumerate() {
                     match msg.role {
                         Role::Tool | Role::System => continue,
                         Role::User => {
+                            // A hairline opens each exchange, like a new entry in a log.
+                            if !first {
+                                ui.add_space(6.0);
+                                theme::rule(ui);
+                                ui.add_space(14.0);
+                            }
                             user_message(ui, images, conv.id, i, msg, v.run.is_some(), &mut actions)
                         }
                         Role::Assistant => {
@@ -113,7 +169,7 @@ pub fn show(
                                 AssistantCtx {
                                     conv: conv.id,
                                     idx: i,
-                                    results: &results,
+                                    results: &results_after(&conv.messages, i),
                                     latest_tasks,
                                     run: v.run,
                                     streaming,
@@ -128,6 +184,7 @@ pub fn show(
                             );
                         }
                     }
+                    first = false;
                     ui.add_space(14.0);
                 }
                 if let Some(err) = v.error {
@@ -148,52 +205,31 @@ fn user_message(
     running: bool,
     actions: &mut Vec<Action>,
 ) {
-    let dark = ui.visuals().dark_mode;
-    let max_w = ui.available_width() * 0.85;
-    // Size the bubble to its content: the longest text line, or room for a thumbnail.
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let text_w = ui.ctx().fonts_mut(|f| {
-        f.layout_no_wrap(msg.content.clone(), font, egui::Color32::WHITE)
-            .size()
-            .x
-    });
-    let mut width = text_w.ceil() + 2.0;
-    if msg.attachments.iter().any(|a| a.is_image()) {
-        width = width.max(320.0);
-    } else if !msg.attachments.is_empty() {
-        width = width.max(240.0);
-    }
-    let width = width.min(max_w);
-    ui.horizontal(|ui| {
-        // Right-align by spacing; the frame then gets exactly the bubble's width.
-        let margin = 14.0;
-        ui.add_space((ui.available_width() - width - 2.0 * margin).max(0.0));
-        egui::Frame::new()
-            .fill(theme::user_bubble(dark))
-            .corner_radius(14)
-            .inner_margin(egui::Margin::symmetric(margin as i8, 10))
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    if !msg.content.is_empty() {
-                        ui.add(egui::Label::new(&msg.content).selectable(true).wrap());
-                    }
-                    if !msg.attachments.is_empty()
-                        && let Some((uri, bytes, name)) =
-                            attach_ui::show(ui, images, &format!("{conv}-{idx}"), &msg.attachments)
-                    {
-                        actions.push(Action::ViewImage(uri, bytes, name));
-                    }
-                });
-            });
-    });
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        if !running && icon_button(ui, icon::EDIT, "Edit and resend").clicked() {
-            actions.push(Action::EditFrom(conv, idx));
+    let p = theme::palette(ui.visuals().dark_mode);
+    margin_row(ui, Some(theme::caps("you").color(p.pencil).into()), |ui| {
+        // What you typed is set in mono, what the model wrote in serif.
+        if !msg.content.is_empty() {
+            ui.add(
+                egui::Label::new(RichText::new(&msg.content).monospace().color(p.ink))
+                    .selectable(true)
+                    .wrap(),
+            );
         }
-        if icon_button(ui, icon::COPY, "Copy message").clicked() {
-            actions.push(Action::Copy(msg.content.clone()));
+        if !msg.attachments.is_empty()
+            && let Some((uri, bytes, name)) =
+                attach_ui::show(ui, images, &format!("{conv}-{idx}"), &msg.attachments)
+        {
+            actions.push(Action::ViewImage(uri, bytes, name));
+        }
+        let labels: &[&str] = if running {
+            &["copy"]
+        } else {
+            &["copy", "edit"]
+        };
+        match text_actions(ui, labels) {
+            Some(0) => actions.push(Action::Copy(msg.content.clone())),
+            Some(1) => actions.push(Action::EditFrom(conv, idx)),
+            _ => {}
         }
     });
 }
@@ -214,6 +250,17 @@ struct AssistantCtx<'a> {
     last: bool,
 }
 
+/// The tool results answering the calls of the assistant message at `idx`: the tool
+/// messages right after it. (Matching by id across the whole chat would mix up turns from
+/// servers that reuse ids like `call_0`.)
+fn results_after(messages: &[ChatMessage], idx: usize) -> HashMap<&str, &ChatMessage> {
+    messages[idx + 1..]
+        .iter()
+        .take_while(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
+        .collect()
+}
+
 fn assistant_message(
     ui: &mut egui::Ui,
     md_cache: &mut CommonMarkCache,
@@ -223,20 +270,30 @@ fn assistant_message(
     msg: &ChatMessage,
     actions: &mut Vec<Action>,
 ) {
-    let dark = ui.visuals().dark_mode;
-    if let Some(model) = cx.header {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(icon::SPARKLE)
-                    .color(theme::accent(dark))
-                    .size(16.0),
-            );
-            ui.label(RichText::new("Assistant").strong());
-            if !model.is_empty() {
-                ui.label(RichText::new(model).small().weak());
-            }
+    let p = theme::palette(ui.visuals().dark_mode);
+    // The margin names the model, without its vendor prefix ("org/model" → "model").
+    let label = cx.header.map(|model| {
+        let short = model.rsplit('/').next().unwrap_or(model);
+        let short = if short.is_empty() { "model" } else { short };
+        theme::caps(short).color(p.signal).into()
+    });
+    // Scoped by position: widget ids below use call ids, which servers may reuse.
+    ui.push_id(("message", cx.idx), |ui| {
+        margin_row(ui, label, |ui| {
+            assistant_body(ui, md_cache, drawings, images, &cx, msg, actions)
         });
-    }
+    });
+}
+
+fn assistant_body(
+    ui: &mut egui::Ui,
+    md_cache: &mut CommonMarkCache,
+    drawings: &mut DrawingCache,
+    images: &mut ImageCache,
+    cx: &AssistantCtx<'_>,
+    msg: &ChatMessage,
+    actions: &mut Vec<Action>,
+) {
     let waiting = cx.streaming && msg.content.is_empty() && msg.tool_calls.is_empty();
     if let Some(r) = msg.reasoning.as_deref().filter(|r| !r.trim().is_empty()) {
         let id = ui.make_persistent_id(("reasoning", cx.conv, cx.idx));
@@ -252,11 +309,11 @@ fn assistant_message(
         state
             .show_header(ui, |ui| {
                 let label = if cx.streaming && msg.content.is_empty() {
-                    "Thinking…"
+                    "thinking…"
                 } else {
-                    "Thinking"
+                    "thinking"
                 };
-                ui.label(RichText::new(format!("{}  {label}", icon::BRAIN)).weak());
+                ui.label(RichText::new(label).small().weak());
             })
             .body(|ui| {
                 ui.add(
@@ -268,7 +325,7 @@ fn assistant_message(
     } else if waiting {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.weak("Thinking…");
+            ui.label(RichText::new("waiting for the first token").small().weak());
         });
     }
     if !msg.content.is_empty() {
@@ -295,16 +352,22 @@ fn assistant_message(
     }
     if !cx.streaming && (!msg.content.is_empty() || msg.stats.is_some()) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            if !msg.content.is_empty() && icon_button(ui, icon::COPY, "Copy reply").clicked() {
-                actions.push(Action::Copy(msg.content.clone()));
+            let mut labels = Vec::new();
+            if !msg.content.is_empty() {
+                labels.push("copy");
             }
-            if cx.last && icon_button(ui, icon::REGENERATE, "Regenerate reply").clicked() {
-                actions.push(Action::Regenerate(cx.conv));
+            if cx.last {
+                labels.push("regenerate");
+            }
+            match text_actions(ui, &labels).map(|i| labels[i]) {
+                Some("copy") => actions.push(Action::Copy(msg.content.clone())),
+                Some("regenerate") => actions.push(Action::Regenerate(cx.conv)),
+                _ => {}
             }
             if cx.show_stats
                 && let Some(s) = &msg.stats
             {
+                ui.add_space(6.0);
                 super::stats_view::request_line(ui, s);
             }
         });
@@ -367,7 +430,9 @@ fn tool_card(
     actions: &mut Vec<Action>,
 ) {
     let dark = ui.visuals().dark_mode;
-    let pending = run.and_then(|r| r.approvals.iter().find(|p| p.call.id == call.id));
+    let pending = run
+        .filter(|_| result.is_none())
+        .and_then(|r| r.approvals.iter().find(|p| p.call.id == call.id));
     let pending_approval = pending.is_some();
     let running = result.is_none()
         && run.is_some_and(|r| r.running_tool.as_deref() == Some(call.id.as_str()));
@@ -376,105 +441,87 @@ fn tool_card(
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| call.arguments.clone());
 
+    let p = theme::palette(dark);
+    let (status, color) = match result {
+        Some(r) if r.is_error => ("failed", p.error),
+        Some(_) => ("ok", p.ok),
+        None if pending_approval => ("approve?", p.signal),
+        None if running => ("running", p.pencil),
+        None => ("not run", p.pencil),
+    };
     ui.add_space(2.0);
-    egui::Frame::new()
-        .fill(theme::card(dark))
-        .stroke(egui::Stroke::new(1.0, theme::border(dark)))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let id = ui.make_persistent_id(("tool", &call.id));
-            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                id,
-                false,
-            );
-            state
-                .show_header(ui, |ui| {
-                    if running {
-                        ui.spinner();
-                    } else {
-                        let (glyph, color, label) = match result {
-                            Some(r) if r.is_error => {
-                                (icon::FAILED, ui.visuals().error_fg_color, "Failed")
-                            }
-                            Some(_) => (icon::OK, theme::success(dark), "Succeeded"),
-                            None if pending_approval => {
-                                (icon::WARNING, ui.visuals().warn_fg_color, "Needs approval")
-                            }
-                            None => (icon::TOOL, ui.visuals().weak_text_color(), "Not run"),
-                        };
-                        ui.label(RichText::new(glyph).color(color).size(15.0))
-                            .on_hover_text(label);
-                    }
-                    ui.label(RichText::new(tools::display_name(&call.name)).strong());
-                    let preview = if call.name == tools::DELEGATE {
-                        delegate_preview(&call.arguments)
-                    } else {
-                        args_preview(&call.arguments)
-                    };
-                    if !preview.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(preview).small().weak()).truncate());
-                    }
-                })
-                .body(|ui| {
-                    ui.label(RichText::new("Arguments").small().weak());
-                    code_block(ui, &pretty_args);
-                    if let Some(r) = result {
-                        ui.label(
-                            RichText::new(if r.is_error {
-                                "Result (error)"
-                            } else {
-                                "Result"
-                            })
-                            .small()
-                            .weak(),
-                        );
-                        const LIMIT: usize = 20_000;
-                        if r.content.len() > LIMIT {
-                            let mut end = LIMIT;
-                            while !r.content.is_char_boundary(end) {
-                                end -= 1;
-                            }
-                            code_block(
-                                ui,
-                                &format!(
-                                    "{}\n… ({} more bytes)",
-                                    &r.content[..end],
-                                    r.content.len() - end
-                                ),
-                            );
-                        } else {
-                            code_block(ui, &r.content);
-                        }
-                    }
-                });
-            // Images and the approval prompt stay visible without expanding.
-            if let Some(r) = result
-                && !r.attachments.is_empty()
-                && let Some((uri, bytes, name)) =
-                    attach_ui::show(ui, images, &format!("tool-{}", call.id), &r.attachments)
-            {
-                actions.push(Action::ViewImage(uri, bytes, name));
-            }
-            if call.name == tools::DELEGATE {
-                let live = run.and_then(|r| r.subagents.get(&call.id));
-                let reports = match result {
-                    Some(r) if !r.subagents.is_empty() => Some(&r.subagents),
-                    _ => live,
+    entry(ui, if result.is_some() { p.rule } else { color }, |ui| {
+        let id = ui.make_persistent_id(("tool", &call.id));
+        let state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        state
+            .show_header(ui, |ui| {
+                if running {
+                    ui.spinner();
+                }
+                ui.label(RichText::new(tools::display_name(&call.name)).monospace());
+                ui.label(RichText::new(status).small().color(color));
+                let preview = if call.name == tools::DELEGATE {
+                    delegate_preview(&call.arguments)
+                } else {
+                    args_preview(&call.arguments)
                 };
-                if let Some(reports) = reports {
-                    subagent_list(ui, &call.id, reports);
+                if !preview.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(preview).small().weak()).truncate());
                 }
-            }
-            if let Some(pending) = pending {
-                if !state_is_open(ui, id) {
-                    code_block(ui, &pretty_args);
+            })
+            .body(|ui| {
+                ui.label(theme::caps("arguments").color(p.pencil));
+                code_block(ui, &pretty_args);
+                if let Some(r) = result {
+                    ui.label(
+                        theme::caps(if r.is_error { "error" } else { "result" })
+                            .color(if r.is_error { p.error } else { p.pencil }),
+                    );
+                    const LIMIT: usize = 20_000;
+                    if r.content.len() > LIMIT {
+                        let mut end = LIMIT;
+                        while !r.content.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        code_block(
+                            ui,
+                            &format!(
+                                "{}\n… ({} more bytes)",
+                                &r.content[..end],
+                                r.content.len() - end
+                            ),
+                        );
+                    } else {
+                        code_block(ui, &r.content);
+                    }
                 }
-                approval_prompt(ui, conv, pending, actions);
+            });
+        // Images and the approval prompt stay visible without expanding.
+        if let Some(r) = result
+            && !r.attachments.is_empty()
+            && let Some((uri, bytes, name)) =
+                attach_ui::show(ui, images, &format!("tool-{}", call.id), &r.attachments)
+        {
+            actions.push(Action::ViewImage(uri, bytes, name));
+        }
+        if call.name == tools::DELEGATE {
+            let live = run.and_then(|r| r.subagents.get(&call.id));
+            let reports = match result {
+                Some(r) if !r.subagents.is_empty() => Some(&r.subagents),
+                _ => live,
+            };
+            if let Some(reports) = reports {
+                subagent_list(ui, &call.id, reports);
             }
-        });
+        }
+        if let Some(pending) = pending {
+            if !state_is_open(ui, id) {
+                code_block(ui, &pretty_args);
+            }
+            approval_prompt(ui, conv, pending, actions);
+        }
+    });
 }
 
 /// "Allow this tool call?" with Run, the two "Always allow" choices, and Deny.
@@ -487,11 +534,8 @@ fn approval_prompt(
     let dark = ui.visuals().dark_mode;
     let mut answer = None;
     ui.horizontal_wrapped(|ui| {
-        ui.label("Allow this tool call?");
-        if ui
-            .add(theme::primary_button(format!("{}  Run", icon::OK), dark))
-            .clicked()
-        {
+        ui.label(RichText::new("Run this tool?").small());
+        if ui.add(theme::primary_button("Run", dark)).clicked() {
             answer = Some(Approval::Once);
         }
         if ui
@@ -516,7 +560,7 @@ fn approval_prompt(
                 answer = Some(Approval::AlwaysServer);
             }
         }
-        if ui.button(format!("{}  Deny", icon::CLOSE)).clicked() {
+        if ui.button("Deny").clicked() {
             answer = Some(Approval::Deny);
         }
     });
@@ -527,54 +571,42 @@ fn approval_prompt(
 
 /// A task list from the built-in task tool, as a checklist. Superseded lists show as one line.
 fn task_list(ui: &mut egui::Ui, call: &ToolCall, list: &[Task], latest: bool) {
-    let dark = ui.visuals().dark_mode;
+    let p = theme::palette(ui.visuals().dark_mode);
     let done = list.iter().filter(|t| t.status == TaskStatus::Done).count();
     ui.add_space(2.0);
-    egui::Frame::new()
-        .fill(theme::card(dark))
-        .stroke(egui::Stroke::new(1.0, theme::border(dark)))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            // Keyed on `latest` so a list folds once a newer one replaces it.
-            let id = ui.make_persistent_id(("tasks", &call.id, latest));
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, latest)
-                .show_header(ui, |ui| {
-                    ui.label(
-                        RichText::new(icon::LIST_CHECKS)
-                            .color(theme::accent(dark))
-                            .size(15.0),
-                    );
-                    ui.label(RichText::new("Tasks").strong());
-                    ui.label(
-                        RichText::new(format!("{done} of {} done", list.len()))
-                            .small()
-                            .weak(),
-                    );
-                })
-                .body(|ui| {
-                    for task in list {
-                        ui.horizontal(|ui| {
-                            let (glyph, color) = match task.status {
-                                TaskStatus::Done => (icon::CHECK_SQUARE, theme::success(dark)),
-                                TaskStatus::InProgress => (icon::ARROW_RIGHT, theme::accent(dark)),
-                                TaskStatus::Pending => {
-                                    (icon::SQUARE, ui.visuals().weak_text_color())
-                                }
-                            };
-                            ui.label(RichText::new(glyph).color(color).size(15.0));
-                            let text = RichText::new(task.title.trim());
-                            let text = match task.status {
-                                TaskStatus::Done => text.weak().strikethrough(),
-                                TaskStatus::InProgress => text.strong(),
-                                TaskStatus::Pending => text,
-                            };
-                            ui.add(egui::Label::new(text).wrap());
-                        });
-                    }
-                });
-        });
+    entry(ui, if latest { p.signal } else { p.rule }, |ui| {
+        // Keyed on `latest` so a list folds once a newer one replaces it.
+        let id = ui.make_persistent_id(("tasks", &call.id, latest));
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, latest)
+            .show_header(ui, |ui| {
+                ui.label(theme::caps("tasks").color(p.pencil));
+                ui.label(
+                    RichText::new(format!("{done}/{}", list.len()))
+                        .small()
+                        .color(p.pencil),
+                );
+            })
+            .body(|ui| {
+                for task in list {
+                    ui.horizontal(|ui| {
+                        // Plain-text checkboxes, like a list kept by hand.
+                        let (mark, color) = match task.status {
+                            TaskStatus::Done => ("[x]", p.ok),
+                            TaskStatus::InProgress => ("[>]", p.signal),
+                            TaskStatus::Pending => ("[ ]", p.pencil),
+                        };
+                        ui.label(RichText::new(mark).monospace().color(color));
+                        let text = RichText::new(task.title.trim());
+                        let text = match task.status {
+                            TaskStatus::Done => text.weak().strikethrough(),
+                            TaskStatus::InProgress => text.strong(),
+                            TaskStatus::Pending => text,
+                        };
+                        ui.add(egui::Label::new(text).wrap());
+                    });
+                }
+            });
+    });
 }
 
 /// Progress and results of the subagents a `delegate` call started.
@@ -641,7 +673,7 @@ fn subagent_list(ui: &mut egui::Ui, call_id: &str, reports: &[SubagentReport]) {
                     );
                     egui::Frame::new()
                         .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(6)
+                        .corner_radius(2)
                         .inner_margin(8)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -673,111 +705,72 @@ fn state_is_open(ui: &egui::Ui, id: egui::Id) -> bool {
 
 fn error_box(ui: &mut egui::Ui, err: &str, retry: Option<Uuid>, actions: &mut Vec<Action>) {
     let color = ui.visuals().error_fg_color;
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.10))
-        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.6)))
-        .corner_radius(10)
-        .inner_margin(12)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(icon::WARNING).color(color).size(16.0));
-                ui.add(egui::Label::new(RichText::new(err).color(color)).wrap());
-            });
+    margin_row(ui, Some(theme::caps("error").color(color).into()), |ui| {
+        entry(ui, color, |ui| {
+            ui.add(egui::Label::new(RichText::new(err).monospace().color(color)).wrap());
             if let Some(id) = retry
-                && ui.button(format!("{}  Retry", icon::REGENERATE)).clicked()
+                && ui.button("Retry").clicked()
             {
                 actions.push(Action::Regenerate(id));
             }
         });
+    });
 }
-
-/// Starter prompts shown in an empty chat.
-const SUGGESTIONS: &[(&str, &str, &str)] = &[
-    (icon::LIGHTNING, "Explain a concept", "Explain how "),
-    (
-        icon::FILE,
-        "Summarise a document",
-        "Summarise the attached document in five bullet points.",
-    ),
-    (
-        icon::TOOL,
-        "What tools do you have?",
-        "What tools do you have access to, and what can you do with them?",
-    ),
-];
 
 pub struct EmptyInfo<'a> {
     pub provider: &'a str,
+    pub base_url: &'a str,
     pub model: &'a str,
     pub mcp_servers: usize,
     pub mcp_tools: usize,
     pub missing_key: bool,
 }
 
-pub fn empty_state(ui: &mut egui::Ui, info: EmptyInfo<'_>) -> Vec<Action> {
-    let mut actions = Vec::new();
-    let dark = ui.visuals().dark_mode;
-    ui.vertical_centered(|ui| {
-        ui.add_space((ui.available_height() * 0.22).max(24.0));
-        ui.label(
-            RichText::new(icon::SPARKLE)
-                .size(40.0)
-                .color(theme::accent(dark)),
-        );
-        ui.add_space(6.0);
-        ui.label(RichText::new("What can I help with?").size(24.0).strong());
-        ui.add_space(4.0);
-        let model = if info.model.is_empty() {
-            "no model selected"
-        } else {
-            info.model
-        };
-        ui.weak(format!("{} · {model}", info.provider));
-        if info.mcp_servers > 0 {
-            ui.weak(format!(
-                "{} {} tools from {} MCP server{}",
-                icon::PLUGS,
-                info.mcp_tools,
-                info.mcp_servers,
-                if info.mcp_servers == 1 { "" } else { "s" }
-            ));
-        }
-        if info.missing_key {
-            ui.add_space(8.0);
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!(
-                    "{}  No API key set: open Settings (⌘,) to configure your provider.",
-                    icon::KEY
+/// A new chat: what the next message will go to, as a readout. No greeting, no
+/// suggestions; the composer below is the call to action.
+pub fn empty_state(ui: &mut egui::Ui, info: EmptyInfo<'_>) {
+    let p = theme::palette(ui.visuals().dark_mode);
+    ui.add_space((ui.available_height() * 0.3).max(24.0));
+    centered(ui, |ui| {
+        margin_row(ui, Some(theme::caps("new").color(p.signal).into()), |ui| {
+            let model = if info.model.is_empty() {
+                "none selected"
+            } else {
+                info.model
+            };
+            let tools = match info.mcp_servers {
+                0 => "built-in only".to_owned(),
+                n => format!(
+                    "{} from {n} MCP server{}",
+                    info.mcp_tools,
+                    if n == 1 { "" } else { "s" }
                 ),
-            );
-        }
-        ui.add_space(20.0);
-        ui.horizontal(|ui| {
-            let total: f32 = 3.0 * 210.0 + 2.0 * ui.spacing().item_spacing.x;
-            ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
-            for (ic, title, text) in SUGGESTIONS {
-                let resp = egui::Frame::new()
-                    .fill(theme::card(dark))
-                    .stroke(egui::Stroke::new(1.0, theme::border(dark)))
-                    .corner_radius(12)
-                    .inner_margin(12)
-                    .show(ui, |ui| {
-                        ui.set_width(186.0);
-                        ui.label(RichText::new(*ic).size(18.0).color(theme::accent(dark)));
-                        ui.label(RichText::new(*title).strong());
-                    })
-                    .response
-                    .interact(egui::Sense::click())
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if resp.clicked() {
-                    actions.push(Action::SetInput((*text).to_owned()));
-                }
+            };
+            egui::Grid::new("empty-readout")
+                .num_columns(2)
+                .spacing([18.0, 4.0])
+                .show(ui, |ui| {
+                    for (key, value) in [
+                        ("provider", info.provider),
+                        ("endpoint", info.base_url),
+                        ("model", model),
+                        ("tools", tools.as_str()),
+                    ] {
+                        ui.label(RichText::new(key).monospace().color(p.pencil));
+                        ui.label(RichText::new(value).monospace().color(p.ink));
+                        ui.end_row();
+                    }
+                });
+            if info.missing_key {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("No API key for this provider. Add one in Settings (⌘,).")
+                        .monospace()
+                        .color(p.warn),
+                );
             }
         });
     });
-    actions
 }
 
 #[cfg(test)]
@@ -792,6 +785,30 @@ mod tests {
         assert!(reasoning_open(WhileStreaming, true, false));
         assert!(!reasoning_open(WhileStreaming, true, true));
         assert!(!reasoning_open(WhileStreaming, false, false));
+    }
+
+    #[test]
+    fn results_belong_to_their_own_turn() {
+        // Two turns whose calls share the id `call_0`, as some local servers produce.
+        let call = |n: &str| ToolCall {
+            id: "call_0".into(),
+            name: "x__echo".into(),
+            arguments: format!(r#"{{"n": "{n}"}}"#),
+        };
+        let mut first = ChatMessage::new(Role::Assistant, "");
+        first.tool_calls = vec![call("1")];
+        let mut second = ChatMessage::new(Role::Assistant, "");
+        second.tool_calls = vec![call("2")];
+        let messages = vec![
+            ChatMessage::new(Role::User, "a"),
+            first.clone(),
+            ChatMessage::tool_result(&first.tool_calls[0], "one", false),
+            ChatMessage::new(Role::User, "b"),
+            second,
+        ];
+        assert_eq!(results_after(&messages, 1)["call_0"].content, "one");
+        // The second turn's call has not been answered yet.
+        assert!(results_after(&messages, 4).is_empty());
     }
 
     #[test]
