@@ -337,6 +337,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
+        let stderr_path = std::env::temp_dir().join(format!("cleanrstai-mcp-http-{port}.log"));
         let mut child = tokio::process::Command::new(which::which("npx").expect("npx not found"))
             .args([
                 "-y",
@@ -346,7 +347,9 @@ mod tests {
             .env("PORT", port.to_string())
             .kill_on_drop(true)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
+            // A file rather than a pipe: on Windows a pipe held open by the orphaned `node`
+            // would keep the runtime's blocking reader (and so the test) alive forever.
+            .stderr(std::fs::File::create(&stderr_path).unwrap())
             .spawn()
             .unwrap();
         // A cold `npx` download can take a while on CI runners.
@@ -359,10 +362,7 @@ mod tests {
                 break;
             }
             if let Some(status) = child.try_wait().unwrap() {
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr).await;
-                }
+                let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
                 panic!("MCP HTTP server exited before listening: {status}\nstderr:\n{stderr}");
             }
             assert!(
@@ -371,17 +371,15 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        // Keep draining stderr so a chatty server can't block on a full pipe.
-        if let Some(mut pipe) = child.stderr.take() {
-            tokio::spawn(async move {
-                let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
-            });
-        }
         run_agent_against(McpTransportConfig::Http {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: vec![],
         })
         .await;
+        if let Some(pid) = child.id() {
+            crate::mcp::stdio::kill_process_tree(pid);
+        }
         let _ = child.kill().await;
+        let _ = std::fs::remove_file(&stderr_path);
     }
 }
