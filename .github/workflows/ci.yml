@@ -1,34 +1,43 @@
 name: CI
 
-# Manual only for now (Actions → CI → Run workflow): the account's Actions minutes ran out,
-# so builds and tests run locally (see "Releasing without GitHub Actions" in the README).
-# To re-enable automatic runs, restore:
-#   push:
-#     branches: [main]
-#   pull_request:
+# Runs on the self-hosted runners: the Gentoo box (Linux x64) and the Mac mini (macOS
+# ARM64). Windows is disabled for now; see the commented matrix entry below.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+# A newer push to the same branch or PR supersedes a run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - name: linux-x64
+            runner: [self-hosted, Linux, X64, gentoo]
+          - name: macos-arm64
+            runner: [self-hosted, macOS, ARM64]
+          # Disabled until there is a Windows runner (GitHub-hosted would use Actions minutes):
+          # - name: windows-x64
+          #   runner: windows-latest
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      # No system packages needed on Linux: X11/Wayland/xkbcommon are loaded at runtime.
       - run: cargo fmt --check
         if: runner.os == 'Linux'
       - run: cargo clippy --all-targets -- -D warnings
@@ -37,8 +46,8 @@ jobs:
         with:
           node-version: 22
       - name: Warm the npm cache for the e2e tests
-        # A cold download of the test MCP server can take minutes on CI runners; do it once
-        # here so no test spends its timeout on it. The server exits when stdin closes.
+        # A cold download of the test MCP server can take minutes; do it once here so no
+        # test spends its timeout on it. The server exits when stdin closes.
         shell: bash
         run: npx -y @modelcontextprotocol/server-everything < /dev/null
       - name: End-to-end MCP tests (stdio + Streamable HTTP)

@@ -93,9 +93,14 @@ open target/release/bundle/osx/CleanRSTAI.app
 
 ## Releases
 
-> **GitHub Actions are currently manual-only** because the account's Actions minutes ran
-> out: nothing runs on push, pull request or tag. Build, test and publish locally with
-> `scripts/release-local.sh` (below), or start a workflow by hand from the Actions tab.
+> **CI and releases run on self-hosted runners**, so they use no GitHub Actions minutes:
+> a Linux x64 machine labelled `gentoo` (CI, both Linux release builds, publishing) and a
+> macOS ARM64 machine (CI, the macOS release build). Windows builds are disabled until there
+> is a Windows runner; `scripts/release-local.sh` (below) can still build the Windows files.
+>
+> The runners need `git`, `curl`, a C compiler and `python3` (the Linux release build uses
+> it to fetch Zig for cross-linking); the workflows install Rust (rustup) and Node
+> themselves. The Mac also needs the Xcode command line tools.
 
 ### Releasing without GitHub Actions
 
@@ -122,7 +127,7 @@ be built are listed in the release notes.
 
 ### Releasing with GitHub Actions
 
-Pushing a version tag runs `.github/workflows/release.yml` (when its tag trigger is enabled):
+Pushing a version tag runs `.github/workflows/release.yml`:
 
 ```sh
 # bump `version` in Cargo.toml first; the tag must match it
@@ -137,8 +142,8 @@ It builds:
 | `CleanRSTAI-macos-universal.zip` | the same `.app`, zipped |
 | `CleanRSTAI-linux-x86_64.tar.gz` | Linux x86_64 |
 | `CleanRSTAI-linux-aarch64.tar.gz` | Linux ARM64 |
-| `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer (Start menu shortcut, upgrades in place) |
-| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe` |
+| `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer (Start menu shortcut, upgrades in place); *not built while Windows is disabled* |
+| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe`; *not built while Windows is disabled* |
 
 plus `SHA256SUMS.txt`, and publishes them in two places:
 
