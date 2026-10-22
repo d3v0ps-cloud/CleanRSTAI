@@ -80,6 +80,9 @@ pub struct Conversation {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub messages: Vec<ChatMessage>,
+    /// Pinned chats stay at the top of the sidebar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 impl Conversation {
@@ -91,6 +94,7 @@ impl Conversation {
             created_at: now,
             updated_at: now,
             messages: Vec::new(),
+            pinned: false,
         }
     }
 
@@ -154,5 +158,84 @@ impl Conversation {
                 self.title = title;
             }
         }
+    }
+}
+
+/// Sidebar section a conversation belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    Pinned,
+    Today,
+    Yesterday,
+    Previous7Days,
+    Previous30Days,
+    Older,
+}
+
+impl Group {
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::Pinned => "Pinned",
+            Group::Today => "Today",
+            Group::Yesterday => "Yesterday",
+            Group::Previous7Days => "Previous 7 days",
+            Group::Previous30Days => "Previous 30 days",
+            Group::Older => "Older",
+        }
+    }
+
+    /// Group by the local calendar day of the last update.
+    pub fn of(c: &Conversation, today: chrono::NaiveDate) -> Self {
+        if c.pinned {
+            return Group::Pinned;
+        }
+        let day = c.updated_at.with_timezone(&chrono::Local).date_naive();
+        match (today - day).num_days() {
+            i64::MIN..=0 => Group::Today,
+            1 => Group::Yesterday,
+            2..=7 => Group::Previous7Days,
+            8..=30 => Group::Previous30Days,
+            _ => Group::Older,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_by_day_with_pins_first() {
+        let today = chrono::Local::now().date_naive();
+        let at = |days: i64| {
+            let mut c = Conversation::new();
+            c.updated_at =
+                (chrono::Local::now() - chrono::Duration::days(days)).with_timezone(&Utc);
+            c
+        };
+        assert_eq!(Group::of(&at(0), today), Group::Today);
+        assert_eq!(Group::of(&at(1), today), Group::Yesterday);
+        assert_eq!(Group::of(&at(5), today), Group::Previous7Days);
+        assert_eq!(Group::of(&at(20), today), Group::Previous30Days);
+        assert_eq!(Group::of(&at(90), today), Group::Older);
+        let mut pinned = at(90);
+        pinned.pinned = true;
+        assert_eq!(Group::of(&pinned, today), Group::Pinned);
+        assert!(Group::Pinned < Group::Today && Group::Today < Group::Older);
+    }
+
+    #[test]
+    fn auto_title_from_attachment() {
+        let mut c = Conversation::new();
+        let mut m = ChatMessage::new(Role::User, "");
+        m.attachments.push(crate::attach::Attachment {
+            name: "report.pdf.txt".into(),
+            mime: "text/plain".into(),
+            text: Some("x".into()),
+            data: None,
+        });
+        c.messages.push(m);
+        c.auto_title();
+        assert_eq!(c.title, "report.pdf.txt");
     }
 }

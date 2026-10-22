@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use egui_commonmark::CommonMarkCache;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -13,21 +13,26 @@ use crate::config::{Settings, Theme};
 use crate::export;
 use crate::llm;
 use crate::mcp::manager::McpManager;
+use crate::types::Group;
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
+use crate::ui::chat_view::{self, centered};
+use crate::ui::palette::{Command, Entry, Palette};
 use crate::ui::settings::{SettingsAction, SettingsUi, Tab};
-use crate::ui::widgets::code_block;
+use crate::ui::theme::{self, icon};
+use crate::ui::widgets::icon_button;
+use egui::RichText;
 
-const MAX_CONTENT_WIDTH: f32 = 880.0;
 const INPUT_ID: &str = "chat-input";
 
-struct Run {
+pub(crate) struct Run {
     task: JoinHandle<()>,
-    approvals: Vec<(ToolCall, oneshot::Sender<bool>)>,
-    running_tool: Option<String>,
+    pub(crate) approvals: Vec<(ToolCall, oneshot::Sender<bool>)>,
+    pub(crate) running_tool: Option<String>,
 }
 
-enum Action {
+pub(crate) enum Action {
+    SetInput(String),
     Approve(Uuid, String, bool),
     Copy(String),
     Regenerate(Uuid),
@@ -59,6 +64,8 @@ pub struct ChatApp {
     prompt_form: Option<PromptForm>,
     /// For background tasks to request a repaint when their results arrive.
     repaint_ctx: egui::Context,
+    palette: Palette,
+    sidebar_open: bool,
 }
 
 /// Arguments being filled in for an MCP prompt.
@@ -80,6 +87,8 @@ fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
 impl ChatApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        theme::install_fonts(&cc.egui_ctx);
+        theme::apply(&cc.egui_ctx);
         let loaded = Settings::load();
         let settings = loaded.settings;
         apply_appearance(&cc.egui_ctx, &settings);
@@ -118,6 +127,8 @@ impl ChatApp {
             viewing: None,
             prompt_form: None,
             repaint_ctx: cc.egui_ctx.clone(),
+            palette: Palette::default(),
+            sidebar_open: true,
         };
         if loaded.needs_migration {
             // Move plain-text secrets from settings.json into the keychain.
@@ -396,7 +407,7 @@ impl ChatApp {
     }
 
     /// Menu of MCP resources (attach) and prompts (insert) from connected servers.
-    fn mcp_menu(&mut self, ui: &mut egui::Ui, width: f32) {
+    fn mcp_menu(&mut self, ui: &mut egui::Ui) {
         let views = self.mcp.snapshot();
         let usable: Vec<_> = views
             .iter()
@@ -414,8 +425,7 @@ impl ChatApp {
         let mut read = None;
         let mut prompt = None;
         ui.scope(|ui| {
-            ui.set_width(width);
-            ui.menu_button("📚 MCP", |ui| {
+            ui.menu_button(RichText::new(icon::BOOKS).size(16.0), |ui| {
                 ui.set_max_height(420.0);
                 for v in &usable {
                     let name = names.get(v.id.as_str()).copied().unwrap_or("server");
@@ -699,26 +709,219 @@ impl ChatApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let (new_chat, open_settings) = ctx.input_mut(|i| {
+        let (new_chat, settings, palette, sidebar) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::K),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::B),
             )
         });
         if new_chat {
+            self.settings_ui = None;
             self.new_chat();
         }
-        if open_settings && self.settings_ui.is_none() {
-            self.settings_ui = Some(SettingsUi::new(&self.settings, Tab::Providers));
+        if settings {
+            self.open_settings(Tab::Providers);
+        }
+        if palette {
+            self.palette.toggle();
+        }
+        if sidebar {
+            self.sidebar_open = !self.sidebar_open;
+        }
+    }
+
+    /// Everything the command palette can do right now.
+    fn palette_entries(&self) -> Vec<Entry> {
+        let mut e = vec![
+            Entry::new(icon::PLUS, "New chat", "Chat", Command::NewChat),
+            Entry::new(icon::PAPERCLIP, "Attach files…", "Chat", Command::Attach),
+            Entry::new(
+                icon::DOWNLOAD,
+                "Export this chat as Markdown…",
+                "Chat",
+                Command::ExportChatMarkdown,
+            ),
+            Entry::new(
+                icon::SIDEBAR,
+                "Toggle sidebar",
+                "View",
+                Command::ToggleSidebar,
+            ),
+            Entry::new(
+                icon::MONITOR,
+                "System theme",
+                "Theme",
+                Command::SetTheme(Theme::System),
+            ),
+            Entry::new(
+                icon::SUN,
+                "Light theme",
+                "Theme",
+                Command::SetTheme(Theme::Light),
+            ),
+            Entry::new(
+                icon::MOON,
+                "Dark theme",
+                "Theme",
+                Command::SetTheme(Theme::Dark),
+            ),
+            Entry::new(
+                icon::SERVER,
+                "Providers",
+                "Settings",
+                Command::OpenSettings(Tab::Providers),
+            ),
+            Entry::new(
+                icon::PLUGS,
+                "MCP servers",
+                "Settings",
+                Command::OpenSettings(Tab::Mcp),
+            ),
+            Entry::new(
+                icon::GEAR,
+                "General",
+                "Settings",
+                Command::OpenSettings(Tab::General),
+            ),
+            Entry::new(
+                icon::EXPORT,
+                "Export settings…",
+                "Data",
+                Command::ExportSettings,
+            ),
+            Entry::new(
+                icon::EXPORT,
+                "Export conversations…",
+                "Data",
+                Command::ExportConversations,
+            ),
+            Entry::new(
+                icon::DOWNLOAD,
+                "Import settings…",
+                "Data",
+                Command::ImportSettings,
+            ),
+            Entry::new(
+                icon::DOWNLOAD,
+                "Import conversations…",
+                "Data",
+                Command::ImportConversations,
+            ),
+        ];
+        for (i, p) in self.settings.providers.iter().enumerate() {
+            e.push(Entry::new(
+                icon::SERVER,
+                format!("Use {}", p.name),
+                "Provider",
+                Command::UseProvider(i),
+            ));
+        }
+        for m in &self.settings.provider().models {
+            e.push(Entry::new(
+                icon::SPARKLE,
+                m.clone(),
+                "Model",
+                Command::UseModel(m.clone()),
+            ));
+        }
+        for c in &self.conversations {
+            e.push(Entry::new(
+                icon::CHAT,
+                c.title.clone(),
+                "Chat",
+                Command::OpenChat(c.id),
+            ));
+        }
+        e
+    }
+
+    fn run_command(&mut self, cmd: Command, ctx: &egui::Context) {
+        match cmd {
+            Command::NewChat => {
+                self.settings_ui = None;
+                self.new_chat();
+            }
+            Command::OpenChat(id) => {
+                self.settings_ui = None;
+                self.current = Some(id);
+            }
+            Command::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
+            Command::OpenSettings(tab) => self.open_settings(tab),
+            Command::UseProvider(i) => {
+                self.settings.active_provider = i;
+                self.save_settings();
+            }
+            Command::UseModel(m) => {
+                self.settings.provider_mut().model = m;
+                self.save_settings();
+            }
+            Command::SetTheme(t) => {
+                self.settings.general.theme = t;
+                apply_appearance(ctx, &self.settings);
+                self.save_settings();
+            }
+            Command::Attach => {
+                if let Some(paths) = rfd::FileDialog::new()
+                    .set_title("Attach files")
+                    .pick_files()
+                {
+                    self.attach_paths(paths);
+                }
+            }
+            Command::ExportChatMarkdown => {
+                if let Some(id) = self.current {
+                    self.export_markdown(id);
+                }
+            }
+            Command::ExportSettings
+            | Command::ExportConversations
+            | Command::ImportSettings
+            | Command::ImportConversations => {
+                // These live on the General settings page, which shows their result and
+                // (for settings imports) the merge/replace choice.
+                self.open_settings(Tab::General);
+                if let Some(sui) = &mut self.settings_ui {
+                    sui.queue(match cmd {
+                        Command::ExportSettings => SettingsAction::ExportSettings {
+                            include_secrets: false,
+                        },
+                        Command::ExportConversations => SettingsAction::ExportConversations,
+                        Command::ImportSettings => SettingsAction::ImportSettings,
+                        _ => SettingsAction::ImportConversations,
+                    });
+                }
+            }
         }
     }
 
     // ---------------------------------------------------------------- top bar
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let dark = ui.visuals().dark_mode;
         ui.horizontal(|ui| {
-            ui.heading("CleanRSTAI");
-            ui.separator();
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if icon_button(
+                ui,
+                icon::SIDEBAR,
+                if self.sidebar_open {
+                    "Hide sidebar (⌘B)"
+                } else {
+                    "Show sidebar (⌘B)"
+                },
+            )
+            .clicked()
+            {
+                self.sidebar_open = !self.sidebar_open;
+            }
+            ui.label(
+                RichText::new(icon::SPARKLE)
+                    .color(theme::accent(dark))
+                    .size(18.0),
+            );
+            ui.label(RichText::new("CleanRSTAI").strong().size(16.0));
+            ui.add_space(8.0);
 
             let mut changed = false;
             let providers: Vec<(usize, String)> = self
@@ -729,14 +932,20 @@ impl ChatApp {
                 .map(|(i, p)| (i, p.name.clone()))
                 .collect();
             egui::ComboBox::from_id_salt("provider")
-                .selected_text(self.settings.provider().name.clone())
+                .selected_text(format!(
+                    "{}  {}",
+                    icon::SERVER,
+                    self.settings.provider().name
+                ))
                 .show_ui(ui, |ui| {
                     for (i, name) in providers {
                         changed |= ui
                             .selectable_value(&mut self.settings.active_provider, i, name)
                             .changed();
                     }
-                });
+                })
+                .response
+                .on_hover_text("Provider");
 
             let p = self.settings.provider_mut();
             if p.models.is_empty() {
@@ -746,6 +955,7 @@ impl ChatApp {
                             .hint_text("model")
                             .desired_width(200.0),
                     )
+                    .on_hover_text("Model (fetch the list in Settings → Providers)")
                     .lost_focus();
             } else {
                 let models = p.models.clone();
@@ -760,15 +970,20 @@ impl ChatApp {
                         for m in models {
                             changed |= ui.selectable_value(&mut p.model, m.clone(), m).changed();
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Model");
             }
             if changed {
                 self.save_settings();
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚙ Settings").clicked() && self.settings_ui.is_none() {
-                    self.settings_ui = Some(SettingsUi::new(&self.settings, Tab::Providers));
+                if icon_button(ui, icon::GEAR, "Settings (⌘,)").clicked() {
+                    self.open_settings(Tab::Providers);
+                }
+                if icon_button(ui, icon::COMMAND, "Command palette (⌘K)").clicked() {
+                    self.palette.toggle();
                 }
                 let (servers, tools) = self.mcp.connected_tool_count();
                 let configured = self
@@ -777,38 +992,69 @@ impl ChatApp {
                     .iter()
                     .filter(|s| s.enabled)
                     .count();
-                let label = if configured == 0 {
-                    "No MCP servers".to_owned()
-                } else {
-                    format!("MCP {servers}/{configured} · {tools} tools")
-                };
-                if ui.link(label).on_hover_text("Manage MCP servers").clicked()
-                    && self.settings_ui.is_none()
-                {
-                    self.settings_ui = Some(SettingsUi::new(&self.settings, Tab::Mcp));
+                if configured > 0 {
+                    let needs_sign_in = self
+                        .mcp
+                        .snapshot()
+                        .iter()
+                        .any(|v| v.status == crate::mcp::manager::ServerStatus::NeedsSignIn);
+                    let color = if needs_sign_in {
+                        ui.visuals().warn_fg_color
+                    } else if servers == configured {
+                        theme::success(dark)
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
+                    let text = RichText::new(format!(
+                        "{}  {servers}/{configured} · {tools} tools",
+                        icon::PLUGS
+                    ))
+                    .small()
+                    .color(color);
+                    let hover = if needs_sign_in {
+                        "An MCP server needs you to sign in"
+                    } else {
+                        "MCP servers connected · tools available"
+                    };
+                    if ui
+                        .add(egui::Button::new(text).frame(false))
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
+                        self.open_settings(Tab::Mcp);
+                    }
                 }
             });
         });
     }
 
+    fn open_settings(&mut self, tab: Tab) {
+        if self.settings_ui.is_none() {
+            self.settings_ui = Some(SettingsUi::new(&self.settings, tab));
+        } else if let Some(s) = &mut self.settings_ui {
+            s.set_tab(tab);
+        }
+    }
+
     // ---------------------------------------------------------------- sidebar
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
+        let dark = ui.visuals().dark_mode;
+        ui.add_space(10.0);
         if ui
             .add_sized(
-                [ui.available_width(), 30.0],
-                egui::Button::new("＋ New chat"),
+                [ui.available_width(), 34.0],
+                theme::primary_button(theme::labelled(icon::PLUS, "New chat"), dark),
             )
-            .on_hover_text("⌘/Ctrl + N")
+            .on_hover_text("⌘N")
             .clicked()
         {
             self.new_chat();
         }
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.search)
-                .hint_text("🔍 Search chats")
+                .hint_text(format!("{}  Search chats", icon::SEARCH))
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(4.0);
@@ -816,20 +1062,36 @@ impl ChatApp {
         let mut select = None;
         let mut delete = None;
         let mut export_md = None;
+        let mut toggle_pin = None;
         let mut rename_commit = None;
         let needle = self.search.to_lowercase();
+        let today = chrono::Local::now().date_naive();
+        let mut rows: Vec<(Group, &Conversation)> = self
+            .conversations
+            .iter()
+            .filter(|c| {
+                needle.is_empty()
+                    || c.title.to_lowercase().contains(&needle)
+                    || c.messages
+                        .iter()
+                        .any(|m| m.content.to_lowercase().contains(&needle))
+            })
+            .map(|c| (Group::of(c, today), c))
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.updated_at.cmp(&a.1.updated_at)));
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for c in &self.conversations {
-                    if !needle.is_empty()
-                        && !c.title.to_lowercase().contains(&needle)
-                        && !c
-                            .messages
-                            .iter()
-                            .any(|m| m.content.to_lowercase().contains(&needle))
-                    {
-                        continue;
+                if rows.is_empty() && !needle.is_empty() {
+                    ui.weak("No matching chats");
+                }
+                let mut last_group = None;
+                for (group, c) in rows {
+                    if last_group != Some(group) {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(group.label()).small().weak().strong());
+                        last_group = Some(group);
                     }
                     if let Some((rid, text)) = &mut self.renaming
                         && *rid == c.id
@@ -843,35 +1105,51 @@ impl ChatApp {
                         continue;
                     }
                     let running = self.runs.contains_key(&c.id);
-                    let title = if running {
-                        format!("⏳ {}", c.title)
-                    } else {
-                        c.title.clone()
+                    let title = match (running, c.pinned) {
+                        (true, _) => format!("{}  {}", icon::HOURGLASS, c.title),
+                        (false, true) => format!("{}  {}", icon::PIN, c.title),
+                        _ => c.title.clone(),
                     };
                     let resp = ui
-                        .add_sized(
-                            [ui.available_width(), 24.0],
-                            egui::Button::selectable(self.current == Some(c.id), title).truncate(),
+                        .add(
+                            egui::Button::selectable(self.current == Some(c.id), title)
+                                .truncate()
+                                .right_text("")
+                                .min_size(egui::vec2(ui.available_width(), 28.0)),
                         )
-                        .on_hover_text(
+                        .on_hover_text(format!(
+                            "{}\n{}",
+                            c.title,
                             c.updated_at
                                 .with_timezone(&chrono::Local)
                                 .format("%Y-%m-%d %H:%M")
-                                .to_string(),
-                        );
+                        ));
                     if resp.clicked() {
                         select = Some(c.id);
                     }
                     resp.context_menu(|ui| {
-                        if ui.button("✏ Rename").clicked() {
+                        let pin_label = if c.pinned {
+                            theme::labelled(icon::UNPIN, "Unpin")
+                        } else {
+                            theme::labelled(icon::PIN, "Pin")
+                        };
+                        if ui.button(pin_label).clicked() {
+                            toggle_pin = Some(c.id);
+                            ui.close();
+                        }
+                        if ui.button(theme::labelled(icon::EDIT, "Rename")).clicked() {
                             self.renaming = Some((c.id, c.title.clone()));
                             ui.close();
                         }
-                        if ui.button("⬇ Export as Markdown…").clicked() {
+                        if ui
+                            .button(theme::labelled(icon::DOWNLOAD, "Export as Markdown…"))
+                            .clicked()
+                        {
                             export_md = Some(c.id);
                             ui.close();
                         }
-                        if ui.button("🗑 Delete").clicked() {
+                        ui.separator();
+                        if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
                             delete = Some(c.id);
                             ui.close();
                         }
@@ -879,6 +1157,12 @@ impl ChatApp {
                 }
             });
 
+        if let Some(id) = toggle_pin
+            && let Some(c) = self.conv_mut(id)
+        {
+            c.pinned = !c.pinned;
+            c.save();
+        }
         if let Some(id) = export_md {
             self.export_markdown(id);
         }
@@ -900,9 +1184,10 @@ impl ChatApp {
         }
     }
 
-    // ---------------------------------------------------------------- input
+    // ---------------------------------------------------------------- composer
 
-    fn input_area(&mut self, ui: &mut egui::Ui) {
+    fn composer(&mut self, ui: &mut egui::Ui) {
+        let dark = ui.visuals().dark_mode;
         let id = egui::Id::unique(INPUT_ID);
         let running = self.current.is_some_and(|c| self.runs.contains_key(&c));
         let has_focus = ui.memory(|m| m.has_focus(id));
@@ -916,74 +1201,102 @@ impl ChatApp {
             });
         }
 
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         centered(ui, |ui| {
             if let Some(n) = self.notice.clone() {
                 ui.horizontal(|ui| {
-                    ui.colored_label(ui.visuals().warn_fg_color, n);
-                    if ui.small_button("✖").clicked() {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("{}  {n}", icon::WARNING),
+                    );
+                    if icon_button(ui, icon::CLOSE, "Dismiss").clicked() {
                         self.notice = None;
                     }
                 });
             }
-            if let Some(n) =
-                attach_ui::pending_chips(ui, &mut self.images, &self.pending_attachments)
-            {
-                self.pending_attachments.remove(n);
-            }
-            ui.horizontal(|ui| {
-                let button_w = 80.0;
-                let hint = if self.settings.general.send_with_enter {
-                    "Message… (Enter to send, Shift+Enter for newline)"
-                } else {
-                    "Message… (⌘/Ctrl+Enter to send)"
-                };
-                egui::ScrollArea::vertical()
-                    .id_salt("input-scroll")
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.input)
-                                .id(id)
-                                .hint_text(hint)
-                                .desired_rows(3)
-                                .lock_focus(true)
-                                .desired_width(ui.available_width() - button_w - 8.0),
-                        );
-                    });
-                ui.vertical(|ui| {
-                    if running {
-                        if ui
-                            .add_sized([button_w, 32.0], egui::Button::new("■ Stop"))
-                            .clicked()
-                        {
-                            let cid = self.current.unwrap();
-                            self.stop(cid);
-                        }
-                    } else if ui
-                        .add_enabled(
-                            !self.input.trim().is_empty() || !self.pending_attachments.is_empty(),
-                            egui::Button::new("Send ➤").min_size([button_w, 32.0].into()),
+            egui::Frame::new()
+                .fill(theme::card(dark))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    if has_focus {
+                        theme::accent(dark).gamma_multiply(0.7)
+                    } else {
+                        theme::border(dark)
+                    },
+                ))
+                .corner_radius(14)
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    if let Some(n) =
+                        attach_ui::pending_chips(ui, &mut self.images, &self.pending_attachments)
+                    {
+                        self.pending_attachments.remove(n);
+                    }
+                    let hint = if self.settings.general.send_with_enter {
+                        "Message CleanRSTAI…"
+                    } else {
+                        "Message CleanRSTAI… (⌘/Ctrl+Enter to send)"
+                    };
+                    egui::ScrollArea::vertical()
+                        .id_salt("input-scroll")
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.input)
+                                    .id(id)
+                                    .hint_text(hint)
+                                    .frame(egui::Frame::NONE)
+                                    .desired_rows(2)
+                                    .lock_focus(true)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        if icon_button(
+                            ui,
+                            icon::PAPERCLIP,
+                            "Attach images or text files (or drop them here)",
                         )
                         .clicked()
-                    {
-                        send = true;
-                    }
-                    if ui
-                        .add_sized([button_w, 24.0], egui::Button::new("📎 Attach"))
-                        .on_hover_text("Attach images or text files (or drop them on the window)")
-                        .clicked()
-                        && let Some(paths) = rfd::FileDialog::new()
-                            .set_title("Attach files")
-                            .pick_files()
-                    {
-                        self.attach_paths(paths);
-                    }
-                    self.mcp_menu(ui, button_w);
+                            && let Some(paths) = rfd::FileDialog::new()
+                                .set_title("Attach files")
+                                .pick_files()
+                        {
+                            self.attach_paths(paths);
+                        }
+                        self.mcp_menu(ui);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if running {
+                                if ui
+                                    .add(egui::Button::new(theme::labelled(icon::STOP, "Stop")))
+                                    .on_hover_text("Stop generating")
+                                    .clicked()
+                                {
+                                    let cid = self.current.unwrap();
+                                    self.stop(cid);
+                                }
+                            } else {
+                                let can_send = !self.input.trim().is_empty()
+                                    || !self.pending_attachments.is_empty();
+                                if ui
+                                    .add_enabled(can_send, theme::primary_button(icon::SEND, dark))
+                                    .on_hover_text(if self.settings.general.send_with_enter {
+                                        "Send (Enter) · Shift+Enter for a new line"
+                                    } else {
+                                        "Send (⌘/Ctrl+Enter)"
+                                    })
+                                    .clicked()
+                                {
+                                    send = true;
+                                }
+                            }
+                        });
+                    });
                 });
-            });
         });
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         if send {
             let ctx = ui.ctx().clone();
             self.send(&ctx);
@@ -991,149 +1304,52 @@ impl ChatApp {
         }
     }
 
-    // ---------------------------------------------------------------- messages
+    // ---------------------------------------------------------------- chat
 
-    fn chat_view(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
-        let mut actions = Vec::new();
-        let Some(conv) = self
+    fn chat_area(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
+        let conv = self
             .current
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
-        else {
-            self.empty_state(ui);
-            return actions;
-        };
-        if conv.messages.is_empty() && !self.runs.contains_key(&conv.id) {
-            self.empty_state(ui);
-            return actions;
-        }
-
-        let run = self.runs.get(&conv.id);
-        let results: HashMap<&str, &ChatMessage> = conv
-            .messages
-            .iter()
-            .filter(|m| m.role == Role::Tool)
-            .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
-            .collect();
-        let last_assistant = conv
-            .messages
-            .iter()
-            .rposition(|m| m.role == Role::Assistant);
-        let md_cache = &mut self.md_cache;
-        let images = &mut self.images;
-        let show_stats = self.settings.general.show_stats;
-        if show_stats {
-            let totals =
-                crate::stats::Totals::of(conv.messages.iter().filter_map(|m| m.stats.as_ref()));
-            if totals.requests > 0 {
-                centered(ui, |ui| crate::ui::stats_view::totals_bar(ui, &totals));
-            }
-        }
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.add_space(8.0);
-                centered(ui, |ui| {
-                    for (i, msg) in conv.messages.iter().enumerate() {
-                        match msg.role {
-                            Role::Tool | Role::System => continue,
-                            Role::User => user_message(
-                                ui,
-                                images,
-                                conv.id,
-                                i,
-                                msg,
-                                run.is_some(),
-                                &mut actions,
-                            ),
-                            Role::Assistant => {
-                                let streaming = run.is_some() && i + 1 == conv.messages.len();
-                                assistant_message(
-                                    ui,
-                                    md_cache,
-                                    images,
-                                    conv.id,
-                                    i,
-                                    msg,
-                                    &results,
-                                    run,
-                                    streaming,
-                                    show_stats,
-                                    &mut actions,
-                                );
-                                if Some(i) == last_assistant && run.is_none() {
-                                    ui.horizontal(|ui| {
-                                        if ui.small_button("📋 Copy").clicked() {
-                                            actions.push(Action::Copy(msg.content.clone()));
-                                        }
-                                        if ui.small_button("↻ Regenerate").clicked() {
-                                            actions.push(Action::Regenerate(conv.id));
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                        ui.add_space(10.0);
-                    }
-                    if let Some(err) = self.errors.get(&conv.id) {
-                        egui::Frame::new()
-                            .fill(ui.visuals().error_fg_color.gamma_multiply(0.12))
-                            .stroke(egui::Stroke::new(1.0, ui.visuals().error_fg_color))
-                            .corner_radius(6)
-                            .inner_margin(10)
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.colored_label(ui.visuals().error_fg_color, err);
-                                if run.is_none() && ui.button("↻ Retry").clicked() {
-                                    actions.push(Action::Regenerate(conv.id));
-                                }
-                            });
-                    }
-                    ui.add_space(12.0);
-                });
-            });
-        actions
-    }
-
-    fn empty_state(&self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.3);
-            ui.heading("What can I help with?");
-            ui.add_space(8.0);
+            .filter(|c| !c.messages.is_empty() || self.runs.contains_key(&c.id));
+        let Some(conv) = conv else {
             let p = self.settings.provider();
-            ui.weak(format!(
-                "{} · {}",
-                p.name,
-                if p.model.is_empty() {
-                    "no model selected"
-                } else {
-                    &p.model
-                }
-            ));
             let (servers, tools) = self.mcp.connected_tool_count();
-            if servers > 0 {
-                ui.weak(format!(
-                    "{tools} tools available from {servers} MCP server(s)"
-                ));
-            }
-            if p.api_key.is_empty()
-                && !p.base_url.contains("localhost")
-                && !p.base_url.contains("127.0.0.1")
-            {
-                ui.add_space(8.0);
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "No API key set — open Settings to configure your provider.",
-                );
-            }
-        });
+            let local = ["localhost", "127.0.0.1", "0.0.0.0"]
+                .iter()
+                .any(|h| p.base_url.contains(h));
+            return chat_view::empty_state(
+                ui,
+                chat_view::EmptyInfo {
+                    provider: &p.name,
+                    model: &p.model,
+                    mcp_servers: servers,
+                    mcp_tools: tools,
+                    missing_key: p.api_key.is_empty() && !local,
+                },
+            );
+        };
+        chat_view::show(
+            ui,
+            &mut self.md_cache,
+            &mut self.images,
+            chat_view::View {
+                conv,
+                run: self.runs.get(&conv.id),
+                error: self.errors.get(&conv.id),
+                model: &self.settings.provider().model,
+                show_stats: self.settings.general.show_stats,
+            },
+        )
     }
 
     fn apply_actions(&mut self, actions: Vec<Action>, ctx: &egui::Context) {
         for a in actions {
             match a {
                 Action::Copy(text) => ctx.copy_text(text),
+                Action::SetInput(text) => {
+                    self.input = text;
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
+                }
                 Action::Regenerate(id) => self.regenerate(id, ctx),
                 Action::Approve(conv, call_id, ok) => {
                     if let Some(run) = self.runs.get_mut(&conv)
@@ -1187,218 +1403,6 @@ fn run_export(kind: &str, doc: &serde_json::Value) -> Option<Result<String, Stri
     })
 }
 
-/// Lay out `add` in a centered column of at most `MAX_CONTENT_WIDTH`.
-fn centered(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    let avail = ui.available_width();
-    let width = avail.min(MAX_CONTENT_WIDTH);
-    let pad = ((avail - width) / 2.0).max(0.0);
-    ui.horizontal(|ui| {
-        ui.add_space(pad);
-        ui.vertical(|ui| {
-            ui.set_width(width - 16.0);
-            add(ui);
-        });
-    });
-}
-
-fn bubble(ui: &mut egui::Ui, fill: egui::Color32, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(fill)
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui);
-        });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn user_message(
-    ui: &mut egui::Ui,
-    images: &mut ImageCache,
-    conv: Uuid,
-    idx: usize,
-    msg: &ChatMessage,
-    running: bool,
-    actions: &mut Vec<Action>,
-) {
-    let fill = ui
-        .visuals()
-        .faint_bg_color
-        .lerp_to_gamma(ui.visuals().selection.bg_fill, 0.25);
-    bubble(ui, fill, |ui| {
-        ui.horizontal(|ui| {
-            ui.strong("You");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !running
-                    && ui
-                        .small_button("✏")
-                        .on_hover_text("Edit and resend")
-                        .clicked()
-                {
-                    actions.push(Action::EditFrom(conv, idx));
-                }
-                if ui.small_button("📋").on_hover_text("Copy").clicked() {
-                    actions.push(Action::Copy(msg.content.clone()));
-                }
-            });
-        });
-        if !msg.content.is_empty() {
-            ui.add(egui::Label::new(&msg.content).selectable(true).wrap());
-        }
-        if !msg.attachments.is_empty()
-            && let Some((uri, bytes, name)) =
-                attach_ui::show(ui, images, &format!("{conv}-{idx}"), &msg.attachments)
-        {
-            actions.push(Action::ViewImage(uri, bytes, name));
-        }
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn assistant_message(
-    ui: &mut egui::Ui,
-    md_cache: &mut CommonMarkCache,
-    images: &mut ImageCache,
-    conv: Uuid,
-    idx: usize,
-    msg: &ChatMessage,
-    results: &HashMap<&str, &ChatMessage>,
-    run: Option<&Run>,
-    streaming: bool,
-    show_stats: bool,
-    actions: &mut Vec<Action>,
-) {
-    bubble(ui, ui.visuals().extreme_bg_color, |ui| {
-        ui.horizontal(|ui| {
-            ui.strong("Assistant");
-            if streaming && msg.content.is_empty() && msg.tool_calls.is_empty() {
-                ui.spinner();
-            }
-        });
-        if let Some(r) = msg.reasoning.as_deref().filter(|r| !r.trim().is_empty()) {
-            egui::CollapsingHeader::new(egui::RichText::new("Thinking").weak())
-                .id_salt(("reasoning", conv, idx))
-                .default_open(streaming && msg.content.is_empty())
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(r).weak().italics())
-                            .selectable(true)
-                            .wrap(),
-                    );
-                });
-        }
-        if !msg.content.is_empty() {
-            CommonMarkViewer::new().show(ui, md_cache, &msg.content);
-        }
-        for call in &msg.tool_calls {
-            tool_call_view(
-                ui,
-                images,
-                conv,
-                call,
-                results.get(call.id.as_str()).copied(),
-                run,
-                actions,
-            );
-        }
-        if show_stats && let Some(s) = &msg.stats {
-            crate::ui::stats_view::request_line(ui, s);
-        }
-    });
-}
-
-fn tool_call_view(
-    ui: &mut egui::Ui,
-    images: &mut ImageCache,
-    conv: Uuid,
-    call: &ToolCall,
-    result: Option<&ChatMessage>,
-    run: Option<&Run>,
-    actions: &mut Vec<Action>,
-) {
-    let pending_approval = run.is_some_and(|r| r.approvals.iter().any(|(c, _)| c.id == call.id));
-    let running = run.is_some_and(|r| r.running_tool.as_deref() == Some(call.id.as_str()))
-        && result.is_none();
-    ui.add_space(4.0);
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            let (icon, color) = match result {
-                Some(r) if r.is_error => ("✖", ui.visuals().error_fg_color),
-                Some(_) => ("✔", egui::Color32::from_rgb(60, 170, 90)),
-                None => ("🔧", ui.visuals().text_color()),
-            };
-            ui.colored_label(color, icon);
-            ui.strong(McpManager::display_name(&call.name));
-            if running {
-                ui.spinner();
-                ui.weak("running…");
-            }
-        });
-
-        let pretty_args = serde_json::from_str::<serde_json::Value>(&call.arguments)
-            .ok()
-            .and_then(|v| serde_json::to_string_pretty(&v).ok())
-            .unwrap_or_else(|| call.arguments.clone());
-        if pending_approval {
-            // Always show what the user is being asked to approve.
-            code_block(ui, &pretty_args);
-        } else {
-            egui::CollapsingHeader::new("Arguments")
-                .id_salt(("args", &call.id))
-                .show(ui, |ui| code_block(ui, &pretty_args));
-        }
-
-        if let Some(r) = result {
-            let title = if r.is_error {
-                "Result (error)"
-            } else {
-                "Result"
-            };
-            egui::CollapsingHeader::new(title)
-                .id_salt(("result", &call.id))
-                .show(ui, |ui| {
-                    const LIMIT: usize = 20_000;
-                    if r.content.len() > LIMIT {
-                        let mut end = LIMIT;
-                        while !r.content.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        code_block(
-                            ui,
-                            &format!(
-                                "{}\n… ({} more bytes)",
-                                &r.content[..end],
-                                r.content.len() - end
-                            ),
-                        );
-                    } else {
-                        code_block(ui, &r.content);
-                    }
-                });
-            if !r.attachments.is_empty()
-                && let Some((uri, bytes, name)) =
-                    attach_ui::show(ui, images, &format!("tool-{}", call.id), &r.attachments)
-            {
-                actions.push(Action::ViewImage(uri, bytes, name));
-            }
-        } else if pending_approval {
-            ui.horizontal(|ui| {
-                ui.label("Allow this tool call?");
-                if ui.button("✔ Run").clicked() {
-                    actions.push(Action::Approve(conv, call.id.clone(), true));
-                }
-                if ui.button("✖ Deny").clicked() {
-                    actions.push(Action::Approve(conv, call.id.clone(), false));
-                }
-            });
-        } else if run.is_none() {
-            ui.weak("Not run");
-        }
-    });
-}
-
 impl eframe::App for ChatApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_events();
@@ -1409,21 +1413,47 @@ impl eframe::App for ChatApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        egui::Panel::top("top-bar").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.top_bar(ui);
-            ui.add_space(4.0);
-        });
-        egui::Panel::left("sidebar")
-            .resizable(true)
-            .default_size(240.0)
-            .size_range(160.0..=420.0)
-            .show(ui, |ui| self.sidebar(ui));
-        egui::Panel::bottom("input").show(ui, |ui| self.input_area(ui));
-        let actions = egui::CentralPanel::default_margins()
-            .show(ui, |ui| self.chat_view(ui))
-            .inner;
-        self.apply_actions(actions, &ctx);
+        let dark = ui.visuals().dark_mode;
+        egui::Panel::top("top-bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| self.top_bar(ui));
+
+        let settings_open = self.settings_ui.is_some();
+        if self.sidebar_open && !settings_open {
+            egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(250.0)
+                .size_range(180.0..=420.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(if dark {
+                            egui::Color32::from_rgb(18, 19, 23)
+                        } else {
+                            egui::Color32::from_rgb(244, 245, 248)
+                        })
+                        .inner_margin(egui::Margin::symmetric(10, 0)),
+                )
+                .show(ui, |ui| self.sidebar(ui));
+        }
+        if !settings_open {
+            egui::Panel::bottom("composer")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill)
+                        .inner_margin(egui::Margin::symmetric(12, 0)),
+                )
+                .show(ui, |ui| self.composer(ui));
+            let actions = egui::CentralPanel::no_frame()
+                .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+                .show(ui, |ui| self.chat_area(ui))
+                .inner;
+            self.apply_actions(actions, &ctx);
+        }
 
         self.prompt_form_window(&ctx);
         if let Some(image) = &self.viewing
@@ -1451,7 +1481,14 @@ impl eframe::App for ChatApp {
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
             let mut keep = true;
-            for action in sui.show(&ctx, &self.settings, &views) {
+            let mut actions = sui.take_queued();
+            actions.extend(
+                egui::CentralPanel::no_frame()
+                    .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+                    .show(ui, |ui| sui.show(ui, &self.settings, &views))
+                    .inner,
+            );
+            for action in actions {
                 match action {
                     SettingsAction::Apply(s) => {
                         self.apply_settings(s, &ctx);
@@ -1517,6 +1554,15 @@ impl eframe::App for ChatApp {
             if keep {
                 self.settings_ui = Some(sui);
             }
+        }
+
+        let entries = if self.palette.open {
+            self.palette_entries()
+        } else {
+            Vec::new()
+        };
+        if let Some(cmd) = self.palette.show(&ctx, &entries) {
+            self.run_command(cmd, &ctx);
         }
     }
 }

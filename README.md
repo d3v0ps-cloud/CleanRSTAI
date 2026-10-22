@@ -34,6 +34,9 @@ macOS is the primary platform; Linux and Windows are fully supported.
     registration you can enter an OAuth client ID.
 - **Tool calling loop**: the model can call tools across multiple rounds. Each call shows its
   arguments and result, and asks for your approval unless you turn on auto-approve.
+- **Modern interface**: light and dark themes, icon set, a collapsible sidebar with chats
+  grouped by date and pinnable, compact tool-call cards, a full-page searchable settings
+  screen and a ⌘K command palette.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, or stop a generation.
 - **Markdown rendering** with syntax-highlighted code blocks and tables.
@@ -198,7 +201,9 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 | Enter / Shift+Enter | Send / newline (can be swapped in General settings) |
 | ⌘/Ctrl + Enter | Send |
 | ⌘/Ctrl + N | New chat |
-| ⌘/Ctrl + , | Settings |
+| ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
+| ⌘/Ctrl + B | Show or hide the sidebar |
+| ⌘/Ctrl + , | Settings (Esc closes it when there are no unsaved changes) |
 
 ## Development
 
