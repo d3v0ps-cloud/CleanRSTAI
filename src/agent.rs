@@ -293,9 +293,14 @@ mod tests {
         );
     }
 
+    /// Both e2e tests start the same package with `npx -y`; running those installs at the
+    /// same time on a cold npm cache can race, so the tests take turns.
+    static NPX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn e2e_stdio_mcp() {
+        let _guard = NPX_LOCK.lock().await;
         run_agent_against(McpTransportConfig::Stdio {
             command: "npx".into(),
             args: vec![
@@ -311,6 +316,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn e2e_streamable_http_mcp() {
+        let _guard = NPX_LOCK.lock().await;
         // Pick a free port rather than hard-coding one.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -326,7 +332,7 @@ mod tests {
             .env("PORT", port.to_string())
             .kill_on_drop(true)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         // A cold `npx` download can take a while on CI runners.
@@ -339,13 +345,23 @@ mod tests {
                 break;
             }
             if let Some(status) = child.try_wait().unwrap() {
-                panic!("MCP HTTP server exited before listening: {status}");
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr).await;
+                }
+                panic!("MCP HTTP server exited before listening: {status}\nstderr:\n{stderr}");
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "MCP HTTP server did not start listening on port {port} within 180s"
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        // Keep draining stderr so a chatty server can't block on a full pipe.
+        if let Some(mut pipe) = child.stderr.take() {
+            tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
+            });
         }
         run_agent_against(McpTransportConfig::Http {
             url: format!("http://127.0.0.1:{port}/mcp"),
