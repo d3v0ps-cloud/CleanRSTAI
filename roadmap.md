@@ -66,9 +66,10 @@ are still open.
 
 ## 7. Richer chat input and output
 
-- [x] Attach images and files, for vision-capable models
-- [x] Render images returned by MCP tools
+- [x] Attach images and files, for vision-capable models- [x] Render images returned by MCP tools
 - [x] Export a single chat as Markdown
+- [ ] Rich markdown rendering in chat, including code blocks, tables, images and mermaid diagrams
+- [ ] Support for rendering SVGs in chat
 
 ## 8. Broader MCP support
 
