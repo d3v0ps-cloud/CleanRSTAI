@@ -12,8 +12,10 @@ mod mcp;
 mod secrets;
 mod sse;
 mod stats;
+mod subagent;
 #[cfg(test)]
 mod testutil;
+mod tools;
 mod types;
 mod ui;
 mod update;

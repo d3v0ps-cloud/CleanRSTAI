@@ -10,7 +10,9 @@ use super::attachments::{self as attach_ui, ImageCache};
 use super::theme::{self, icon};
 use super::widgets::{code_block, icon_button};
 use crate::app::{Action, Run};
-use crate::mcp::manager::McpManager;
+use crate::config::ReasoningDisplay;
+use crate::subagent::{SubagentReport, SubagentState};
+use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
 
 pub const MAX_CONTENT_WIDTH: f32 = 820.0;
@@ -37,6 +39,7 @@ pub struct View<'a> {
     pub error: Option<&'a String>,
     pub model: &'a str,
     pub show_stats: bool,
+    pub reasoning: ReasoningDisplay,
 }
 
 pub fn show(
@@ -57,10 +60,21 @@ pub fn show(
         .messages
         .iter()
         .rposition(|m| m.role == Role::Assistant);
+    // Only the newest task list is shown in full; earlier updates collapse to a line.
+    let latest_tasks = conv
+        .messages
+        .iter()
+        .flat_map(|m| &m.tool_calls)
+        .rfind(|c| c.name == tools::TASKS)
+        .map(|c| c.id.as_str());
 
     if v.show_stats {
-        let totals =
-            crate::stats::Totals::of(conv.messages.iter().filter_map(|m| m.stats.as_ref()));
+        // Subagents' requests count towards the chat's totals too.
+        let totals = crate::stats::Totals::of(conv.messages.iter().flat_map(|m| {
+            m.stats
+                .iter()
+                .chain(m.subagents.iter().flat_map(|s| s.stats.iter()))
+        }));
         if totals.requests > 0 {
             centered(ui, |ui| super::stats_view::totals_bar(ui, &totals));
         }
@@ -95,9 +109,11 @@ pub fn show(
                                     conv: conv.id,
                                     idx: i,
                                     results: &results,
+                                    latest_tasks,
                                     run: v.run,
                                     streaming,
                                     show_stats: v.show_stats,
+                                    reasoning: v.reasoning,
                                     header: first_of_turn.then_some(v.model),
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                 },
@@ -180,9 +196,11 @@ struct AssistantCtx<'a> {
     conv: Uuid,
     idx: usize,
     results: &'a HashMap<&'a str, &'a ChatMessage>,
+    latest_tasks: Option<&'a str>,
     run: Option<&'a Run>,
     streaming: bool,
     show_stats: bool,
+    reasoning: ReasoningDisplay,
     /// Show the header row with this model name.
     header: Option<&'a str>,
     /// The final reply: show Regenerate.
@@ -213,10 +231,26 @@ fn assistant_message(
     }
     let waiting = cx.streaming && msg.content.is_empty() && msg.tool_calls.is_empty();
     if let Some(r) = msg.reasoning.as_deref().filter(|r| !r.trim().is_empty()) {
-        egui::CollapsingHeader::new(RichText::new(format!("{}  Thinking", icon::BRAIN)).weak())
-            .id_salt(("reasoning", cx.conv, cx.idx))
-            .default_open(cx.streaming && msg.content.is_empty())
-            .show(ui, |ui| {
+        let id = ui.make_persistent_id(("reasoning", cx.conv, cx.idx));
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            reasoning_open(cx.reasoning, cx.streaming, !msg.content.is_empty()),
+        );
+        if cx.reasoning == ReasoningDisplay::WhileStreaming && cx.streaming {
+            // Follow the stream: open while thinking, fold once the answer starts.
+            state.set_open(msg.content.is_empty());
+        }
+        state
+            .show_header(ui, |ui| {
+                let label = if cx.streaming && msg.content.is_empty() {
+                    "Thinking…"
+                } else {
+                    "Thinking"
+                };
+                ui.label(RichText::new(format!("{}  {label}", icon::BRAIN)).weak());
+            })
+            .body(|ui| {
                 ui.add(
                     egui::Label::new(RichText::new(r).weak().italics())
                         .selectable(true)
@@ -233,15 +267,14 @@ fn assistant_message(
         CommonMarkViewer::new().show(ui, md_cache, &msg.content);
     }
     for call in &msg.tool_calls {
-        tool_card(
-            ui,
-            images,
-            cx.conv,
-            call,
-            cx.results.get(call.id.as_str()).copied(),
-            cx.run,
-            actions,
-        );
+        let result = cx.results.get(call.id.as_str()).copied();
+        if call.name == tools::TASKS
+            && let Ok(list) = tools::parse_tasks(&call.arguments)
+        {
+            task_list(ui, call, &list, cx.latest_tasks == Some(call.id.as_str()));
+            continue;
+        }
+        tool_card(ui, images, cx.conv, call, result, cx.run, actions);
     }
     if !cx.streaming && (!msg.content.is_empty() || msg.stats.is_some()) {
         ui.horizontal(|ui| {
@@ -258,6 +291,28 @@ fn assistant_message(
                 super::stats_view::request_line(ui, s);
             }
         });
+    }
+}
+
+/// Whether a reasoning section starts open, per the user's setting.
+fn reasoning_open(mode: ReasoningDisplay, streaming: bool, has_answer: bool) -> bool {
+    match mode {
+        ReasoningDisplay::Collapsed => false,
+        ReasoningDisplay::Expanded => true,
+        ReasoningDisplay::WhileStreaming => streaming && !has_answer,
+    }
+}
+
+/// "3 tasks" for a `delegate` call.
+fn delegate_preview(arguments: &str) -> String {
+    let n = serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|v| v["tasks"].as_array().map(Vec::len))
+        .unwrap_or(0);
+    match n {
+        0 => String::new(),
+        1 => "1 task".into(),
+        n => format!("{n} tasks"),
     }
 }
 
@@ -335,8 +390,12 @@ fn tool_card(
                         ui.label(RichText::new(glyph).color(color).size(15.0))
                             .on_hover_text(label);
                     }
-                    ui.label(RichText::new(McpManager::display_name(&call.name)).strong());
-                    let preview = args_preview(&call.arguments);
+                    ui.label(RichText::new(tools::display_name(&call.name)).strong());
+                    let preview = if call.name == tools::DELEGATE {
+                        delegate_preview(&call.arguments)
+                    } else {
+                        args_preview(&call.arguments)
+                    };
                     if !preview.is_empty() {
                         ui.add(egui::Label::new(RichText::new(preview).small().weak()).truncate());
                     }
@@ -381,6 +440,16 @@ fn tool_card(
             {
                 actions.push(Action::ViewImage(uri, bytes, name));
             }
+            if call.name == tools::DELEGATE {
+                let live = run.and_then(|r| r.subagents.get(&call.id));
+                let reports = match result {
+                    Some(r) if !r.subagents.is_empty() => Some(&r.subagents),
+                    _ => live,
+                };
+                if let Some(reports) = reports {
+                    subagent_list(ui, &call.id, reports);
+                }
+            }
             if pending_approval {
                 if !state_is_open(ui, id) {
                     code_block(ui, &pretty_args);
@@ -399,6 +468,148 @@ fn tool_card(
                 });
             }
         });
+}
+
+/// A task list from the built-in task tool, as a checklist. Superseded lists show as one line.
+fn task_list(ui: &mut egui::Ui, call: &ToolCall, list: &[Task], latest: bool) {
+    let dark = ui.visuals().dark_mode;
+    let done = list.iter().filter(|t| t.status == TaskStatus::Done).count();
+    ui.add_space(2.0);
+    egui::Frame::new()
+        .fill(theme::card(dark))
+        .stroke(egui::Stroke::new(1.0, theme::border(dark)))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // Keyed on `latest` so a list folds once a newer one replaces it.
+            let id = ui.make_persistent_id(("tasks", &call.id, latest));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, latest)
+                .show_header(ui, |ui| {
+                    ui.label(
+                        RichText::new(icon::LIST_CHECKS)
+                            .color(theme::accent(dark))
+                            .size(15.0),
+                    );
+                    ui.label(RichText::new("Tasks").strong());
+                    ui.label(
+                        RichText::new(format!("{done} of {} done", list.len()))
+                            .small()
+                            .weak(),
+                    );
+                })
+                .body(|ui| {
+                    for task in list {
+                        ui.horizontal(|ui| {
+                            let (glyph, color) = match task.status {
+                                TaskStatus::Done => (icon::CHECK_SQUARE, theme::success(dark)),
+                                TaskStatus::InProgress => (icon::ARROW_RIGHT, theme::accent(dark)),
+                                TaskStatus::Pending => {
+                                    (icon::SQUARE, ui.visuals().weak_text_color())
+                                }
+                            };
+                            ui.label(RichText::new(glyph).color(color).size(15.0));
+                            let text = RichText::new(task.title.trim());
+                            let text = match task.status {
+                                TaskStatus::Done => text.weak().strikethrough(),
+                                TaskStatus::InProgress => text.strong(),
+                                TaskStatus::Pending => text,
+                            };
+                            ui.add(egui::Label::new(text).wrap());
+                        });
+                    }
+                });
+        });
+}
+
+/// Progress and results of the subagents a `delegate` call started.
+fn subagent_list(ui: &mut egui::Ui, call_id: &str, reports: &[SubagentReport]) {
+    let dark = ui.visuals().dark_mode;
+    ui.add_space(4.0);
+    for (i, r) in reports.iter().enumerate() {
+        let id = ui.make_persistent_id(("subagent", call_id, i));
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| {
+                match r.state {
+                    SubagentState::Running => {
+                        ui.spinner();
+                    }
+                    SubagentState::Queued => {
+                        ui.label(
+                            RichText::new(icon::HOURGLASS).color(ui.visuals().weak_text_color()),
+                        )
+                        .on_hover_text("Waiting for a free slot");
+                    }
+                    SubagentState::Done => {
+                        ui.label(RichText::new(icon::OK).color(theme::success(dark)))
+                            .on_hover_text("Done");
+                    }
+                    SubagentState::Failed => {
+                        ui.label(RichText::new(icon::FAILED).color(ui.visuals().error_fg_color))
+                            .on_hover_text("Failed");
+                    }
+                }
+                ui.label(RichText::new(format!("Subagent {}", i + 1)).strong());
+                let detail = if r.state == SubagentState::Running && !r.activity.is_empty() {
+                    r.activity.clone()
+                } else {
+                    r.task.replace('\n', " ")
+                };
+                ui.add(egui::Label::new(RichText::new(detail).small().weak()).truncate());
+            })
+            .body(|ui| {
+                ui.label(RichText::new("Task").small().weak());
+                ui.add(egui::Label::new(&r.task).selectable(true).wrap());
+                if !r.provider.is_empty() {
+                    ui.label(
+                        RichText::new(format!("{}  {} · {}", icon::SERVER, r.provider, r.model))
+                            .small()
+                            .weak(),
+                    );
+                }
+                if !r.tools_used.is_empty() {
+                    ui.label(
+                        RichText::new(format!("{}  {}", icon::TOOL, r.tools_used.join(", ")))
+                            .small()
+                            .weak(),
+                    );
+                }
+                if !r.result.is_empty() {
+                    ui.label(
+                        RichText::new(if r.state == SubagentState::Failed {
+                            "Error"
+                        } else {
+                            "Result"
+                        })
+                        .small()
+                        .weak(),
+                    );
+                    egui::Frame::new()
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(6)
+                        .inner_margin(8)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(egui::Label::new(r.result.trim()).selectable(true).wrap());
+                        });
+                }
+                if !r.stats.is_empty() {
+                    let t = crate::stats::Totals::of(&r.stats);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} request{} · {} in · {} out · {}",
+                            t.requests,
+                            if t.requests == 1 { "" } else { "s" },
+                            crate::stats::fmt_tokens(t.prompt_tokens),
+                            crate::stats::fmt_tokens(t.completion_tokens),
+                            crate::stats::fmt_ms(t.total_ms),
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                }
+            });
+    }
 }
 
 fn state_is_open(ui: &egui::Ui, id: egui::Id) -> bool {
@@ -519,6 +730,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reasoning_default_state() {
+        use ReasoningDisplay::*;
+        assert!(!reasoning_open(Collapsed, true, false));
+        assert!(reasoning_open(Expanded, false, true));
+        assert!(reasoning_open(WhileStreaming, true, false));
+        assert!(!reasoning_open(WhileStreaming, true, true));
+        assert!(!reasoning_open(WhileStreaming, false, false));
+    }
+
+    #[test]
     fn previews_tool_arguments() {
         assert_eq!(
             args_preview(r#"{"path": "/tmp/a", "n": 3}"#),
@@ -527,5 +748,10 @@ mod tests {
         assert_eq!(args_preview("{}"), "");
         assert!(args_preview(&format!(r#"{{"q": "{}"}}"#, "x".repeat(200))).ends_with('…'));
         assert_eq!(args_preview("not json"), "not json");
+        assert_eq!(
+            delegate_preview(r#"{"tasks": [{"task": "a"}, {"task": "b"}]}"#),
+            "2 tasks"
+        );
+        assert_eq!(delegate_preview("{}"), "");
     }
 }

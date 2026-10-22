@@ -41,6 +41,15 @@ pub mod icon {
     pub const WARNING: &str = "\u{E4E0}";
     pub const SERVER: &str = "\u{E47E}";
     pub const SPARKLE: &str = "\u{E6A2}";
+    pub const LIST_CHECKS: &str = "\u{EADC}";
+    pub const CHECK_SQUARE: &str = "\u{E186}";
+    pub const SQUARE: &str = "\u{E45E}";
+    pub const ARROW_RIGHT: &str = "\u{E06C}";
+    pub const ROBOT: &str = "\u{E762}";
+    pub const TOOLBOX: &str = "\u{ECA0}";
+    pub const SLIDERS: &str = "\u{E434}";
+    pub const CLOCK: &str = "\u{E19A}";
+    pub const CALCULATOR: &str = "\u{E538}";
 }
 
 /// Accent colours: indigo, tuned for contrast in each mode.

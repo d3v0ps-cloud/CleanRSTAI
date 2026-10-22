@@ -46,6 +46,9 @@ pub struct ChatMessage {
     /// Images and text files attached by the user, or images returned by a tool.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::attach::Attachment>,
+    /// For a `delegate` tool result: what each subagent did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<crate::subagent::SubagentReport>,
 }
 
 impl ChatMessage {
@@ -60,6 +63,7 @@ impl ChatMessage {
             is_error: false,
             stats: None,
             attachments: Vec::new(),
+            subagents: Vec::new(),
         }
     }
 
@@ -83,6 +87,9 @@ pub struct Conversation {
     /// Pinned chats stay at the top of the sidebar.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Tools and MCP servers switched on or off for this chat only.
+    #[serde(default, skip_serializing_if = "crate::tools::ToolOverrides::is_empty")]
+    pub tool_overrides: crate::tools::ToolOverrides,
 }
 
 impl Conversation {
@@ -95,6 +102,7 @@ impl Conversation {
             updated_at: now,
             messages: Vec::new(),
             pinned: false,
+            tool_overrides: Default::default(),
         }
     }
 
