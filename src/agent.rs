@@ -312,7 +312,7 @@ mod tests {
     #[ignore]
     async fn e2e_streamable_http_mcp() {
         let port = 3917;
-        let mut child = tokio::process::Command::new("npx")
+        let mut child = tokio::process::Command::new(which::which("npx").expect("npx not found"))
             .args([
                 "-y",
                 "@modelcontextprotocol/server-everything",
