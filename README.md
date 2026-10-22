@@ -27,6 +27,11 @@ macOS is the primary platform; Linux and Windows are fully supported.
     to your message, or inserts one of its prompts, with a form for any arguments.
   - Tool, resource and prompt lists refresh automatically when a server reports a change,
     including through the Streamable HTTP server-push stream.
+  - **OAuth sign-in** for remote servers that require it. When a server asks for sign-in,
+    **Sign in…** opens your browser and CleanRSTAI completes the standard MCP authorization
+    flow: discovery, automatic client registration, PKCE and a loopback redirect. Tokens are
+    kept in the keychain and refreshed automatically. For servers without automatic
+    registration you can enter an OAuth client ID.
 - **Tool calling loop**: the model can call tools across multiple rounds. Each call shows its
   arguments and result, and asks for your approval unless you turn on auto-approve.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can

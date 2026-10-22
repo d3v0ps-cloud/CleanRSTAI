@@ -401,6 +401,7 @@ mod tests {
                             key: "Authorization".into(),
                             value: "Bearer y".into(),
                         }],
+                        oauth_client_id: String::new(),
                     },
                     ..Default::default()
                 },

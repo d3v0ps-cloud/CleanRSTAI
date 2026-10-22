@@ -1495,6 +1495,8 @@ impl eframe::App for ChatApp {
                     }
                     SettingsAction::Reconnect(id) => self.mcp.connect(&id),
                     SettingsAction::RefreshTools(id) => self.mcp.refresh_tools(&id),
+                    SettingsAction::SignIn(id) => self.mcp.sign_in(&id),
+                    SettingsAction::SignOut(id) => self.mcp.sign_out(&id),
                     SettingsAction::DetectKind(p) => self.spawn_detect(p, true, &ctx),
                     SettingsAction::FetchModels(p) => {
                         self.spawn_detect(p.clone(), false, &ctx);

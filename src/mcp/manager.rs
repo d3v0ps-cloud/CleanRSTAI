@@ -18,6 +18,10 @@ pub enum ServerStatus {
     Disabled,
     Connecting,
     Connected,
+    /// The server needs an OAuth sign-in before it can be used.
+    NeedsSignIn,
+    /// Waiting for the user to finish signing in in their browser.
+    SigningIn,
     Error(String),
 }
 
@@ -28,6 +32,8 @@ pub struct ServerView {
     pub tools: Vec<McpTool>,
     pub resources: Vec<McpResource>,
     pub prompts: Vec<McpPrompt>,
+    /// Holds OAuth tokens for this (HTTP) server.
+    pub signed_in: bool,
     pub server_info: String,
     pub stderr: Vec<String>,
 }
@@ -39,6 +45,9 @@ struct Entry {
     resources: Vec<McpResource>,
     prompts: Vec<McpPrompt>,
     client: Option<Arc<McpClient>>,
+    /// `WWW-Authenticate` from the server's last 401, used to start sign-in.
+    auth_hint: Option<String>,
+    signed_in: bool,
     generation: u64,
     task: Option<JoinHandle<()>>,
 }
@@ -58,11 +67,16 @@ impl Entry {
     }
 }
 
+pub type UrlOpener = Arc<dyn Fn(&str) + Send + Sync>;
+
 pub struct McpManager {
     entries: Mutex<Vec<Entry>>,
     rt: Handle,
     http: reqwest::Client,
     on_change: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Where OAuth tokens are kept (keychain, or a private file without one).
+    tokens: super::oauth::Store,
+    open_url: Mutex<UrlOpener>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,12 +145,100 @@ fn normalize_schema(schema: &Value) -> Value {
 
 impl McpManager {
     pub fn new(rt: Handle, http: reqwest::Client) -> Arc<Self> {
+        Self::with_token_store(rt, http, crate::secrets::durable_store())
+    }
+
+    pub fn with_token_store(
+        rt: Handle,
+        http: reqwest::Client,
+        tokens: super::oauth::Store,
+    ) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(Vec::new()),
             rt,
             http,
             on_change: Mutex::new(None),
+            tokens,
+            open_url: Mutex::new(Arc::new(|url: &str| {
+                if let Err(e) = open::that_detached(url) {
+                    log::error!("couldn't open the browser: {e}");
+                }
+            })),
         })
+    }
+
+    /// Replace how sign-in URLs are opened (tests drive the flow without a browser).
+    #[cfg(test)]
+    pub fn set_url_opener(&self, f: UrlOpener) {
+        *self.open_url.lock().unwrap() = f;
+    }
+
+    /// Run the browser sign-in for a Streamable HTTP server, then reconnect.
+    pub fn sign_in(self: &Arc<Self>, id: &str) {
+        let (url, client_id, hint, generation) = {
+            let mut entries = self.entries.lock().unwrap();
+            let Some(e) = entries.iter_mut().find(|e| e.config.id == id) else {
+                return;
+            };
+            let crate::config::McpTransportConfig::Http {
+                url,
+                oauth_client_id,
+                ..
+            } = &e.config.transport
+            else {
+                return;
+            };
+            let (url, client_id) = (url.clone(), oauth_client_id.clone());
+            e.stop(&self.rt);
+            e.status = ServerStatus::SigningIn;
+            (url, client_id, e.auth_hint.clone(), e.generation)
+        };
+        self.changed();
+        let (this, task_id) = (self.clone(), id.to_owned());
+        let opener = self.open_url.lock().unwrap().clone();
+        let task = self.rt.spawn(async move {
+            let result = super::oauth::sign_in(
+                &this.http,
+                &url,
+                hint.as_deref(),
+                Some(client_id.as_str()),
+                |u| opener(u),
+            )
+            .await
+            .and_then(|t| super::oauth::save_tokens(this.tokens.as_ref(), &task_id, &t));
+            let id = task_id;
+            match result {
+                Ok(()) => this.connect(&id),
+                Err(err) => {
+                    if let Some(e) = this
+                        .entries
+                        .lock()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|e| e.config.id == id && e.generation == generation)
+                    {
+                        e.status = ServerStatus::Error(format!("Sign-in failed: {err:#}"));
+                        e.task = None;
+                    }
+                    this.changed();
+                }
+            }
+        });
+        if let Some(e) = self
+            .entries
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e.config.id == id)
+        {
+            e.task = Some(task);
+        }
+    }
+
+    /// Forget the sign-in tokens for a server and reconnect (which will ask to sign in).
+    pub fn sign_out(self: &Arc<Self>, id: &str) {
+        super::oauth::delete_tokens(self.tokens.as_ref(), id);
+        self.connect(id);
     }
 
     pub fn set_on_change(&self, f: impl Fn() + Send + Sync + 'static) {
@@ -182,6 +284,8 @@ impl McpManager {
                             resources: Vec::new(),
                             prompts: Vec::new(),
                             client: None,
+                            auth_hint: None,
+                            signed_in: false,
                             generation: 0,
                             task: None,
                         }
@@ -214,9 +318,17 @@ impl McpManager {
         let transport = e.config.transport.clone();
         let (this, id, http) = (self.clone(), id.to_owned(), self.http.clone());
         let on_notify = self.notify_handler(&id, generation);
+        let auth = matches!(transport, crate::config::McpTransportConfig::Http { .. }).then(|| {
+            Arc::new(super::oauth::Auth::new(
+                &id,
+                self.tokens.clone(),
+                self.http.clone(),
+            ))
+        });
+        e.signed_in = auth.as_ref().is_some_and(|a| a.signed_in);
         e.task = Some(self.rt.spawn(async move {
             let result = async {
-                let client = McpClient::connect(&transport, http, on_notify).await?;
+                let client = McpClient::connect(&transport, http, on_notify, auth).await?;
                 let tools = client.list_tools().await.context("listing tools")?;
                 // Resources and prompts are optional extras; don't fail the connection on them.
                 let resources = client.list_resources().await.unwrap_or_else(|e| {
@@ -244,6 +356,13 @@ impl McpManager {
                             e.resources = resources;
                             e.prompts = prompts;
                             e.client = Some(client);
+                        }
+                        Err(err) if super::oauth::is_auth_required(&err) => {
+                            e.auth_hint = err
+                                .chain()
+                                .find_map(|c| c.downcast_ref::<super::oauth::AuthRequired>())
+                                .and_then(|a| a.www_authenticate.clone());
+                            e.status = ServerStatus::NeedsSignIn;
                         }
                         Err(err) => {
                             log::warn!("MCP server '{}' failed: {err:#}", e.config.name);
@@ -359,6 +478,7 @@ impl McpManager {
                 tools: e.tools.clone(),
                 resources: e.resources.clone(),
                 prompts: e.prompts.clone(),
+                signed_in: e.signed_in,
                 server_info: e
                     .client
                     .as_ref()
@@ -492,6 +612,7 @@ mod tests {
             transport: crate::config::McpTransportConfig::Http {
                 url: format!("{base}/mcp"),
                 headers: vec![],
+                oauth_client_id: String::new(),
             },
             ..Default::default()
         }]);
@@ -507,5 +628,206 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("tool list was not refreshed: {:?}", mcp.snapshot()[0].tools);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oauth_sign_in_refresh_and_sign_out() {
+        use crate::secrets::tests::MemoryStore;
+        use crate::testutil::{Response, serve};
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        use std::collections::HashSet;
+
+        #[derive(Default)]
+        struct State {
+            base: String,
+            challenge: String,
+            valid: HashSet<String>,
+            refresh_ok: bool,
+            registered: usize,
+            resource: String,
+        }
+        let state: Arc<Mutex<State>> = Arc::default();
+        state.lock().unwrap().refresh_ok = true;
+        let st = state.clone();
+        let form = |body: &[u8]| -> HashMap<String, String> {
+            reqwest::Url::parse(&format!("http://x/?{}", String::from_utf8_lossy(body)))
+                .unwrap()
+                .query_pairs()
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect()
+        };
+        let (base, _) = serve(move |r| {
+            let mut s = st.lock().unwrap();
+            let base = s.base.clone();
+            let path = r.path.split('?').next().unwrap_or("");
+            match (r.method.as_str(), path) {
+                ("GET", "/.well-known/oauth-protected-resource" | "/.well-known/oauth-protected-resource/mcp") => {
+                    Response::json(json!({"resource": format!("{base}/mcp"), "authorization_servers": [base]}))
+                }
+                ("GET", "/.well-known/oauth-authorization-server") => Response::json(json!({
+                    "issuer": base,
+                    "authorization_endpoint": format!("{base}/authorize"),
+                    "token_endpoint": format!("{base}/token"),
+                    "registration_endpoint": format!("{base}/register"),
+                    "code_challenge_methods_supported": ["S256"],
+                })),
+                ("POST", "/register") => {
+                    s.registered += 1;
+                    let uris = r.json()["redirect_uris"].clone();
+                    assert!(uris[0].as_str().unwrap().starts_with("http://127.0.0.1:"));
+                    Response::json(json!({"client_id": "cid"}))
+                }
+                ("GET", "/authorize") => {
+                    let q: HashMap<String, String> = reqwest::Url::parse(&format!("http://x{}", r.path))
+                        .unwrap()
+                        .query_pairs()
+                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                        .collect();
+                    assert_eq!(q["client_id"], "cid");
+                    assert_eq!(q["code_challenge_method"], "S256");
+                    s.challenge = q["code_challenge"].clone();
+                    s.resource = q["resource"].clone();
+                    let loc = format!("{}?code=code-1&state={}", q["redirect_uri"], q["state"]);
+                    Response::status(302).header("location", &loc)
+                }
+                ("POST", "/token") => {
+                    let f = form(&r.body);
+                    match f["grant_type"].as_str() {
+                        "authorization_code" => {
+                            let expect = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                .encode(sha2::Sha256::digest(f["code_verifier"].as_bytes()));
+                            assert_eq!(expect, s.challenge, "PKCE verifier matches challenge");
+                            assert_eq!(f["code"], "code-1");
+                            assert_eq!(f["resource"], s.resource);
+                            s.valid.insert("at-1".into());
+                            Response::json(json!({"access_token": "at-1", "refresh_token": "rt-1",
+                                "expires_in": 3600, "token_type": "Bearer"}))
+                        }
+                        "refresh_token" if s.refresh_ok && f["refresh_token"] == "rt-1" => {
+                            s.valid.insert("at-2".into());
+                            Response::json(json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}))
+                        }
+                        _ => Response::with_type(400, "application/json", json!({"error": "invalid_grant"}).to_string()),
+                    }
+                }
+                ("POST", "/mcp") => {
+                    let ok = r
+                        .header("authorization")
+                        .and_then(|h| h.strip_prefix("Bearer "))
+                        .is_some_and(|t| s.valid.contains(t));
+                    if !ok {
+                        return Response::status(401).header(
+                            "www-authenticate",
+                            &format!(r#"Bearer resource_metadata="{base}/.well-known/oauth-protected-resource""#),
+                        );
+                    }
+                    let req = r.json();
+                    let id = req["id"].clone();
+                    match req["method"].as_str().unwrap_or("") {
+                        "initialize" => Response::json(json!({"jsonrpc": "2.0", "id": id, "result": {
+                            "protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "secure", "version": "1"}}})),
+                        "tools/list" => Response::json(json!({"jsonrpc": "2.0", "id": id,
+                            "result": {"tools": [{"name": "secret_tool", "inputSchema": {"type": "object"}}]}})),
+                        _ => Response::status(202),
+                    }
+                }
+                _ => Response::status(405),
+            }
+        })
+        .await;
+        state.lock().unwrap().base = base.clone();
+
+        let store: Arc<MemoryStore> = Arc::default();
+        let mcp = McpManager::with_token_store(
+            Handle::current(),
+            crate::llm::build_http_client(),
+            store.clone(),
+        );
+        // Stand-in for the browser: follow the authorization redirect to our loopback listener.
+        mcp.set_url_opener(Arc::new(|url: &str| {
+            let url = url.to_owned();
+            tokio::spawn(async move {
+                let http = reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap();
+                let resp = http.get(&url).send().await.unwrap();
+                let loc = resp.headers()["location"].to_str().unwrap().to_owned();
+                http.get(&loc).send().await.unwrap();
+            });
+        }));
+        let cfg = McpServerConfig {
+            id: "sec".into(),
+            name: "secure".into(),
+            transport: crate::config::McpTransportConfig::Http {
+                url: format!("{base}/mcp"),
+                headers: vec![],
+                oauth_client_id: String::new(),
+            },
+            ..Default::default()
+        };
+        let wait_for = |want: ServerStatus| {
+            let mcp = mcp.clone();
+            async move {
+                for _ in 0..200 {
+                    let v = mcp.snapshot().remove(0);
+                    if v.status == want {
+                        return v;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                panic!("expected {want:?}, got {:?}", mcp.snapshot()[0].status);
+            }
+        };
+        let stored = |s: &MemoryStore| -> Option<super::super::oauth::Tokens> {
+            s.items
+                .lock()
+                .unwrap()
+                .get("mcp:sec:oauth")
+                .map(|j| serde_json::from_str(j).unwrap())
+        };
+
+        // 1. No token: the server asks for sign-in.
+        mcp.sync(std::slice::from_ref(&cfg));
+        wait_for(ServerStatus::NeedsSignIn).await;
+
+        // 2. Sign in → discovery, registration, PKCE, code exchange → connected.
+        mcp.sign_in("sec");
+        let v = wait_for(ServerStatus::Connected).await;
+        assert_eq!(v.tools[0].name, "secret_tool");
+        assert!(v.signed_in);
+        let t = stored(&store).expect("tokens saved");
+        assert_eq!(t.access_token, "at-1");
+        assert_eq!(t.resource, format!("{base}/mcp"));
+        assert_eq!(state.lock().unwrap().registered, 1);
+
+        // 3. An expired token is refreshed before use.
+        let mut expired = t.clone();
+        expired.expires_at = Some(0);
+        super::super::oauth::save_tokens(store.as_ref(), "sec", &expired).unwrap();
+        mcp.connect("sec");
+        wait_for(ServerStatus::Connected).await;
+        assert_eq!(stored(&store).unwrap().access_token, "at-2");
+        assert_eq!(
+            stored(&store).unwrap().refresh_token.as_deref(),
+            Some("rt-1"),
+            "refresh token kept"
+        );
+
+        // 4. Revoked tokens and a failing refresh → back to sign-in required.
+        {
+            let mut s = state.lock().unwrap();
+            s.valid.clear();
+            s.refresh_ok = false;
+        }
+        mcp.connect("sec");
+        wait_for(ServerStatus::NeedsSignIn).await;
+
+        // 5. Sign out forgets the tokens.
+        mcp.sign_out("sec");
+        wait_for(ServerStatus::NeedsSignIn).await;
+        assert!(stored(&store).is_none());
     }
 }

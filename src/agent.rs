@@ -388,6 +388,7 @@ mod tests {
         run_agent_against(McpTransportConfig::Http {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: vec![],
+            oauth_client_id: String::new(),
         })
         .await;
         if let Some(pid) = child.id() {

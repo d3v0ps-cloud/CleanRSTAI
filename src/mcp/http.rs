@@ -25,6 +25,7 @@ struct Inner {
     session_id: Mutex<Option<String>>,
     protocol_version: Mutex<Option<String>>,
     on_notify: NotifyFn,
+    auth: Option<Arc<super::oauth::Auth>>,
 }
 
 pub struct HttpTransport {
@@ -46,6 +47,7 @@ impl HttpTransport {
         url: &str,
         headers: &[KeyValue],
         on_notify: NotifyFn,
+        auth: Option<Arc<super::oauth::Auth>>,
     ) -> Result<Self> {
         let url = url.trim();
         if url.is_empty() {
@@ -68,6 +70,7 @@ impl HttpTransport {
                 session_id: Mutex::new(None),
                 protocol_version: Mutex::new(None),
                 on_notify,
+                auth,
             }),
             listener: Mutex::new(None),
         })
@@ -131,18 +134,56 @@ impl Inner {
         req
     }
 
+    async fn bearer(&self) -> Option<String> {
+        match &self.auth {
+            Some(a) => a.bearer().await,
+            None => None,
+        }
+    }
+
     async fn post(&self, msg: &Value) -> Result<reqwest::Response> {
-        let req = self
+        let mut retried = false;
+        loop {
+            let token = self.bearer().await;
+            let resp = self.post_once(msg, token.as_deref()).await?;
+            if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+                return self.check(resp).await;
+            }
+            let www_authenticate = resp
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            // One retry after refreshing an access token the server rejected.
+            if !retried
+                && let Some(auth) = &self.auth
+                && token.is_some()
+                && auth.refresh_after_rejection(token.as_deref()).await
+            {
+                retried = true;
+                continue;
+            }
+            return Err(super::oauth::AuthRequired { www_authenticate }.into());
+        }
+    }
+
+    async fn post_once(&self, msg: &Value, token: Option<&str>) -> Result<reqwest::Response> {
+        let mut req = self
             .http
             .post(&self.url)
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json, text/event-stream")
             .json(msg);
-        let resp = self
-            .with_session(req)
-            .send()
+        req = self.with_session(req);
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
+        }
+        req.send()
             .await
-            .with_context(|| format!("POST {}", self.url))?;
+            .with_context(|| format!("POST {}", self.url))
+    }
+
+    async fn check(&self, resp: reqwest::Response) -> Result<reqwest::Response> {
         if let Some(sid) = resp
             .headers()
             .get(SESSION_HEADER)
@@ -224,11 +265,17 @@ impl Inner {
     }
 
     async fn listen_once(&self) -> Result<Listen> {
-        let req = self.http.get(&self.url).header(ACCEPT, "text/event-stream");
-        let resp = self.with_session(req).send().await?;
+        let mut req = self
+            .with_session(self.http.get(&self.url))
+            .header(ACCEPT, "text/event-stream");
+        if let Some(t) = self.bearer().await {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         if status == reqwest::StatusCode::METHOD_NOT_ALLOWED
             || status == reqwest::StatusCode::NOT_FOUND
+            || status == reqwest::StatusCode::UNAUTHORIZED
         {
             return Ok(Listen::NotSupported);
         }
@@ -256,7 +303,10 @@ impl Inner {
     async fn close(&self) {
         let has_session = self.session_id.lock().unwrap().is_some();
         if has_session {
-            let req = self.with_session(self.http.delete(&self.url));
+            let mut req = self.with_session(self.http.delete(&self.url));
+            if let Some(t) = self.bearer().await {
+                req = req.bearer_auth(t);
+            }
             let _ = req.send().await;
         }
     }

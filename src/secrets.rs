@@ -11,7 +11,7 @@ use crate::config::{KeyValue, McpTransportConfig, Settings};
 
 const SERVICE: &str = "CleanRSTAI";
 
-pub trait SecretStore {
+pub trait SecretStore: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, String>;
     fn set(&self, account: &str, secret: &str) -> Result<(), String>;
     fn delete(&self, account: &str) -> Result<(), String>;
@@ -54,6 +54,66 @@ impl SecretStore for OsKeychain {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+/// Fallback when no OS keychain is available: a JSON file readable only by the user.
+pub struct FileStore {
+    path: std::path::PathBuf,
+    lock: std::sync::Mutex<()>,
+}
+
+impl FileStore {
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn read(&self) -> std::collections::BTreeMap<String, String> {
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn write(&self, map: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(map).map_err(|e| e.to_string())?;
+        crate::config::write_private(&self.path, &bytes).map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl SecretStore for FileStore {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        let _g = self.lock.lock().unwrap();
+        Ok(self.read().get(account).cloned())
+    }
+    fn set(&self, account: &str, secret: &str) -> Result<(), String> {
+        let _g = self.lock.lock().unwrap();
+        let mut map = self.read();
+        map.insert(account.into(), secret.into());
+        self.write(&map)
+    }
+    fn delete(&self, account: &str) -> Result<(), String> {
+        let _g = self.lock.lock().unwrap();
+        let mut map = self.read();
+        if map.remove(account).is_some() {
+            self.write(&map)?;
+        }
+        Ok(())
+    }
+}
+
+/// The keychain when available, otherwise a private file in the config directory.
+/// Used for data that must persist even without a keychain (MCP sign-in tokens).
+pub fn durable_store() -> std::sync::Arc<dyn SecretStore + Send + Sync> {
+    if OsKeychain::status().is_ok() {
+        std::sync::Arc::new(OsKeychain)
+    } else {
+        std::sync::Arc::new(FileStore::new(
+            crate::config::config_dir().join("tokens.json"),
+        ))
     }
 }
 
