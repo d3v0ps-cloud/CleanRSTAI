@@ -27,7 +27,7 @@ impl Request {
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
-    pub body: String,
+    pub body: Vec<u8>,
 }
 
 impl Response {
@@ -41,16 +41,16 @@ impl Response {
         Self::with_type(200, "text/event-stream", body)
     }
 
-    pub fn with_type(status: u16, content_type: &str, body: String) -> Self {
+    pub fn with_type(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> Self {
         Self {
             status,
             headers: vec![("content-type".into(), content_type.into())],
-            body,
+            body: body.into(),
         }
     }
 
     pub fn status(status: u16) -> Self {
-        Self::with_type(status, "text/plain", String::new())
+        Self::with_type(status, "text/plain", Vec::new())
     }
 
     pub fn header(mut self, k: &str, v: &str) -> Self {
@@ -123,8 +123,9 @@ pub async fn serve(
                     out.push_str(&format!("{k}: {v}\r\n"));
                 }
                 out.push_str("\r\n");
-                out.push_str(&resp.body);
-                let _ = sock.write_all(out.as_bytes()).await;
+                let mut out = out.into_bytes();
+                out.extend_from_slice(&resp.body);
+                let _ = sock.write_all(&out).await;
             });
         }
     });
