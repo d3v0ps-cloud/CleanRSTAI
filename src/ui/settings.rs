@@ -20,6 +20,7 @@ pub enum SettingsAction {
     Apply(Settings),
     Close,
     FetchModels(ProviderConfig),
+    DetectKind(ProviderConfig),
     Reconnect(String),
     RefreshTools(String),
     ExportSettings { include_secrets: bool },
@@ -37,6 +38,8 @@ pub struct SettingsUi {
     import_error: Option<String>,
     pub fetching_models: bool,
     pub models_error: Option<String>,
+    pub detecting_kind: bool,
+    pub detect_result: Option<String>,
     export_include_secrets: bool,
     /// Outcome of the last export: Ok(message) or Err(error).
     pub export_status: Option<Result<String, String>>,
@@ -82,6 +85,8 @@ impl SettingsUi {
             import_error: None,
             fetching_models: false,
             models_error: None,
+            detecting_kind: false,
+            detect_result: None,
             export_include_secrets: false,
             export_status: None,
         }
@@ -292,6 +297,46 @@ impl SettingsUi {
 
                         ui.label("Max tokens");
                         optional_value(ui, &mut p.max_tokens, 4096, 1..=1_000_000, 16.0);
+                        ui.end_row();
+
+                        ui.label("Server type");
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                egui::ComboBox::from_id_salt("provider-kind")
+                                    .selected_text(p.kind.label())
+                                    .width(220.0)
+                                    .show_ui(ui, |ui| {
+                                        for kind in crate::config::ProviderKind::ALL {
+                                            ui.selectable_value(&mut p.kind, kind, kind.label())
+                                                .on_hover_text(kind.description());
+                                        }
+                                    });
+                                let label = if self.detecting_kind { "Detecting…" } else { "Detect" };
+                                if ui
+                                    .add_enabled(!self.detecting_kind, egui::Button::new(label))
+                                    .on_hover_text("Probe the server to find out what it is")
+                                    .clicked()
+                                {
+                                    self.detecting_kind = true;
+                                    self.detect_result = None;
+                                    actions.push(SettingsAction::DetectKind(p.clone()));
+                                }
+                            });
+                            ui.weak(p.kind.description());
+                            if let Some(r) = &self.detect_result {
+                                ui.weak(r);
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Token usage");
+                        ui.checkbox(
+                            &mut p.request_usage,
+                            "Request usage in streamed responses (stream_options)",
+                        )
+                        .on_hover_text(
+                            "Needed for exact token counts and speeds. Turn off if the server rejects the request.",
+                        );
                         ui.end_row();
 
                         ui.label("Streaming");
@@ -661,6 +706,13 @@ impl SettingsUi {
                                 "Ctrl/⌘+Enter sends, Enter for newline",
                             );
                         });
+                        ui.end_row();
+
+                        ui.label("Stats");
+                        ui.checkbox(
+                            &mut g.show_stats,
+                            "Show prefill/decode speed and token counts under responses",
+                        );
                         ui.end_row();
 
                         ui.label("Tool calls");

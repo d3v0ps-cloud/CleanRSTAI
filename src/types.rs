@@ -40,6 +40,9 @@ pub struct ChatMessage {
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_error: bool,
+    /// Speed and token stats for the request that produced this assistant message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<crate::stats::RequestStats>,
 }
 
 impl ChatMessage {
@@ -52,6 +55,7 @@ impl ChatMessage {
             tool_name: None,
             reasoning: None,
             is_error: false,
+            stats: None,
         }
     }
 

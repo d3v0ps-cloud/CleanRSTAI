@@ -234,6 +234,27 @@ impl ChatApp {
                         }
                     }
                 }
+                AppEvent::KindDetected {
+                    provider_id,
+                    kind,
+                    explicit,
+                } => {
+                    if let Some(ui) = &mut self.settings_ui {
+                        if explicit {
+                            ui.detecting_kind = false;
+                        }
+                        if let Some(p) = ui.draft.providers.iter_mut().find(|p| p.id == provider_id)
+                        {
+                            // A background probe only upgrades from Generic; it never overrides a choice.
+                            if explicit || p.kind == crate::config::ProviderKind::Generic {
+                                p.kind = kind;
+                            }
+                            if explicit {
+                                ui.detect_result = Some(format!("Detected: {}", kind.label()));
+                            }
+                        }
+                    }
+                }
                 AppEvent::Chat { conv_id, event } => self.handle_chat_event(conv_id, event),
             }
         }
@@ -294,10 +315,10 @@ impl ChatApp {
                     .last_mut()
                     .filter(|m| m.role == Role::Assistant)
                 {
-                    *m = msg;
+                    *m = *msg;
                 }
             }
-            ChatEvent::ToolResult(msg) => conv.messages.push(msg),
+            ChatEvent::ToolResult(msg) => conv.messages.push(*msg),
             ChatEvent::Done => {
                 if conv.messages.last().is_some_and(|m| {
                     m.role == Role::Assistant && m.content.is_empty() && m.tool_calls.is_empty()
@@ -324,6 +345,19 @@ impl ChatApp {
         apply_appearance(ctx, &self.settings);
         self.mcp.sync(&self.settings.mcp_servers);
         self.save_settings();
+    }
+
+    fn spawn_detect(&self, p: crate::config::ProviderConfig, explicit: bool, ctx: &egui::Context) {
+        let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let kind = llm::detect_kind(&http, &p).await;
+            let _ = tx.send(AppEvent::KindDetected {
+                provider_id: p.id,
+                kind,
+                explicit,
+            });
+            ctx.request_repaint();
+        });
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -623,6 +657,14 @@ impl ChatApp {
             .iter()
             .rposition(|m| m.role == Role::Assistant);
         let md_cache = &mut self.md_cache;
+        let show_stats = self.settings.general.show_stats;
+        if show_stats {
+            let totals =
+                crate::stats::Totals::of(conv.messages.iter().filter_map(|m| m.stats.as_ref()));
+            if totals.requests > 0 {
+                centered(ui, |ui| crate::ui::stats_view::totals_bar(ui, &totals));
+            }
+        }
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -647,6 +689,7 @@ impl ChatApp {
                                     &results,
                                     run,
                                     streaming,
+                                    show_stats,
                                     &mut actions,
                                 );
                                 if Some(i) == last_assistant && run.is_none() {
@@ -827,6 +870,7 @@ fn assistant_message(
     results: &HashMap<&str, &ChatMessage>,
     run: Option<&Run>,
     streaming: bool,
+    show_stats: bool,
     actions: &mut Vec<Action>,
 ) {
     bubble(ui, ui.visuals().extreme_bg_color, |ui| {
@@ -860,6 +904,9 @@ fn assistant_message(
                 run,
                 actions,
             );
+        }
+        if show_stats && let Some(s) = &msg.stats {
+            crate::ui::stats_view::request_line(ui, s);
         }
     });
 }
@@ -994,7 +1041,9 @@ impl eframe::App for ChatApp {
                     }
                     SettingsAction::Reconnect(id) => self.mcp.connect(&id),
                     SettingsAction::RefreshTools(id) => self.mcp.refresh_tools(&id),
+                    SettingsAction::DetectKind(p) => self.spawn_detect(p, true, &ctx),
                     SettingsAction::FetchModels(p) => {
+                        self.spawn_detect(p.clone(), false, &ctx);
                         let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ctx.clone());
                         self.rt.spawn(async move {
                             let result = llm::list_models(&http, &p)
