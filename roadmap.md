@@ -2,6 +2,22 @@
 
 Planned work, roughly in priority order. Items further down are less defined and may change.
 
+## Status
+
+Every item below shipped in **v0.3.0**.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Prefill and decode speed per request | ✅ Done |
+| 2 | UI redesign | ✅ Done |
+| 3 | Provider types (llama.cpp, LiteLLM, generic) | ✅ Done |
+| 4 | Import settings and conversations | ✅ Done |
+| 5 | Secure credential storage | ✅ Done |
+| 6 | Signed and notarized builds, installers, update check | ✅ Done (signing activates once certificates are added as repository secrets) |
+| 7 | Richer chat input and output | ✅ Done |
+| 8 | Broader MCP support | ✅ Done |
+| — | Node 24 GitHub Actions | ✅ Done |
+
 ## 1. Display prefill and decode speed per request
 
 Show how fast each response was produced, under each assistant message and as a running total
@@ -65,6 +81,9 @@ The counterpart to the export added in Settings → General.
 - Sign and notarize the macOS app with an Apple Developer ID so Gatekeeper doesn't block it.
 - Sign the Windows executable; consider an installer (MSI) and a DMG for macOS.
 - In-app update check against GitHub Releases.
+
+The release workflow signs and notarizes when the certificates are configured as repository
+secrets (see the README), and builds a `.dmg` and an `.msi` either way.
 
 ## 7. Richer chat input and output
 

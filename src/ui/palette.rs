@@ -22,6 +22,7 @@ pub enum Command {
     ExportConversations,
     ImportSettings,
     ImportConversations,
+    CheckForUpdates,
 }
 
 #[derive(Clone, Debug)]

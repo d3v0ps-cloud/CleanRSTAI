@@ -23,7 +23,7 @@ macOS is the primary platform; Linux and Windows are fully supported.
     and both JSON and SSE responses.
   - Live connection status, tool list, per-tool enable/disable, server stderr log, reconnect.
   - Import the standard `{"mcpServers": {...}}` JSON used by Claude Desktop, Cursor and others.
-  - **Resources and prompts**: the 📚 MCP menu next to the input attaches a server's resources
+  - **Resources and prompts**: the MCP menu (books icon) in the composer attaches a server's resources
     to your message, or inserts one of its prompts, with a form for any arguments.
   - Tool, resource and prompt lists refresh automatically when a server reports a change,
     including through the Streamable HTTP server-push stream.
@@ -40,12 +40,14 @@ macOS is the primary platform; Linux and Windows are fully supported.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, or stop a generation.
 - **Markdown rendering** with syntax-highlighted code blocks and tables.
-- **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the 📎 button or by
+- **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the paperclip button or by
   dropping them on the window. Images go to vision models as `image_url` parts and text files
   are included inline. Images returned by MCP tools appear in the chat; click any image to
   enlarge it.
 - **Export a chat as Markdown** from its right-click menu in the sidebar, including tool calls,
   results and images.
+- **Update check**: at startup (optional) and from **Settings → General**, CleanRSTAI looks
+  for a newer release on GitHub and shows a link to it in the top bar.
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
   (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
 
@@ -80,10 +82,12 @@ It builds:
 
 | File | Platform |
 |---|---|
-| `CleanRSTAI-macos-universal.zip` | macOS `.app`, Apple Silicon + Intel (ad-hoc signed) |
+| `CleanRSTAI-macos-universal.dmg` | macOS disk image, Apple Silicon + Intel |
+| `CleanRSTAI-macos-universal.zip` | the same `.app`, zipped |
 | `CleanRSTAI-linux-x86_64.tar.gz` | Linux x86_64 |
 | `CleanRSTAI-linux-aarch64.tar.gz` | Linux ARM64 |
-| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 |
+| `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer (Start menu shortcut, upgrades in place) |
+| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe` |
 
 plus `SHA256SUMS.txt`, and publishes them in two places:
 
@@ -99,8 +103,28 @@ You can also release without pushing a tag: *Actions → Release → Run workflo
 `version` such as `v0.1.0` creates the tag on the selected branch and publishes. Leaving
 `version` empty only builds; the files are kept as workflow artifacts.
 
-> The macOS app is ad-hoc signed only, so on first launch macOS will block it. Right-click the
-> app and choose **Open**, or run `xattr -dr com.apple.quarantine CleanRSTAI.app`.
+### Code signing
+
+Signing switches on automatically when these repository secrets exist
+(*Settings → Secrets and variables → Actions*):
+
+| Secret | Used for |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of your *Developer ID Application* certificate exported as `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Jane Doe (TEAMID1234)` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | notarization with `notarytool` (an app-specific password) |
+| `WINDOWS_CERTIFICATE` | base64 of your Authenticode code-signing `.pfx` |
+| `WINDOWS_CERTIFICATE_PASSWORD` | the `.pfx` password |
+
+With the Apple secrets, the app and the DMG are signed with the hardened runtime, notarized
+and stapled, so Gatekeeper opens them without warnings. With the Windows secrets, the `.exe`
+and the `.msi` are signed and timestamped.
+
+> Without the Apple secrets the macOS app is ad-hoc signed only, so on first launch macOS will
+> block it. Right-click the app and choose **Open**, or run
+> `xattr -dr com.apple.quarantine CleanRSTAI.app`. Unsigned Windows files trigger a SmartScreen
+> prompt: choose **More info → Run anyway**.
 
 ### Linux
 
@@ -114,7 +138,7 @@ console window.
 
 ## Configuration
 
-Open **⚙ Settings** (or press ⌘/Ctrl + ,).
+Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
 
 | Tab | What you can set |
 |---|---|
@@ -220,14 +244,17 @@ Source layout:
 src/
   main.rs         startup: PATH fix, tokio runtime, eframe window
   app.rs          main UI: sidebar, chat view, input, event handling
-  ui/settings.rs  settings window (providers, MCP servers, general)
-  ui/widgets.rs   key/value and list editors
+  ui/             theme and icons, chat view, settings page, command palette, widgets
   agent.rs        generation loop: stream, run tool calls, repeat
   llm.rs          OpenAI-compatible /chat/completions and /models client
   sse.rs          incremental Server-Sent Events parser
   mcp/            MCP client: stdio and Streamable HTTP transports, connection manager
   config.rs       settings model, persistence, mcpServers JSON import
-  export.rs       settings / conversations export with secret redaction
+  export.rs       settings / conversations export and import
+  secrets.rs      OS keychain storage for API keys and tokens
+  attach.rs       image and text file attachments
+  stats.rs        prefill / decode speed and token statistics
+  update.rs       GitHub Releases update check
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
 ```

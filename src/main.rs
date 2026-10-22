@@ -16,6 +16,7 @@ mod stats;
 mod testutil;
 mod types;
 mod ui;
+mod update;
 
 use eframe::egui;
 

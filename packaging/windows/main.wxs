@@ -1,0 +1,35 @@
+<!--
+  Windows installer (WiX v5). Built by .github/workflows/release.yml:
+    wix build packaging/windows/main.wxs -arch x64 -d Version=0.3.0 -d Exe=target\release\cleanrstai.exe -o CleanRSTAI.msi
+  The UpgradeCode must never change: it is how newer installers find and replace older ones.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="CleanRSTAI"
+           Manufacturer="CleanRSTAI"
+           Version="$(var.Version)"
+           UpgradeCode="be754cee-9c94-46bc-a7cb-a6a11a488893"
+           Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of CleanRSTAI is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="CleanRSTAI">
+        <Component Id="MainExecutable">
+          <File Id="CleanRSTAIExe" Name="cleanrstai.exe" Source="$(var.Exe)" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="AppShortcut"
+                  Name="CleanRSTAI"
+                  Description="AI chat client"
+                  Target="[INSTALLFOLDER]cleanrstai.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\CleanRSTAI" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

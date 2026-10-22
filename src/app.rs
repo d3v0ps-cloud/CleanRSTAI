@@ -66,6 +66,8 @@ pub struct ChatApp {
     repaint_ctx: egui::Context,
     palette: Palette,
     sidebar_open: bool,
+    /// A newer release found on GitHub.
+    update: Option<crate::update::Release>,
 }
 
 /// Arguments being filled in for an MCP prompt.
@@ -129,7 +131,11 @@ impl ChatApp {
             repaint_ctx: cc.egui_ctx.clone(),
             palette: Palette::default(),
             sidebar_open: true,
+            update: None,
         };
+        if app.settings.general.check_for_updates {
+            app.spawn_update_check(false);
+        }
         if loaded.needs_migration {
             // Move plain-text secrets from settings.json into the keychain.
             app.save_settings();
@@ -264,6 +270,27 @@ impl ChatApp {
     fn handle_events(&mut self) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                AppEvent::UpdateChecked { result, explicit } => {
+                    use crate::update::UpdateCheck;
+                    if let Some(ui) = self.settings_ui.as_mut().filter(|_| explicit) {
+                        ui.checking_update = false;
+                        ui.update_status = Some(match &result {
+                            Ok(UpdateCheck::UpToDate) => Ok(format!(
+                                "You're on the latest version (v{}).",
+                                env!("CARGO_PKG_VERSION")
+                            )),
+                            Ok(UpdateCheck::Available(r)) => {
+                                Ok(format!("Version {} is available.", r.version))
+                            }
+                            Err(e) => Err(format!("Update check failed: {e}")),
+                        });
+                    }
+                    match result {
+                        Ok(UpdateCheck::Available(r)) => self.update = Some(r),
+                        Ok(UpdateCheck::UpToDate) => self.update = None,
+                        Err(e) => log::info!("update check failed: {e}"),
+                    }
+                }
                 AppEvent::ModelsFetched {
                     provider_id,
                     result,
@@ -695,6 +722,21 @@ impl ChatApp {
         }
     }
 
+    fn spawn_update_check(&self, explicit: bool) {
+        let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            let result = crate::update::check(
+                &http,
+                crate::update::LATEST_RELEASE_URL,
+                env!("CARGO_PKG_VERSION"),
+            )
+            .await
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::UpdateChecked { result, explicit });
+            ctx.request_repaint();
+        });
+    }
+
     fn spawn_detect(&self, p: crate::config::ProviderConfig, explicit: bool, ctx: &egui::Context) {
         let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ctx.clone());
         self.rt.spawn(async move {
@@ -809,6 +851,12 @@ impl ChatApp {
                 "Data",
                 Command::ImportConversations,
             ),
+            Entry::new(
+                icon::DOWNLOAD,
+                "Check for updates",
+                "App",
+                Command::CheckForUpdates,
+            ),
         ];
         for (i, p) in self.settings.providers.iter().enumerate() {
             e.push(Entry::new(
@@ -892,6 +940,14 @@ impl ChatApp {
                         _ => SettingsAction::ImportConversations,
                     });
                 }
+            }
+            Command::CheckForUpdates => {
+                self.open_settings(Tab::General);
+                if let Some(sui) = &mut self.settings_ui {
+                    sui.checking_update = true;
+                    sui.update_status = None;
+                }
+                self.spawn_update_check(true);
             }
         }
     }
@@ -984,6 +1040,18 @@ impl ChatApp {
                 }
                 if icon_button(ui, icon::COMMAND, "Command palette (⌘K)").clicked() {
                     self.palette.toggle();
+                }
+                if let Some(r) = &self.update {
+                    let text = RichText::new(format!("{}  Update {}", icon::DOWNLOAD, r.version))
+                        .color(theme::accent(dark));
+                    let resp = ui
+                        .add(egui::Button::new(text).frame(false))
+                        .on_hover_text("Open the release page to download it");
+                    if resp.clicked()
+                        && let Err(e) = open::that_detached(&r.url)
+                    {
+                        self.notice = Some(format!("Couldn't open the browser: {e}"));
+                    }
                 }
                 let (servers, tools) = self.mcp.connected_tool_count();
                 let configured = self
@@ -1496,6 +1564,7 @@ impl eframe::App for ChatApp {
                         sui.draft.active_provider = self.settings.active_provider;
                     }
                     SettingsAction::Close => keep = false,
+                    SettingsAction::CheckForUpdates => self.spawn_update_check(true),
                     SettingsAction::ExportSettings { include_secrets } => {
                         let doc = export::settings_document(&self.settings, include_secrets);
                         sui.export_status = run_export("settings", &doc);

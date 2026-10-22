@@ -3,6 +3,17 @@ name: Release
 # Push a tag like `v0.1.0` (or run it manually with a version) to build every OS, create a
 # GitHub Release, and publish the binaries to GitHub Packages (ghcr.io, as an OCI artifact).
 # A manual run without a version only builds; the binaries are kept as workflow artifacts.
+#
+# Code signing is optional and switches on when these repository secrets exist:
+#   macOS (Developer ID + notarization):
+#     APPLE_CERTIFICATE           base64 of the "Developer ID Application" .p12 export
+#     APPLE_CERTIFICATE_PASSWORD  password of that .p12
+#     APPLE_SIGNING_IDENTITY      e.g. "Developer ID Application: Jane Doe (TEAMID1234)"
+#     APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   (app-specific password, for notarytool)
+#   Windows (Authenticode):
+#     WINDOWS_CERTIFICATE           base64 of the code-signing .pfx
+#     WINDOWS_CERTIFICATE_PASSWORD  password of that .pfx
+# Without them, the macOS app is ad-hoc signed and the Windows files are unsigned.
 on:
   push:
     tags: ["v*"]
@@ -34,7 +45,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
@@ -62,9 +73,67 @@ jobs:
           lipo -create -output "$APP/Contents/MacOS/cleanrstai" \
             target/aarch64-apple-darwin/release/cleanrstai \
             target/x86_64-apple-darwin/release/cleanrstai
-          codesign --force --deep --sign - "$APP"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Sign, notarize and package macOS
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
           mkdir -p dist
-          ditto -c -k --keepParent "$APP" "dist/CleanRSTAI-${{ matrix.name }}.zip"
+          DMG="dist/CleanRSTAI-${{ matrix.name }}.dmg"
+          ZIP="dist/CleanRSTAI-${{ matrix.name }}.zip"
+          make_dmg() {
+            staging=$(mktemp -d)
+            cp -R "$APP" "$staging/"
+            ln -s /Applications "$staging/Applications"
+            hdiutil create -volname CleanRSTAI -srcfolder "$staging" -ov -format UDZO "$DMG"
+          }
+
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::notice::No Apple signing certificate configured; using an ad-hoc signature."
+            codesign --force --deep --sign - "$APP"
+            ditto -c -k --keepParent "$APP" "$ZIP"
+            make_dmg
+            exit 0
+          fi
+
+          # Import the certificate into a throwaway keychain.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+          notarize() {
+            xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD" --wait
+          }
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+          notarize "$RUNNER_TEMP/notarize.zip"
+          xcrun stapler staple "$APP"
+
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          make_dmg
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
+          notarize "$DMG"
+          xcrun stapler staple "$DMG"
+          security delete-keychain "$KEYCHAIN"
 
       - name: Build Linux
         if: runner.os == 'Linux'
@@ -78,12 +147,48 @@ jobs:
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        run: cargo build --release
+
+      - name: Package Windows (.zip and .msi)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          cargo build --release
+          $signed = [bool]$env:WINDOWS_CERTIFICATE
+          if ($signed) {
+            $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1).FullName
+            function Sign($file) {
+              & $signtool sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+                /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            Sign target/release/cleanrstai.exe
+          } else {
+            Write-Output "::notice::No Windows signing certificate configured; files are unsigned."
+          }
+
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path target/release/cleanrstai.exe -DestinationPath "dist/CleanRSTAI-${{ matrix.name }}.zip"
 
-      - uses: actions/upload-artifact@v4
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          dotnet tool install --global wix --version 5.0.2
+          $msi = "dist/CleanRSTAI-${{ matrix.name }}.msi"
+          wix build packaging/windows/main.wxs -arch x64 -d "Version=$version" `
+            -d "Exe=target\release\cleanrstai.exe" -o $msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item dist/*.wixpdb -ErrorAction SilentlyContinue
+
+          if ($signed) {
+            Sign $msi
+            Remove-Item $pfx
+          }
+
+      - uses: actions/upload-artifact@v7
         with:
           name: CleanRSTAI-${{ matrix.name }}
           path: dist/*
@@ -97,7 +202,7 @@ jobs:
       contents: write   # create the GitHub Release
       packages: write   # push to ghcr.io
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -107,7 +212,7 @@ jobs:
         run: sha256sum * | tee SHA256SUMS.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # Creates the tag on this commit when it doesn't exist yet (manual runs).
           tag_name: ${{ env.RELEASE_TAG }}
@@ -116,7 +221,7 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
 
-      - uses: oras-project/setup-oras@v1
+      - uses: oras-project/setup-oras@v2
 
       - name: Publish to GitHub Packages (ghcr.io)
         working-directory: dist
@@ -130,6 +235,8 @@ jobs:
             case "$f" in
               *.zip) files+=("$f:application/zip") ;;
               *.tar.gz) files+=("$f:application/gzip") ;;
+              *.dmg) files+=("$f:application/x-apple-diskimage") ;;
+              *.msi) files+=("$f:application/x-msi") ;;
               *) files+=("$f:text/plain") ;;
             esac
           done
