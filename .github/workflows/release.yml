@@ -15,12 +15,13 @@ name: Release
 #     WINDOWS_CERTIFICATE_PASSWORD  password of that .pfx
 # Without them, the macOS app is ad-hoc signed and the Windows files are unsigned.
 #
-# Manual only for now: the account's Actions minutes ran out, so releases are built and
-# published locally with scripts/release-local.sh. To re-enable tag-triggered releases, add
-# back under `on:`
-#   push:
-#     tags: ["v*"]
+# Runs on the self-hosted runners: the Mac mini builds the macOS app, and the Gentoo box
+# cross-builds both Linux architectures (with cargo-zigbuild, against glibc 2.28 so the
+# binaries also run on older distributions) and publishes. Windows is disabled for now;
+# see the commented matrix entry below.
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
@@ -40,19 +41,21 @@ jobs:
       matrix:
         include:
           - name: macos-universal
-            os: macos-latest
-          - name: linux-x86_64
-            os: ubuntu-latest
-          - name: linux-aarch64
-            os: ubuntu-24.04-arm
-          - name: windows-x86_64
-            os: windows-latest
-    runs-on: ${{ matrix.os }}
+            runner: [self-hosted, macOS, ARM64]
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - name: linux
+            runner: [self-hosted, Linux, X64, gentoo]
+            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          # Disabled until there is a Windows runner (GitHub-hosted would use Actions minutes):
+          # - name: windows-x86_64
+          #   runner: windows-latest
+          #   targets: ""
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.targets }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
@@ -70,7 +73,7 @@ jobs:
       - name: Build macOS universal .app
         if: runner.os == 'macOS'
         run: |
-          cargo install cargo-bundle --locked
+          command -v cargo-bundle >/dev/null || cargo install cargo-bundle --locked
           cargo bundle --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
           APP=target/aarch64-apple-darwin/release/bundle/osx/CleanRSTAI.app
@@ -139,14 +142,25 @@ jobs:
           xcrun stapler staple "$DMG"
           security delete-keychain "$KEYCHAIN"
 
-      - name: Build Linux
+      - name: Remove the temporary signing keychain
+        # The Mac mini is a persistent machine: never leave the imported certificate behind.
+        if: always() && runner.os == 'macOS'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+
+      - name: Build Linux (x86_64 and aarch64)
         if: runner.os == 'Linux'
+        # No system packages needed: X11/Wayland/xkbcommon are loaded at runtime. Zig (from
+        # PyPI, in a throwaway venv) is the cross linker, so no crossdev toolchain is needed.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-          cargo build --release
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet ziglang
+          export PATH="$RUNNER_TEMP/zig/bin:$PATH"
+          command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
           mkdir -p dist
-          tar -czf "dist/CleanRSTAI-${{ matrix.name }}.tar.gz" -C target/release cleanrstai
+          for arch in x86_64 aarch64; do
+            cargo zigbuild --release --target "$arch-unknown-linux-gnu.2.28"
+            tar -czf "dist/CleanRSTAI-linux-$arch.tar.gz" -C "target/$arch-unknown-linux-gnu/release" cleanrstai
+          done
 
       - name: Build Windows
         if: runner.os == 'Windows'
@@ -201,7 +215,7 @@ jobs:
   publish:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gentoo]
     permissions:
       contents: write   # create the GitHub Release
       packages: write   # push to ghcr.io
