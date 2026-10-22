@@ -23,6 +23,8 @@ pub enum SettingsAction {
     DetectKind(ProviderConfig),
     Reconnect(String),
     RefreshTools(String),
+    SignIn(String),
+    SignOut(String),
     ExportSettings { include_secrets: bool },
     ExportConversations,
     ImportSettings,
@@ -523,6 +525,7 @@ impl SettingsUi {
                                 s.transport = McpTransportConfig::Http {
                                     url: String::new(),
                                     headers: Vec::new(),
+                                    oauth_client_id: String::new(),
                                 };
                             }
                         });
@@ -556,7 +559,11 @@ impl SettingsUi {
                                 );
                                 ui.end_row();
                             }
-                            McpTransportConfig::Http { url, headers } => {
+                            McpTransportConfig::Http {
+                                url,
+                                headers,
+                                oauth_client_id,
+                            } => {
                                 ui.label("URL");
                                 ui.add(
                                     egui::TextEdit::singleline(url)
@@ -575,6 +582,16 @@ impl SettingsUi {
                                         true,
                                     )
                                 });
+                                ui.end_row();
+                                ui.label("OAuth client ID");
+                                ui.add(
+                                    egui::TextEdit::singleline(oauth_client_id)
+                                        .hint_text("(optional) only if the server can't register CleanRSTAI automatically")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text(
+                                    "Servers that require sign-in usually register CleanRSTAI automatically. Set this only if the server's documentation gives you a client ID.",
+                                );
                                 ui.end_row();
                             }
                         }
@@ -599,10 +616,17 @@ impl SettingsUi {
                                     v.tools.len(),
                                     v.server_info
                                 ),
+                                ServerStatus::NeedsSignIn => "Sign-in required".to_owned(),
+                                ServerStatus::SigningIn => {
+                                    "Waiting for you to sign in in your browser…".to_owned()
+                                }
                                 ServerStatus::Error(_) => "Error".to_owned(),
                             };
                             ui.colored_label(color, text);
-                            if matches!(v.status, ServerStatus::Connecting) {
+                            if matches!(
+                                v.status,
+                                ServerStatus::Connecting | ServerStatus::SigningIn
+                            ) {
                                 ui.spinner();
                             }
                         }
@@ -611,6 +635,26 @@ impl SettingsUi {
                         }
                     }
                     if !unsaved && s.enabled {
+                        let is_http = matches!(s.transport, McpTransportConfig::Http { .. });
+                        let status = view.map(|v| &v.status);
+                        if is_http
+                            && matches!(
+                                status,
+                                Some(ServerStatus::NeedsSignIn | ServerStatus::Error(_))
+                            )
+                            && ui
+                                .button("Sign in…")
+                                .on_hover_text("Opens your browser to sign in to this server")
+                                .clicked()
+                        {
+                            actions.push(SettingsAction::SignIn(s.id.clone()));
+                        }
+                        if is_http
+                            && view.is_some_and(|v| v.signed_in)
+                            && ui.button("Sign out").clicked()
+                        {
+                            actions.push(SettingsAction::SignOut(s.id.clone()));
+                        }
                         if ui.button("Reconnect").clicked() {
                             actions.push(SettingsAction::Reconnect(s.id.clone()));
                         }

@@ -2,6 +2,7 @@
 
 pub mod http;
 pub mod manager;
+pub mod oauth;
 pub mod stdio;
 
 use std::sync::Arc;
@@ -119,6 +120,7 @@ impl McpClient {
         cfg: &McpTransportConfig,
         http: reqwest::Client,
         on_notify: NotifyFn,
+        auth: Option<Arc<oauth::Auth>>,
     ) -> Result<Self> {
         let transport = match cfg {
             McpTransportConfig::Stdio {
@@ -129,9 +131,9 @@ impl McpClient {
             } => Transport::Stdio(Box::new(
                 stdio::StdioTransport::spawn(command, args, env, cwd, on_notify).await?,
             )),
-            McpTransportConfig::Http { url, headers } => {
-                Transport::Http(http::HttpTransport::new(http, url, headers, on_notify)?)
-            }
+            McpTransportConfig::Http { url, headers, .. } => Transport::Http(
+                http::HttpTransport::new(http, url, headers, on_notify, auth)?,
+            ),
         };
         let mut client = Self {
             transport,

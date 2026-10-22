@@ -124,6 +124,9 @@ pub enum McpTransportConfig {
         url: String,
         #[serde(default)]
         headers: Vec<KeyValue>,
+        /// OAuth client ID for servers that don't support automatic registration.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        oauth_client_id: String,
     },
 }
 
@@ -441,6 +444,7 @@ pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
             McpTransportConfig::Http {
                 url: url.to_owned(),
                 headers: kv(cfg.get("headers")),
+                oauth_client_id: String::new(),
             }
         } else {
             anyhow::bail!("server '{name}' has neither 'command' nor 'url'");

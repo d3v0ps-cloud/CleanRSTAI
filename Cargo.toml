@@ -10,7 +10,7 @@ license = "MIT"
 eframe = { version = "0.37", features = ["persistence"] }
 egui_commonmark = "0.26"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
-reqwest = { version = "0.13", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form", "query"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,6 +26,8 @@ keyring = "4"
 egui_extras = { version = "0.37", features = ["image", "gif", "webp"] }
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+sha2 = "0.10"
+open = "5"
 
 [profile.release]
 lto = "thin"
