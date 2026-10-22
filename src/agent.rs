@@ -23,6 +23,8 @@ pub enum ChatEvent {
     AssistantFinal(Box<ChatMessage>),
     ToolApproval {
         call: ToolCall,
+        /// The MCP server id and tool name behind the call; `None` for built-ins.
+        origin: Option<(String, String)>,
         respond: oneshot::Sender<bool>,
     },
     ToolRunning(String),
@@ -173,6 +175,9 @@ pub async fn run(
                 let (respond, rx) = oneshot::channel();
                 emit(ChatEvent::ToolApproval {
                     call: call.clone(),
+                    origin: toolbox
+                        .origin(&call.name)
+                        .map(|(server, tool)| (server.to_owned(), tool.to_owned())),
                     respond,
                 });
                 rx.await.unwrap_or(false)
@@ -517,7 +522,7 @@ mod tests {
         let mut result = None;
         while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
             match event {
-                ChatEvent::ToolApproval { call, respond } => {
+                ChatEvent::ToolApproval { call, respond, .. } => {
                     assert_eq!(call.name, tools::DELEGATE);
                     respond.send(true).unwrap();
                 }

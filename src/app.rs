@@ -3,11 +3,12 @@ use std::sync::Arc;
 
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
+use crate::approval::{AlwaysAllow, Approval, PendingApproval};
 use crate::attach::Attachment;
 use crate::config::{Settings, Theme};
 use crate::export;
@@ -16,7 +17,7 @@ use crate::mcp::manager::McpManager;
 use crate::subagent::Delegation;
 use crate::tools::{ToolOverrides, ToolSelection};
 use crate::types::Group;
-use crate::types::{ChatMessage, Conversation, Role, ToolCall};
+use crate::types::{ChatMessage, Conversation, Role};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
 use crate::ui::palette::{Command, Entry, Palette};
@@ -29,7 +30,7 @@ const INPUT_ID: &str = "chat-input";
 
 pub(crate) struct Run {
     task: JoinHandle<()>,
-    pub(crate) approvals: Vec<(ToolCall, oneshot::Sender<bool>)>,
+    pub(crate) approvals: Vec<PendingApproval>,
     pub(crate) running_tool: Option<String>,
     /// Live subagent progress, by `delegate` call id.
     pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
@@ -37,11 +38,13 @@ pub(crate) struct Run {
 
 pub(crate) enum Action {
     SetInput(String),
-    Approve(Uuid, String, bool),
+    Approve(Uuid, String, Approval),
     Copy(String),
     Regenerate(Uuid),
     EditFrom(Uuid, usize),
     ViewImage(String, egui::load::Bytes, String),
+    /// Save a drawing from a reply as an SVG file.
+    SaveSvg(Vec<u8>),
 }
 
 pub struct ChatApp {
@@ -56,7 +59,10 @@ pub struct ChatApp {
     input: String,
     runs: HashMap<Uuid, Run>,
     errors: HashMap<Uuid, String>,
+    /// Tools and servers the user chose to always allow, per chat, until the app quits.
+    always_allow: HashMap<Uuid, AlwaysAllow>,
     md_cache: CommonMarkCache,
+    drawings: crate::ui::markdown::DrawingCache,
     settings_ui: Option<SettingsUi>,
     renaming: Option<(Uuid, String)>,
     search: String,
@@ -124,7 +130,9 @@ impl ChatApp {
             input: String::new(),
             runs: HashMap::new(),
             errors: HashMap::new(),
+            always_allow: HashMap::new(),
             md_cache: CommonMarkCache::default(),
+            drawings: Default::default(),
             settings_ui: None,
             renaming: None,
             search: String::new(),
@@ -368,6 +376,7 @@ impl ChatApp {
         Conversation::delete(id);
         self.conversations.retain(|c| c.id != id);
         self.errors.remove(&id);
+        self.always_allow.remove(&id);
         if self.current == Some(id) {
             self.current = self.conversations.first().map(|c| c.id);
         }
@@ -547,12 +556,28 @@ impl ChatApp {
             return;
         }
         match event {
-            ChatEvent::ToolApproval { call, respond } => {
-                self.runs
-                    .get_mut(&id)
-                    .unwrap()
-                    .approvals
-                    .push((call, respond));
+            ChatEvent::ToolApproval {
+                call,
+                origin,
+                respond,
+            } => {
+                let server_name = origin.as_ref().and_then(|(server, _)| {
+                    self.settings
+                        .mcp_servers
+                        .iter()
+                        .find(|s| &s.id == server)
+                        .map(|s| s.name.clone())
+                });
+                let pending = PendingApproval::new(call, origin, server_name, respond);
+                if self
+                    .always_allow
+                    .get(&id)
+                    .is_some_and(|a| a.allows(&pending))
+                {
+                    pending.answer(true);
+                } else {
+                    self.runs.get_mut(&id).unwrap().approvals.push(pending);
+                }
                 return;
             }
             ChatEvent::ToolRunning(call_id) => {
@@ -1615,6 +1640,7 @@ impl ChatApp {
         chat_view::show(
             ui,
             &mut self.md_cache,
+            &mut self.drawings,
             &mut self.images,
             chat_view::View {
                 conv,
@@ -1623,6 +1649,7 @@ impl ChatApp {
                 model: &self.settings.provider().model,
                 show_stats: self.settings.general.show_stats,
                 reasoning: self.settings.general.reasoning_display,
+                remote_images: self.settings.general.load_remote_images,
             },
         )
     }
@@ -1636,15 +1663,36 @@ impl ChatApp {
                     ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                 }
                 Action::Regenerate(id) => self.regenerate(id, ctx),
-                Action::Approve(conv, call_id, ok) => {
-                    if let Some(run) = self.runs.get_mut(&conv)
-                        && let Some(pos) = run.approvals.iter().position(|(c, _)| c.id == call_id)
-                    {
-                        let (_, tx) = run.approvals.remove(pos);
-                        let _ = tx.send(ok);
+                Action::Approve(conv, call_id, answer) => {
+                    let Some(run) = self.runs.get_mut(&conv) else {
+                        continue;
+                    };
+                    let Some(pos) = run.approvals.iter().position(|p| p.call.id == call_id) else {
+                        continue;
+                    };
+                    let pending = run.approvals.remove(pos);
+                    let allow = self.always_allow.entry(conv).or_default();
+                    allow.remember(&pending, answer);
+                    pending.answer(answer.runs());
+                    // Other calls already waiting may now be covered too.
+                    let (now_allowed, waiting) = std::mem::take(&mut run.approvals)
+                        .into_iter()
+                        .partition(|p| allow.allows(p));
+                    run.approvals = waiting;
+                    for p in now_allowed {
+                        p.answer(true);
                     }
                 }
                 Action::ViewImage(uri, bytes, name) => self.viewing = Some((uri, bytes, name)),
+                Action::SaveSvg(svg) => {
+                    if let Some(path) = export::pick_save_path_as("drawing.svg", "SVG image", "svg")
+                    {
+                        self.notice = Some(match std::fs::write(&path, svg) {
+                            Ok(()) => format!("Saved {}", path.display()),
+                            Err(e) => format!("Couldn't save {}: {e}", path.display()),
+                        });
+                    }
+                }
                 Action::EditFrom(conv, idx) => {
                     if self.runs.contains_key(&conv) {
                         continue;

@@ -1178,6 +1178,18 @@ impl SettingsUi {
                         );
                         ui.end_row();
 
+                        ui.label("Images");
+                        ui.checkbox(
+                            &mut g.load_remote_images,
+                            "Load web images in replies",
+                        )
+                        .on_hover_text(
+                            "When off, images from the web show as links. Loading them tells \
+                             the image's server that this chat was opened, and a reply could \
+                             put chat contents in the image address.",
+                        );
+                        ui.end_row();
+
                         ui.label("Tool calls");
                         ui.checkbox(
                             &mut g.auto_approve_tools,
@@ -1356,6 +1368,7 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "Send with Enter"),
     (Tab::General, "General", "Keychain / secrets"),
     (Tab::General, "General", "Show speed stats"),
+    (Tab::General, "General", "Load web images in replies"),
     (
         Tab::General,
         "General",

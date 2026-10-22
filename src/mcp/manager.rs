@@ -117,6 +117,13 @@ impl ToolRouter {
         }
     }
 
+    /// The server id and MCP tool name behind a routed function name.
+    pub fn origin(&self, function: &str) -> Option<(&str, &str)> {
+        self.origins
+            .get(function)
+            .map(|(server, tool)| (server.as_str(), tool.as_str()))
+    }
+
     pub async fn call(
         &self,
         function: &str,
