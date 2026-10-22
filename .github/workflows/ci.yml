@@ -32,5 +32,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Warm the npm cache for the e2e tests
+        # A cold download of the test MCP server can take minutes on CI runners; do it once
+        # here so no test spends its timeout on it. The server exits when stdin closes.
+        shell: bash
+        run: npx -y @modelcontextprotocol/server-everything < /dev/null
       - name: End-to-end MCP tests (stdio + Streamable HTTP)
         run: cargo test -- --ignored
