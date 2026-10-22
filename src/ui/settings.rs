@@ -22,6 +22,8 @@ pub enum SettingsAction {
     FetchModels(ProviderConfig),
     Reconnect(String),
     RefreshTools(String),
+    ExportSettings { include_secrets: bool },
+    ExportConversations,
 }
 
 pub struct SettingsUi {
@@ -35,6 +37,9 @@ pub struct SettingsUi {
     import_error: Option<String>,
     pub fetching_models: bool,
     pub models_error: Option<String>,
+    export_include_secrets: bool,
+    /// Outcome of the last export: Ok(message) or Err(error).
+    pub export_status: Option<Result<String, String>>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -77,6 +82,8 @@ impl SettingsUi {
             import_error: None,
             fetching_models: false,
             models_error: None,
+            export_include_secrets: false,
+            export_status: None,
         }
     }
 
@@ -130,7 +137,7 @@ impl SettingsUi {
                 egui::CentralPanel::default_margins().show(ui, |ui| match self.tab {
                     Tab::Providers => self.providers_tab(ui, &mut actions),
                     Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
-                    Tab::General => self.general_tab(ui),
+                    Tab::General => self.general_tab(ui, live, &mut actions),
                 });
             });
         if !open {
@@ -602,7 +609,13 @@ impl SettingsUi {
             });
     }
 
-    fn general_tab(&mut self, ui: &mut egui::Ui) {
+    fn general_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        live: &Settings,
+        actions: &mut Vec<SettingsAction>,
+    ) {
+        let dirty = &self.draft != live;
         let g = &mut self.draft.general;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -672,6 +685,49 @@ impl SettingsUi {
                         );
                         ui.end_row();
                     });
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.strong("Export");
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Export settings…")
+                        .on_hover_text("Providers, MCP servers and preferences, as saved")
+                        .clicked()
+                    {
+                        actions.push(SettingsAction::ExportSettings {
+                            include_secrets: self.export_include_secrets,
+                        });
+                    }
+                    ui.checkbox(&mut self.export_include_secrets, "Include API keys and secrets");
+                });
+                if self.export_include_secrets {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "The file will contain API keys, header values and MCP environment variables in plain text.",
+                    );
+                } else {
+                    ui.weak("API keys, header values and MCP environment variable values are left blank.");
+                }
+                if dirty {
+                    ui.weak("Unsaved changes are not included; Apply first to export them.");
+                }
+                if ui
+                    .button("Export conversations…")
+                    .on_hover_text("All chats, including tool calls and results")
+                    .clicked()
+                {
+                    actions.push(SettingsAction::ExportConversations);
+                }
+                match &self.export_status {
+                    Some(Ok(msg)) => {
+                        ui.colored_label(egui::Color32::from_rgb(60, 170, 90), msg);
+                    }
+                    Some(Err(err)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, err);
+                    }
+                    None => {}
+                }
 
                 ui.add_space(16.0);
                 ui.separator();
