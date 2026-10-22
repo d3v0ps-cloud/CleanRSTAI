@@ -126,6 +126,9 @@ impl Palette {
         if up {
             self.selected = self.selected.saturating_sub(1);
         }
+        // Follow the selection only when the keyboard moved it, so scrolling the list with
+        // the mouse or trackpad isn't pulled back to the selected entry every frame.
+        let follow_selection = up || down;
         self.selected = self.selected.min(matches.len().saturating_sub(1));
         let mut picked = enter
             .then(|| matches.get(self.selected).map(|e| e.command.clone()))
@@ -161,7 +164,7 @@ impl Palette {
                             .right_text(egui::RichText::new(e.category).small().weak())
                             .min_size(egui::vec2(ui.available_width(), 30.0)),
                         );
-                        if selected {
+                        if selected && follow_selection {
                             resp.scroll_to_me(None);
                         }
                         if resp.clicked() {
