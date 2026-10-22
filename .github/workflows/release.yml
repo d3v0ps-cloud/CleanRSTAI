@@ -1,15 +1,21 @@
 name: Release
 
-# Push a tag like `v0.1.0` to build every OS, create a GitHub Release, and publish the
-# binaries to GitHub Packages (ghcr.io, as an OCI artifact).
-# Running it manually only builds; the binaries are kept as workflow artifacts.
+# Push a tag like `v0.1.0` (or run it manually with a version) to build every OS, create a
+# GitHub Release, and publish the binaries to GitHub Packages (ghcr.io, as an OCI artifact).
+# A manual run without a version only builds; the binaries are kept as workflow artifacts.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to create, e.g. v0.1.0 (leave empty to only build)"
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
 
 jobs:
   build:
@@ -37,12 +43,12 @@ jobs:
           key: ${{ matrix.name }}
 
       - name: Check tag matches Cargo.toml version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         shell: bash
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+          if [ "v$version" != "$RELEASE_TAG" ]; then
+            echo "::error::Tag $RELEASE_TAG does not match Cargo.toml version $version"
             exit 1
           fi
 
@@ -85,7 +91,7 @@ jobs:
 
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release
@@ -103,9 +109,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Creates the tag on this commit when it doesn't exist yet (manual runs).
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
 
       - uses: oras-project/setup-oras@v1
 
@@ -124,18 +133,18 @@ jobs:
               *) files+=("$f:text/plain") ;;
             esac
           done
-          tags="${GITHUB_REF_NAME}"
-          case "$GITHUB_REF_NAME" in *-*) ;; *) tags="$tags,latest" ;; esac
+          tags="${RELEASE_TAG}"
+          case "$RELEASE_TAG" in *-*) ;; *) tags="$tags,latest" ;; esac
           oras push "$image:$tags" \
             --artifact-type application/vnd.cleanrstai.release.v1 \
             --annotation "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
             --annotation "org.opencontainers.image.description=CleanRSTAI desktop builds for macOS, Linux and Windows" \
-            --annotation "org.opencontainers.image.version=${GITHUB_REF_NAME}" \
+            --annotation "org.opencontainers.image.version=${RELEASE_TAG}" \
             "${files[@]}"
           {
             echo "### Published to GitHub Packages"
             echo
             echo '```sh'
-            echo "oras pull $image:${GITHUB_REF_NAME}"
+            echo "oras pull $image:${RELEASE_TAG}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

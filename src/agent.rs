@@ -311,7 +311,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn e2e_streamable_http_mcp() {
-        let port = 3917;
+        // Pick a free port rather than hard-coding one.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let mut child = tokio::process::Command::new(which::which("npx").expect("npx not found"))
             .args([
                 "-y",
@@ -324,14 +329,23 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        for _ in 0..300 {
+        // A cold `npx` download can take a while on CI runners.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        loop {
             if tokio::net::TcpStream::connect(("127.0.0.1", port))
                 .await
                 .is_ok()
             {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("MCP HTTP server exited before listening: {status}");
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "MCP HTTP server did not start listening on port {port} within 180s"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         run_agent_against(McpTransportConfig::Http {
             url: format!("http://127.0.0.1:{port}/mcp"),
