@@ -115,15 +115,25 @@ Files are stored at:
 | Linux | `~/.config/cleanrstai/settings.json` | `~/.local/share/cleanrstai/conversations/` |
 | Windows | `%APPDATA%\bukn\CleanRSTAI\config\settings.json` | `%APPDATA%\bukn\CleanRSTAI\data\conversations\` |
 
-### Export
+### Export and import
 
-**Settings → General → Export** saves a JSON file through the system save dialog:
+**Settings → General → Export & import** saves a JSON file through the system save dialog:
 
 - **Export settings…** writes providers, MCP servers and preferences as last saved. By default,
   API keys, HTTP header values and MCP environment variable values are left blank, while
   their names are kept. Tick *Include API keys and secrets* for a complete backup.
 - **Export conversations…** writes every chat, including tool calls and their results, to a
   single file.
+
+**Import settings…** loads a settings export into the Settings window for review:
+
+- **Merge** adds the imported providers and MCP servers, updating ones that already exist, and
+  keeps your other preferences.
+- **Replace** uses the imported settings as they are.
+
+Secrets left blank in the export are filled from matching entries you already have, and
+anything still blank is listed so you can fill it in before applying. **Import
+conversations…** adds chats from a conversations export and skips any that already exist.
 
 Both files record the app version and export time. They are created readable only by you on
 macOS and Linux. On Linux the save dialog uses the desktop portal (`xdg-desktop-portal`),
