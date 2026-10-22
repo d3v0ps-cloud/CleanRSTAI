@@ -1,8 +1,8 @@
 # CleanRSTAI Roadmap
 
-Ticked items have shipped: items 1–8 in **v0.3.0**, items 9–12 in **v0.4.0**. Items ticked
-since v0.4.0 (rich markdown and SVGs in chat, "Always allow" on the approval prompt) are on
-`main` for the next release. Unticked items are still open.
+Ticked items have shipped: items 1–8 in **v0.3.0**, items 9–12 in **v0.4.0**, and rich
+markdown and SVGs in chat, "Always allow" on the approval prompt and the web fetch tool in
+**v0.5.0**. Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
 
@@ -89,6 +89,8 @@ Tools that ship with the app, so they work without configuring an MCP server.
   arithmetic
 - [x] **Task management**: the agent breaks a request down into actionable tasks, shows them as
   a checklist in the chat, and updates each one as it works through them
+- [x] **Web fetch**: read a web URL as text (pages, plain text, JSON) or as an image, with
+  approval before each fetch
 - [x] Enable or disable each built-in tool in Settings
 
 ## 10. Toggle tools and MCP servers during a session
