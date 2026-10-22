@@ -63,6 +63,8 @@ are still open.
 - [x] macOS `.dmg`
 - [x] Windows `.msi` installer
 - [x] In-app update check against GitHub Releases
+- [ ] A proper app icon (replacing the placeholder), used for the window, taskbar/dock, `.dmg`
+  and `.msi`
 
 ## 7. Richer chat input and output
 
