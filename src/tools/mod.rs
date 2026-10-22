@@ -180,6 +180,14 @@ impl Toolbox {
         self.specs.iter().any(|s| s.name == function)
     }
 
+    /// The MCP server id and tool name behind `function`; `None` for built-ins.
+    pub fn origin(&self, function: &str) -> Option<(&str, &str)> {
+        if is_builtin(function) {
+            return None;
+        }
+        self.mcp.origin(function)
+    }
+
     /// Built-ins other than `delegate` are local and harmless, so they skip approval.
     pub fn needs_approval(function: &str) -> bool {
         !is_builtin(function) || function == DELEGATE

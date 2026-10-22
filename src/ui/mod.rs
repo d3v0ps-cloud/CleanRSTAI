@@ -1,5 +1,6 @@
 pub mod attachments;
 pub mod chat_view;
+pub mod markdown;
 pub mod palette;
 pub mod settings;
 pub mod stats_view;

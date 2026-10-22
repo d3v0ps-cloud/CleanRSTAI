@@ -3,13 +3,15 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, RichText};
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
 use super::attachments::{self as attach_ui, ImageCache};
+use super::markdown::{self, DrawingCache};
 use super::theme::{self, icon};
 use super::widgets::{code_block, icon_button};
 use crate::app::{Action, Run};
+use crate::approval::{Approval, PendingApproval};
 use crate::config::ReasoningDisplay;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
@@ -40,11 +42,13 @@ pub struct View<'a> {
     pub model: &'a str,
     pub show_stats: bool,
     pub reasoning: ReasoningDisplay,
+    pub remote_images: bool,
 }
 
 pub fn show(
     ui: &mut egui::Ui,
     md_cache: &mut CommonMarkCache,
+    drawings: &mut DrawingCache,
     images: &mut ImageCache,
     v: View<'_>,
 ) -> Vec<Action> {
@@ -104,6 +108,7 @@ pub fn show(
                             assistant_message(
                                 ui,
                                 md_cache,
+                                drawings,
                                 images,
                                 AssistantCtx {
                                     conv: conv.id,
@@ -114,6 +119,7 @@ pub fn show(
                                     streaming,
                                     show_stats: v.show_stats,
                                     reasoning: v.reasoning,
+                                    remote_images: v.remote_images,
                                     header: first_of_turn.then_some(v.model),
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                 },
@@ -201,6 +207,7 @@ struct AssistantCtx<'a> {
     streaming: bool,
     show_stats: bool,
     reasoning: ReasoningDisplay,
+    remote_images: bool,
     /// Show the header row with this model name.
     header: Option<&'a str>,
     /// The final reply: show Regenerate.
@@ -210,6 +217,7 @@ struct AssistantCtx<'a> {
 fn assistant_message(
     ui: &mut egui::Ui,
     md_cache: &mut CommonMarkCache,
+    drawings: &mut DrawingCache,
     images: &mut ImageCache,
     cx: AssistantCtx<'_>,
     msg: &ChatMessage,
@@ -264,7 +272,16 @@ fn assistant_message(
         });
     }
     if !msg.content.is_empty() {
-        CommonMarkViewer::new().show(ui, md_cache, &msg.content);
+        let id = ui.make_persistent_id(("reply", cx.conv, cx.idx));
+        markdown::show(
+            ui,
+            md_cache,
+            drawings,
+            id,
+            &msg.content,
+            cx.remote_images,
+            actions,
+        );
     }
     for call in &msg.tool_calls {
         let result = cx.results.get(call.id.as_str()).copied();
@@ -350,7 +367,8 @@ fn tool_card(
     actions: &mut Vec<Action>,
 ) {
     let dark = ui.visuals().dark_mode;
-    let pending_approval = run.is_some_and(|r| r.approvals.iter().any(|(c, _)| c.id == call.id));
+    let pending = run.and_then(|r| r.approvals.iter().find(|p| p.call.id == call.id));
+    let pending_approval = pending.is_some();
     let running = result.is_none()
         && run.is_some_and(|r| r.running_tool.as_deref() == Some(call.id.as_str()));
     let pretty_args = serde_json::from_str::<serde_json::Value>(&call.arguments)
@@ -450,24 +468,61 @@ fn tool_card(
                     subagent_list(ui, &call.id, reports);
                 }
             }
-            if pending_approval {
+            if let Some(pending) = pending {
                 if !state_is_open(ui, id) {
                     code_block(ui, &pretty_args);
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Allow this tool call?");
-                    if ui
-                        .add(theme::primary_button(format!("{}  Run", icon::OK), dark))
-                        .clicked()
-                    {
-                        actions.push(Action::Approve(conv, call.id.clone(), true));
-                    }
-                    if ui.button(format!("{}  Deny", icon::CLOSE)).clicked() {
-                        actions.push(Action::Approve(conv, call.id.clone(), false));
-                    }
-                });
+                approval_prompt(ui, conv, pending, actions);
             }
         });
+}
+
+/// "Allow this tool call?" with Run, the two "Always allow" choices, and Deny.
+fn approval_prompt(
+    ui: &mut egui::Ui,
+    conv: Uuid,
+    pending: &PendingApproval,
+    actions: &mut Vec<Action>,
+) {
+    let dark = ui.visuals().dark_mode;
+    let mut answer = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Allow this tool call?");
+        if ui
+            .add(theme::primary_button(format!("{}  Run", icon::OK), dark))
+            .clicked()
+        {
+            answer = Some(Approval::Once);
+        }
+        if ui
+            .button("Always allow this tool")
+            .on_hover_text("Run this tool without asking for the rest of this chat")
+            .clicked()
+        {
+            answer = Some(Approval::AlwaysTool);
+        }
+        if pending.origin.is_some() {
+            let server = match &pending.server_name {
+                Some(name) => format!("the {name} MCP server"),
+                None => "this MCP server".into(),
+            };
+            if ui
+                .button("Always allow this server")
+                .on_hover_text(format!(
+                    "Run every tool from {server} without asking for the rest of this chat"
+                ))
+                .clicked()
+            {
+                answer = Some(Approval::AlwaysServer);
+            }
+        }
+        if ui.button(format!("{}  Deny", icon::CLOSE)).clicked() {
+            answer = Some(Approval::Deny);
+        }
+    });
+    if let Some(answer) = answer {
+        actions.push(Action::Approve(conv, pending.call.id.clone(), answer));
+    }
 }
 
 /// A task list from the built-in task tool, as a checklist. Superseded lists show as one line.

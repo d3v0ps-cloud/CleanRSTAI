@@ -1,7 +1,8 @@
 # CleanRSTAI Roadmap
 
-Ticked items have shipped: items 1–8 in **v0.3.0**, items 9–12 in **v0.4.0**. Unticked items
-are still open.
+Ticked items have shipped: items 1–8 in **v0.3.0**, items 9–12 in **v0.4.0**. Items ticked
+since v0.4.0 (rich markdown and SVGs in chat, "Always allow" on the approval prompt) are on
+`main` for the next release. Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
 
@@ -68,10 +69,11 @@ are still open.
 
 ## 7. Richer chat input and output
 
-- [x] Attach images and files, for vision-capable models- [x] Render images returned by MCP tools
+- [x] Attach images and files, for vision-capable models
+- [x] Render images returned by MCP tools
 - [x] Export a single chat as Markdown
-- [ ] Rich markdown rendering in chat, including code blocks, tables, images and mermaid diagrams
-- [ ] Support for rendering SVGs in chat
+- [x] Rich markdown rendering in chat, including code blocks, tables, images and mermaid diagrams
+- [x] Support for rendering SVGs in chat
 
 ## 8. Broader MCP support
 
@@ -96,7 +98,7 @@ Tools that ship with the app, so they work without configuring an MCP server.
 - [x] Turn whole servers or single tools on and off for the current chat without opening
   Settings
 - [x] Changes apply from the next request; Settings keeps the default for new chats
-- [ ] On the tool call approval prompt, offer "Always allow this tool" and "Always allow this
+- [x] On the tool call approval prompt, offer "Always allow this tool" and "Always allow this
   MCP server" buttons that skip approval for the rest of the session
 
 ## 11. Reasoning display
@@ -122,5 +124,5 @@ back.
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
-- [ ] Turn on "Automatically delete head branches" in the repository settings, and delete the
+- [x] Turn on "Automatically delete head branches" in the repository settings, and delete the
   merged `claude/*` branches

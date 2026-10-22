@@ -3,6 +3,7 @@
 
 mod agent;
 mod app;
+mod approval;
 mod attach;
 mod config;
 mod env_path;

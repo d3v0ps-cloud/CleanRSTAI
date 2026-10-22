@@ -55,13 +55,18 @@ macOS is the primary platform; Linux and Windows are fully supported.
     kept in the keychain and refreshed automatically. For servers without automatic
     registration you can enter an OAuth client ID.
 - **Tool calling loop**: the model can call tools across multiple rounds. Each call shows its
-  arguments and result, and asks for your approval unless you turn on auto-approve.
+  arguments and result, and asks for your approval unless you turn on auto-approve. On the
+  approval prompt, **Always allow this tool** or **Always allow this server** skips approval
+  for that tool or MCP server for the rest of the chat (until the app quits).
 - **Modern interface**: light and dark themes, icon set, a collapsible sidebar with chats
   grouped by date and pinnable, compact tool-call cards, a full-page searchable settings
   screen and a ⌘K command palette.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, or stop a generation.
-- **Markdown rendering** with syntax-highlighted code blocks and tables.
+- **Markdown rendering** with syntax-highlighted code blocks, tables and images. ```` ```mermaid ````
+  blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
+  click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
+  show as links unless you turn on **Load web images in replies** in Settings → General.
 - **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the paperclip button or by
   dropping them on the window. Images go to vision models as `image_url` parts and text files
   are included inline. Images returned by MCP tools appear in the chat; click any image to
@@ -202,7 +207,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator and task list on or off by default |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
-| General | System prompt, theme, UI scale, send key, reasoning display, auto-approve tools, max tool rounds, tool timeout, updates, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates, export |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
 connection settings changed are reconnected.
@@ -302,8 +307,9 @@ Source layout:
 src/
   main.rs         startup: PATH fix, tokio runtime, eframe window
   app.rs          main UI: sidebar, chat view, input, event handling
-  ui/             theme and icons, chat view, settings page, command palette, widgets
+  ui/             theme and icons, chat view, markdown and drawings, settings page, palette
   agent.rs        generation loop: stream, run tool calls, repeat
+  approval.rs     tool-call approvals and the per-chat "Always allow" list
   tools/          built-in tools (time, calculator, task list), per-chat tool switches
   subagent.rs     the delegate tool: parallel subagents with their own model/tool loop
   llm.rs          OpenAI-compatible /chat/completions and /models client

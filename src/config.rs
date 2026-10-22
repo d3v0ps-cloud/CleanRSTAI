@@ -296,6 +296,9 @@ pub struct GeneralSettings {
     /// Look for a newer release on GitHub at startup.
     pub check_for_updates: bool,
     pub reasoning_display: ReasoningDisplay,
+    /// Load images that replies link to on the web. Off by default: a reply could otherwise
+    /// send data to any server just by being shown.
+    pub load_remote_images: bool,
     pub builtin_tools: BuiltinToolSettings,
 }
 
@@ -313,6 +316,7 @@ impl Default for GeneralSettings {
             use_keychain: true,
             check_for_updates: true,
             reasoning_display: ReasoningDisplay::default(),
+            load_remote_images: false,
             builtin_tools: BuiltinToolSettings::default(),
         }
     }
