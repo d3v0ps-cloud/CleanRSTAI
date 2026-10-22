@@ -28,6 +28,12 @@ macOS is the primary platform; Linux and Windows are fully supported.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, or stop a generation.
 - **Markdown rendering** with syntax-highlighted code blocks and tables.
+- **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the 📎 button or by
+  dropping them on the window. Images go to vision models as `image_url` parts and text files
+  are included inline. Images returned by MCP tools appear in the chat; click any image to
+  enlarge it.
+- **Export a chat as Markdown** from its right-click menu in the sidebar, including tool calls,
+  results and images.
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
   (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
 

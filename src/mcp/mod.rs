@@ -25,6 +25,8 @@ pub struct McpTool {
 pub struct ToolOutput {
     pub text: String,
     pub is_error: bool,
+    /// Images the tool returned, shown in the chat.
+    pub images: Vec<crate::attach::Attachment>,
 }
 
 enum Transport {
@@ -276,6 +278,7 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
         .and_then(|e| e.as_bool())
         .unwrap_or(false);
     let mut parts = Vec::new();
+    let mut images = Vec::new();
     for item in res
         .get("content")
         .and_then(|c| c.as_array())
@@ -289,7 +292,27 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_owned(),
-            "image" | "audio" => format!(
+            "image" => {
+                let mime = item
+                    .get("mimeType")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("image/png");
+                let name = format!(
+                    "image-{}.{}",
+                    images.len() + 1,
+                    mime.rsplit('/').next().unwrap_or("png")
+                );
+                if let Some(data) = item.get("data").and_then(|d| d.as_str()) {
+                    images.push(crate::attach::Attachment {
+                        name: name.clone(),
+                        mime: mime.to_owned(),
+                        text: None,
+                        data: Some(data.to_owned()),
+                    });
+                }
+                format!("[image: {name}]")
+            }
+            "audio" => format!(
                 "[{ty}: {}]",
                 item.get("mimeType")
                     .and_then(|m| m.as_str())
@@ -321,6 +344,7 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
     ToolOutput {
         text: parts.join("\n"),
         is_error,
+        images,
     }
 }
 
@@ -339,7 +363,10 @@ mod tests {
             "isError": true
         }));
         assert!(out.is_error);
-        assert_eq!(out.text, "hello\n[image: image/png]\nbody");
+        assert_eq!(out.text, "hello\n[image: image-1.png]\nbody");
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].mime, "image/png");
+        assert_eq!(out.images[0].data.as_deref(), Some("..."));
     }
 
     #[test]

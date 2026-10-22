@@ -43,6 +43,9 @@ pub struct ChatMessage {
     /// Speed and token stats for the request that produced this assistant message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<crate::stats::RequestStats>,
+    /// Images and text files attached by the user, or images returned by a tool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attach::Attachment>,
 }
 
 impl ChatMessage {
@@ -56,6 +59,7 @@ impl ChatMessage {
             reasoning: None,
             is_error: false,
             stats: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -134,7 +138,14 @@ impl Conversation {
             return;
         }
         if let Some(first) = self.messages.iter().find(|m| m.role == Role::User) {
-            let line = first.content.lines().next().unwrap_or("").trim();
+            let line = first
+                .content
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .or_else(|| first.attachments.first().map(|a| a.name.as_str()))
+                .unwrap_or("");
             let mut title: String = line.chars().take(48).collect();
             if line.chars().count() > 48 {
                 title.push('…');

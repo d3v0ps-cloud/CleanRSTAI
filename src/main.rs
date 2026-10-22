@@ -3,6 +3,7 @@
 
 mod agent;
 mod app;
+mod attach;
 mod config;
 mod env_path;
 mod export;
