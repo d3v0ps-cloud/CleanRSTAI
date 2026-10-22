@@ -102,7 +102,7 @@ Open **⚙ Settings** (or press ⌘/Ctrl + ,).
 |---|---|
 | Providers | Name, base URL (with presets), API key, model, temperature, max tokens, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| General | System prompt, theme, UI scale, send key, auto-approve tools, max tool rounds, tool timeout |
+| General | System prompt, theme, UI scale, send key, auto-approve tools, max tool rounds, tool timeout, export |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
 connection settings changed are reconnected.
@@ -114,6 +114,20 @@ Files are stored at:
 | macOS | `~/Library/Application Support/net.bukn.CleanRSTAI/settings.json` | `~/Library/Application Support/net.bukn.CleanRSTAI/conversations/` |
 | Linux | `~/.config/cleanrstai/settings.json` | `~/.local/share/cleanrstai/conversations/` |
 | Windows | `%APPDATA%\bukn\CleanRSTAI\config\settings.json` | `%APPDATA%\bukn\CleanRSTAI\data\conversations\` |
+
+### Export
+
+**Settings → General → Export** saves a JSON file through the system save dialog:
+
+- **Export settings…** writes providers, MCP servers and preferences as last saved. By default,
+  API keys, HTTP header values and MCP environment variable values are left blank, while
+  their names are kept. Tick *Include API keys and secrets* for a complete backup.
+- **Export conversations…** writes every chat, including tool calls and their results, to a
+  single file.
+
+Both files record the app version and export time. They are created readable only by you on
+macOS and Linux. On Linux the save dialog uses the desktop portal (`xdg-desktop-portal`),
+which standard desktops already provide.
 
 > API keys are stored in plain text in `settings.json`. On macOS and Linux the file is created
 > with `0600` permissions.
@@ -175,6 +189,7 @@ src/
   sse.rs          incremental Server-Sent Events parser
   mcp/            MCP client: stdio and Streamable HTTP transports, connection manager
   config.rs       settings model, persistence, mcpServers JSON import
+  export.rs       settings / conversations export with secret redaction
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
 ```

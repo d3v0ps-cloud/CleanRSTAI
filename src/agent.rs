@@ -293,9 +293,14 @@ mod tests {
         );
     }
 
+    /// Both e2e tests start the same package with `npx -y`; running those installs at the
+    /// same time on a cold npm cache can race, so the tests take turns.
+    static NPX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn e2e_stdio_mcp() {
+        let _guard = NPX_LOCK.lock().await;
         run_agent_against(McpTransportConfig::Stdio {
             command: "npx".into(),
             args: vec![
@@ -311,12 +316,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn e2e_streamable_http_mcp() {
+        let _guard = NPX_LOCK.lock().await;
         // Pick a free port rather than hard-coding one.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
+        let stderr_path = std::env::temp_dir().join(format!("cleanrstai-mcp-http-{port}.log"));
         let mut child = tokio::process::Command::new(which::which("npx").expect("npx not found"))
             .args([
                 "-y",
@@ -326,7 +333,9 @@ mod tests {
             .env("PORT", port.to_string())
             .kill_on_drop(true)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            // A file rather than a pipe: on Windows a pipe held open by the orphaned `node`
+            // would keep the runtime's blocking reader (and so the test) alive forever.
+            .stderr(std::fs::File::create(&stderr_path).unwrap())
             .spawn()
             .unwrap();
         // A cold `npx` download can take a while on CI runners.
@@ -339,7 +348,8 @@ mod tests {
                 break;
             }
             if let Some(status) = child.try_wait().unwrap() {
-                panic!("MCP HTTP server exited before listening: {status}");
+                let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+                panic!("MCP HTTP server exited before listening: {status}\nstderr:\n{stderr}");
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -352,6 +362,10 @@ mod tests {
             headers: vec![],
         })
         .await;
+        if let Some(pid) = child.id() {
+            crate::mcp::stdio::kill_process_tree(pid);
+        }
         let _ = child.kill().await;
+        let _ = std::fs::remove_file(&stderr_path);
     }
 }

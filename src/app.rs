@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::config::{Settings, Theme};
+use crate::export;
 use crate::llm;
 use crate::mcp::manager::McpManager;
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
@@ -749,6 +750,15 @@ impl ChatApp {
     }
 }
 
+/// Ask where to save `doc` and write it. `None` if the user cancelled the dialog.
+fn run_export(kind: &str, doc: &serde_json::Value) -> Option<Result<String, String>> {
+    let path = export::pick_save_path(&export::default_file_name(kind))?;
+    Some(match export::write_document(&path, doc) {
+        Ok(()) => Ok(format!("Exported {kind} to {}", path.display())),
+        Err(e) => Err(format!("Export failed: {e:#}")),
+    })
+}
+
 /// Lay out `add` in a centered column of at most `MAX_CONTENT_WIDTH`.
 fn centered(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     let avail = ui.available_width();
@@ -974,6 +984,14 @@ impl eframe::App for ChatApp {
                         sui.draft.active_provider = self.settings.active_provider;
                     }
                     SettingsAction::Close => keep = false,
+                    SettingsAction::ExportSettings { include_secrets } => {
+                        let doc = export::settings_document(&self.settings, include_secrets);
+                        sui.export_status = run_export("settings", &doc);
+                    }
+                    SettingsAction::ExportConversations => {
+                        let doc = export::conversations_document(&self.conversations);
+                        sui.export_status = run_export("conversations", &doc);
+                    }
                     SettingsAction::Reconnect(id) => self.mcp.connect(&id),
                     SettingsAction::RefreshTools(id) => self.mcp.refresh_tools(&id),
                     SettingsAction::FetchModels(p) => {

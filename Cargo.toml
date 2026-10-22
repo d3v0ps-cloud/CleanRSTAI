@@ -1,6 +1,6 @@
 [package]
 name = "cleanrstai"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A cross-platform desktop AI chat client for OpenAI-compatible endpoints with MCP support"
@@ -21,6 +21,7 @@ chrono = { version = "0.4", features = ["serde"] }
 which = "8"
 log = "0.4"
 env_logger = "0.11"
+rfd = "0.17"
 
 [profile.release]
 lto = "thin"

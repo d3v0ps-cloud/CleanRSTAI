@@ -24,17 +24,41 @@ pub struct StdioTransport {
     closed: Arc<Mutex<Option<String>>>,
     stderr: Arc<Mutex<VecDeque<String>>>,
     tasks: Vec<JoinHandle<()>>,
-    _child: Child,
+    child: Child,
 }
 
 impl Drop for StdioTransport {
     fn drop(&mut self) {
+        // On Windows `npx` runs as `cmd.exe` → `node`; killing only the direct child would
+        // leave `node` running and holding our pipes open.
+        if let Some(pid) = self.child.id() {
+            kill_process_tree(pid);
+        }
         // Aborting the readers closes our pipe ends, so grandchildren (e.g. the `node`
         // started by `npx`) see EOF and exit even though only the direct child is killed.
         for t in &self.tasks {
             t.abort();
         }
     }
+}
+
+/// Kill a process and all its descendants. Only needed on Windows: elsewhere closing the
+/// pipes is enough for well-behaved servers, and the direct child is killed on drop.
+pub(crate) fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 /// Find the executable, honouring a PATH override from the server's env settings.
@@ -155,7 +179,7 @@ impl StdioTransport {
             closed,
             stderr,
             tasks: vec![stdout_task, stderr_task],
-            _child: child,
+            child,
         })
     }
 

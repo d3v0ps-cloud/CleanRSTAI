@@ -5,6 +5,7 @@ mod agent;
 mod app;
 mod config;
 mod env_path;
+mod export;
 mod llm;
 mod mcp;
 mod sse;
@@ -34,9 +35,13 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "CleanRSTAI",
         options,
         Box::new(move |cc| Ok(Box::new(app::ChatApp::new(cc, handle)))),
-    )
+    );
+    // Don't wait indefinitely for blocking I/O (e.g. a pipe held open by an MCP server's
+    // child process) when quitting.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+    result
 }
