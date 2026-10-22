@@ -88,6 +88,12 @@ impl Delegation {
         }
         force(&mut selection, "tasks", false);
         force(&mut selection, "subagents", false);
+        for id in &sa.excluded_servers {
+            selection
+                .overrides
+                .0
+                .insert(ToolOverrides::server_key(id), false);
+        }
         Some(Self {
             settings: sa.clone(),
             providers: settings.providers.clone(),
@@ -410,7 +416,11 @@ mod tests {
         ov.set(ToolOverrides::builtin_key("subagents"), false, true);
         assert!(Delegation::new(&s, &ToolSelection::new(&s, &ov)).is_none());
 
+        let mut s = s;
+        s.subagents.excluded_servers = vec!["srv".into()];
         let d = Delegation::new(&s, &ToolSelection::new(&s, &ToolOverrides::default())).unwrap();
+        assert!(!d.selection.tool_on("srv", "any"));
+        assert!(d.selection.tool_on("other", "any"));
         assert!(d.selection.builtin_on("calculator"));
         assert!(!d.selection.builtin_on("tasks"));
         assert!(!d.selection.builtin_on("subagents"));

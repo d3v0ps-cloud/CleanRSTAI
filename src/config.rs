@@ -243,6 +243,8 @@ pub struct SubagentSettings {
     pub builtin_tools: bool,
     /// Subagents may use the chat's MCP tools. Their calls run without asking.
     pub mcp_tools: bool,
+    /// MCP servers (by id) subagents may not use, even when on in the chat.
+    pub excluded_servers: Vec<String>,
     /// How many subagents run at the same time.
     pub max_parallel: u32,
     /// Most tasks one `delegate` call may hand out.
@@ -266,6 +268,7 @@ impl Default for SubagentSettings {
             allow_provider_choice: true,
             builtin_tools: true,
             mcp_tools: false,
+            excluded_servers: Vec::new(),
             max_parallel: 3,
             max_tasks: 8,
             max_rounds: 10,
@@ -455,6 +458,9 @@ impl Settings {
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
         }
+        let servers = &self.mcp_servers;
+        sa.excluded_servers
+            .retain(|id| servers.iter().any(|s| &s.id == id));
     }
 
     /// The provider profile subagents use when a task doesn't name one.

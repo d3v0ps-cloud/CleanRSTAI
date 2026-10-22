@@ -894,6 +894,13 @@ impl SettingsUi {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone(), p.models.clone()))
             .collect();
+        let servers: Vec<(String, String)> = self
+            .draft
+            .mcp_servers
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect();
         let sa = &mut self.draft.subagents;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -982,6 +989,20 @@ impl SettingsUi {
                                     "Time and calculator (when on in the chat)",
                                 );
                                 ui.checkbox(&mut sa.mcp_tools, "The chat's MCP tools");
+                                if sa.mcp_tools && !servers.is_empty() {
+                                    ui.indent("sa-servers", |ui| {
+                                        for (id, name) in &servers {
+                                            let mut on = !sa.excluded_servers.contains(id);
+                                            if ui.checkbox(&mut on, name).changed() {
+                                                if on {
+                                                    sa.excluded_servers.retain(|x| x != id);
+                                                } else {
+                                                    sa.excluded_servers.push(id.clone());
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
                                 if sa.mcp_tools {
                                     ui.colored_label(
                                         ui.visuals().warn_fg_color,
