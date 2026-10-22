@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows installer for local builds with wixl (msitools), which reads the WiX 3 schema:
+    wixl -a x64 -D Version=0.4.0 -D Exe=target/x86_64-pc-windows-gnu/release/cleanrstai.exe \
+         -o CleanRSTAI.msi packaging/windows/wixl.wxs
+  Keep it equivalent to main.wxs (WiX 5, used by the release workflow). The UpgradeCode must
+  match main.wxs and never change: it is how newer installers find and replace older ones.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="CleanRSTAI"
+           Manufacturer="CleanRSTAI"
+           Version="$(var.Version)"
+           UpgradeCode="be754cee-9c94-46bc-a7cb-a6a11a488893"
+           Language="1033">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of CleanRSTAI is already installed." />
+    <Media Id="1" Cabinet="cleanrstai.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="CleanRSTAI">
+          <Component Id="MainExecutable" Guid="e2f90a5d-8f62-46cc-81b3-6a39f175c9f2" Win64="yes">
+            <File Id="CleanRSTAIExe" Name="cleanrstai.exe" Source="$(var.Exe)" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenuShortcut" Guid="f473b50a-9408-4201-b139-5d4092868bf6" Win64="yes">
+          <Shortcut Id="AppShortcut"
+                    Name="CleanRSTAI"
+                    Description="AI chat client"
+                    Target="[INSTALLFOLDER]cleanrstai.exe"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <RegistryValue Root="HKCU" Key="Software\CleanRSTAI" Name="StartMenuShortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Product>
+</Wix>

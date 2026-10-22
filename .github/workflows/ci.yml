@@ -1,9 +1,13 @@
 name: CI
 
+# Manual only for now (Actions → CI → Run workflow): the account's Actions minutes ran out,
+# so builds and tests run locally (see "Releasing without GitHub Actions" in the README).
+# To re-enable automatic runs, restore:
+#   push:
+#     branches: [main]
+#   pull_request:
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
