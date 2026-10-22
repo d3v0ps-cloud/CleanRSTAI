@@ -90,6 +90,9 @@ pub struct Conversation {
     /// Tools and MCP servers switched on or off for this chat only.
     #[serde(default, skip_serializing_if = "crate::tools::ToolOverrides::is_empty")]
     pub tool_overrides: crate::tools::ToolOverrides,
+    /// The local folder this chat works in, with the workspace tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 impl Conversation {
@@ -103,6 +106,7 @@ impl Conversation {
             messages: Vec::new(),
             pinned: false,
             tool_overrides: Default::default(),
+            workspace: None,
         }
     }
 

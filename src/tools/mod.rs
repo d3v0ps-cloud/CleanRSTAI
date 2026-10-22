@@ -4,6 +4,7 @@
 
 pub mod calc;
 pub mod fetch;
+pub mod workspace;
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -35,12 +36,16 @@ pub const BUILTINS: [(&str, &str, &str); 5] = [
 
 pub fn is_builtin(function: &str) -> bool {
     BUILTINS.iter().any(|(name, ..)| *name == function)
+        || workspace::TOOLS.iter().any(|(name, _)| *name == function)
 }
 
 /// Label for a tool call card: built-ins by name, MCP tools as `server › tool`.
 pub fn display_name(function: &str) -> String {
-    match BUILTINS.iter().find(|(name, ..)| *name == function) {
-        Some((.., label)) => (*label).to_owned(),
+    if let Some((.., label)) = BUILTINS.iter().find(|(name, ..)| *name == function) {
+        return (*label).to_owned();
+    }
+    match workspace::TOOLS.iter().find(|(name, _)| *name == function) {
+        Some((_, label)) => (*label).to_owned(),
         None => McpManager::display_name(function),
     }
 }
@@ -137,6 +142,7 @@ impl ToolSelection {
             "calculator" => self.builtins.calculator,
             "tasks" => self.builtins.tasks,
             "fetch" => self.builtins.fetch,
+            ws if workspace::TOOLS.iter().any(|(name, _)| *name == ws) => self.builtins.workspace,
             "subagents" => self.subagents,
             _ => false,
         }
@@ -158,6 +164,8 @@ pub struct Toolbox {
     mcp: ToolRouter,
     /// For the fetch tool.
     http: Option<reqwest::Client>,
+    /// The chat's workspace, for the workspace tools.
+    workspace: Option<workspace::Workspace>,
 }
 
 impl Toolbox {
@@ -184,7 +192,25 @@ impl Toolbox {
             specs,
             mcp,
             http: None,
+            workspace: None,
         }
+    }
+
+    /// Offer the workspace tools that `selection` allows, working in `ws`.
+    pub fn with_workspace(mut self, ws: workspace::Workspace, selection: &ToolSelection) -> Self {
+        // After the built-ins, before the MCP tools.
+        let at = self
+            .specs
+            .iter()
+            .take_while(|s| is_builtin(&s.name))
+            .count();
+        let specs = workspace::TOOLS
+            .iter()
+            .filter(|(name, _)| selection.builtin_on(name))
+            .map(|(name, _)| workspace::spec(name));
+        self.specs.splice(at..at, specs);
+        self.workspace = Some(ws);
+        self
     }
 
     /// The HTTP client the fetch tool uses.
@@ -205,10 +231,14 @@ impl Toolbox {
         self.mcp.origin(function)
     }
 
-    /// The local built-ins (time, calculator, tasks) skip approval; `fetch` reaches the
-    /// network and `delegate` starts subagents, so they ask like MCP tools do.
+    /// The local built-ins (time, calculator, tasks) and the read-only workspace tools skip
+    /// approval; `fetch` reaches the network, `delegate` starts subagents, and writing,
+    /// editing and running commands change things, so they ask like MCP tools do.
     pub fn needs_approval(function: &str) -> bool {
-        !is_builtin(function) || function == DELEGATE || function == FETCH
+        !is_builtin(function)
+            || function == DELEGATE
+            || function == FETCH
+            || workspace::changes_things(function)
     }
 
     /// Run a built-in (except `delegate`, which the agent handles) or an MCP tool.
@@ -217,6 +247,14 @@ impl Toolbox {
             return error_output(format!(
                 "Error: the tool '{function}' is not available in this chat."
             ));
+        }
+        if let Some(ws) = &self.workspace
+            && workspace::TOOLS.iter().any(|(name, _)| *name == function)
+        {
+            return match parse_args(arguments) {
+                Ok(args) => ws.call(function, &args, timeout).await,
+                Err(e) => error_output(format!("Error: {e:#}")),
+            };
         }
         if function == FETCH {
             let Some(http) = &self.http else {
@@ -241,7 +279,7 @@ impl Toolbox {
     }
 }
 
-fn text_output(text: impl Into<String>) -> ToolOutput {
+pub(crate) fn text_output(text: impl Into<String>) -> ToolOutput {
     ToolOutput {
         text: text.into(),
         is_error: false,

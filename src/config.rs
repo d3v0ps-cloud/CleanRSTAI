@@ -216,6 +216,8 @@ pub struct BuiltinToolSettings {
     pub tasks: bool,
     /// Fetch web URLs (asks for approval, like MCP tools).
     pub fetch: bool,
+    /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
+    pub workspace: bool,
 }
 
 impl Default for BuiltinToolSettings {
@@ -225,6 +227,7 @@ impl Default for BuiltinToolSettings {
             calculator: true,
             tasks: true,
             fetch: true,
+            workspace: true,
         }
     }
 }

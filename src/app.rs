@@ -256,10 +256,23 @@ impl ChatApp {
             .filter(|s| s.enabled)
             .map(|s| (s.id.clone(), s.name.clone()))
             .collect();
+        let has_workspace = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some());
+        let workspace_on = if has_workspace {
+            crate::tools::workspace::TOOLS
+                .iter()
+                .filter(|(k, _)| sel.builtin_on(k))
+                .count()
+        } else {
+            0
+        };
         let builtins_on = BUILTINS
             .iter()
             .filter(|(_, k, _)| sel.builtin_on(k))
-            .count();
+            .count()
+            + workspace_on;
         let mcp_on: usize = views
             .iter()
             .filter(|v| v.status == crate::mcp::manager::ServerStatus::Connected)
@@ -314,6 +327,26 @@ impl ChatApp {
                                         on,
                                         sel.builtin_default(key),
                                     ));
+                                }
+                            }
+                            if has_workspace {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.label(RichText::new("Workspace").small().weak());
+                                for (key, name) in crate::tools::workspace::TOOLS {
+                                    let mut on = sel.builtin_on(key);
+                                    let ic = if key == crate::tools::workspace::SHELL {
+                                        icon::TERMINAL
+                                    } else {
+                                        icon::FOLDER
+                                    };
+                                    if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
+                                        changes.push((
+                                            ToolOverrides::builtin_key(key),
+                                            on,
+                                            sel.builtin_default(key),
+                                        ));
+                                    }
                                 }
                             }
                             for (id, name) in &servers {
@@ -438,6 +471,7 @@ impl ChatApp {
             history: conv.messages.clone(),
             delegation: Delegation::new(&self.settings, &selection),
             selection,
+            workspace: conv.workspace.clone(),
         };
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
@@ -1284,6 +1318,73 @@ impl ChatApp {
         });
     }
 
+    /// The chat's working folder, under the composer: "Set working directory", or the
+    /// folder's name with a button to clear it.
+    fn workspace_picker(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui.visuals().dark_mode);
+        let current = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .and_then(|c| c.workspace.clone());
+        let label = match &current {
+            Some(path) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                RichText::new(theme::labelled(icon::FOLDER, &name)).color(p.ink2)
+            }
+            None => RichText::new(theme::labelled(icon::FOLDER, "Set working directory"))
+                .color(p.pencil),
+        };
+        let hover = match &current {
+            Some(path) => format!(
+                "{}\nThe model can read, search, edit and run commands in this folder. Click to change.",
+                path.display()
+            ),
+            None => "Choose a local folder for this chat; the model gets tools to read, \
+                     search, edit and run commands in it"
+                .to_owned(),
+        };
+        let resp = ui
+            .add(egui::Button::new(label.small()).frame_when_inactive(false))
+            .on_hover_text(hover);
+        if resp.clicked() {
+            let mut dialog = rfd::FileDialog::new().set_title("Choose a working folder");
+            if let Some(path) = &current {
+                dialog = dialog.set_directory(path);
+            }
+            if let Some(folder) = dialog.pick_folder() {
+                self.set_workspace(Some(folder));
+            }
+        }
+        if current.is_some()
+            && ui
+                .add(
+                    egui::Button::new(RichText::new(icon::CLOSE).size(11.0).color(p.pencil))
+                        .frame_when_inactive(false),
+                )
+                .on_hover_text("Stop using this folder")
+                .clicked()
+        {
+            self.set_workspace(None);
+        }
+    }
+
+    /// Set or clear the current chat's working folder (starting a chat if there is none).
+    fn set_workspace(&mut self, folder: Option<std::path::PathBuf>) {
+        if self.current.is_none_or(|id| self.conv_mut(id).is_none()) {
+            self.new_chat();
+        }
+        let Some(conv) = self.current.and_then(|id| self.conv_mut(id)) else {
+            return;
+        };
+        conv.workspace = folder;
+        if !conv.messages.is_empty() {
+            conv.save();
+        }
+    }
+
     /// Model and provider, under the composer: "model  Provider ⌄".
     fn model_picker(&mut self, ui: &mut egui::Ui) {
         use egui::containers::menu::{MenuButton, MenuConfig};
@@ -1684,8 +1785,9 @@ impl ChatApp {
                         });
                     });
                 });
-            // Under the box: the model the message goes to.
+            // Under the box: the working folder on the left, the model on the right.
             ui.horizontal(|ui| {
+                self.workspace_picker(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.model_picker(ui);
                 });

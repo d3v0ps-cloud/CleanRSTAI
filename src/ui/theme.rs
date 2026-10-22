@@ -53,6 +53,8 @@ pub mod icon {
     pub const CLOCK: &str = "\u{E19A}";
     pub const CALCULATOR: &str = "\u{E538}";
     pub const GLOBE: &str = "\u{E288}";
+    pub const FOLDER: &str = "\u{E24A}";
+    pub const TERMINAL: &str = "\u{EAE8}";
 }
 
 /// The colours of one mode.
