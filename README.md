@@ -93,7 +93,36 @@ open target/release/bundle/osx/CleanRSTAI.app
 
 ## Releases
 
-Pushing a version tag runs `.github/workflows/release.yml`:
+> **GitHub Actions are currently manual-only** because the account's Actions minutes ran
+> out: nothing runs on push, pull request or tag. Build, test and publish locally with
+> `scripts/release-local.sh` (below), or start a workflow by hand from the Actions tab.
+
+### Releasing without GitHub Actions
+
+```sh
+scripts/release-local.sh              # fmt, clippy, unit + e2e tests, then build into dist/v<version>/
+scripts/release-local.sh --publish    # ...and create the GitHub Release and push to ghcr.io
+scripts/release-local.sh --skip-tests # build only
+```
+
+The version comes from `Cargo.toml` and the commit must already be pushed. The script builds
+every target the machine can:
+
+| Target | Needs |
+|---|---|
+| Linux x86_64 | a Linux x86_64 host |
+| Linux aarch64 | an ARM64 Linux host, or `aarch64-linux-gnu-gcc` for cross builds |
+| Windows x86_64 `.zip` / `.msi` | MinGW (`x86_64-w64-mingw32-gcc`); the `.msi` also needs `wixl` (msitools) |
+| macOS universal `.zip` / `.dmg` | a Mac |
+
+`--publish` needs `gh`, `oras`, and a token in `GH_TOKEN` (or `GITHUB_TOKEN`): a classic
+personal access token with the `repo` and `write:packages` scopes (GitHub Packages' container
+registry doesn't accept fine-grained tokens). Targets that could not
+be built are listed in the release notes.
+
+### Releasing with GitHub Actions
+
+Pushing a version tag runs `.github/workflows/release.yml` (when its tag trigger is enabled):
 
 ```sh
 # bump `version` in Cargo.toml first; the tag must match it

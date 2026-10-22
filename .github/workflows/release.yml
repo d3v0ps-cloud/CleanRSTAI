@@ -14,9 +14,13 @@ name: Release
 #     WINDOWS_CERTIFICATE           base64 of the code-signing .pfx
 #     WINDOWS_CERTIFICATE_PASSWORD  password of that .pfx
 # Without them, the macOS app is ad-hoc signed and the Windows files are unsigned.
+#
+# Manual only for now: the account's Actions minutes ran out, so releases are built and
+# published locally with scripts/release-local.sh. To re-enable tag-triggered releases, add
+# back under `on:`
+#   push:
+#     tags: ["v*"]
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
