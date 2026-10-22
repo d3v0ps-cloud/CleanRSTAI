@@ -13,6 +13,8 @@ use crate::config::{Settings, Theme};
 use crate::export;
 use crate::llm;
 use crate::mcp::manager::McpManager;
+use crate::subagent::Delegation;
+use crate::tools::{ToolOverrides, ToolSelection};
 use crate::types::Group;
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
@@ -29,6 +31,8 @@ pub(crate) struct Run {
     task: JoinHandle<()>,
     pub(crate) approvals: Vec<(ToolCall, oneshot::Sender<bool>)>,
     pub(crate) running_tool: Option<String>,
+    /// Live subagent progress, by `delegate` call id.
+    pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
 }
 
 pub(crate) enum Action {
@@ -66,6 +70,8 @@ pub struct ChatApp {
     repaint_ctx: egui::Context,
     palette: Palette,
     sidebar_open: bool,
+    /// Tool switches made before the first message, applied to the chat it creates.
+    draft_tool_overrides: ToolOverrides,
     /// A newer release found on GitHub.
     update: Option<crate::update::Release>,
 }
@@ -131,6 +137,7 @@ impl ChatApp {
             repaint_ctx: cc.egui_ctx.clone(),
             palette: Palette::default(),
             sidebar_open: true,
+            draft_tool_overrides: ToolOverrides::default(),
             update: None,
         };
         if app.settings.general.check_for_updates {
@@ -169,7 +176,191 @@ impl ChatApp {
             self.current = Some(c.id);
             self.conversations.insert(0, c);
         }
+        let draft = std::mem::take(&mut self.draft_tool_overrides);
+        if !draft.is_empty()
+            && let Some(id) = self.current
+            && let Some(c) = self.conv_mut(id)
+        {
+            c.tool_overrides = draft;
+        }
         self.input.clear();
+    }
+
+    /// The current chat's tool switches (or the draft ones before a chat exists).
+    fn tool_overrides(&self) -> &ToolOverrides {
+        self.current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .map_or(&self.draft_tool_overrides, |c| &c.tool_overrides)
+    }
+
+    fn set_tool_override(&mut self, key: String, on: bool, default: bool) {
+        match self.current.and_then(|id| self.conv_mut(id)) {
+            Some(conv) => {
+                conv.tool_overrides.set(key, on, default);
+                if !conv.messages.is_empty() {
+                    conv.save();
+                }
+            }
+            None => self.draft_tool_overrides.set(key, on, default),
+        }
+    }
+
+    fn reset_tool_overrides(&mut self) {
+        match self.current.and_then(|id| self.conv_mut(id)) {
+            Some(conv) => {
+                conv.tool_overrides = ToolOverrides::default();
+                if !conv.messages.is_empty() {
+                    conv.save();
+                }
+            }
+            None => self.draft_tool_overrides = ToolOverrides::default(),
+        }
+    }
+
+    /// Dropdown next to the input: switch built-in tools, MCP servers and single MCP tools
+    /// on or off for this chat. Settings holds the defaults.
+    fn tools_menu(&mut self, ui: &mut egui::Ui) {
+        use crate::tools::BUILTINS;
+        use egui::containers::menu::{MenuButton, MenuConfig};
+
+        let overrides = self.tool_overrides().clone();
+        let sel = ToolSelection::new(&self.settings, &overrides);
+        let views = self.mcp.snapshot();
+        let servers: Vec<(String, String)> = self
+            .settings
+            .mcp_servers
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect();
+        let builtins_on = BUILTINS
+            .iter()
+            .filter(|(_, k, _)| sel.builtin_on(k))
+            .count();
+        let mcp_on: usize = views
+            .iter()
+            .filter(|v| v.status == crate::mcp::manager::ServerStatus::Connected)
+            .map(|v| {
+                v.tools
+                    .iter()
+                    .filter(|t| sel.tool_on(&v.id, &t.name))
+                    .count()
+            })
+            .sum();
+
+        let mut changes: Vec<(String, bool, bool)> = Vec::new();
+        let mut reset = false;
+        let dark = ui.visuals().dark_mode;
+        let label =
+            RichText::new(format!("{}  {}", icon::SLIDERS, builtins_on + mcp_on)).size(14.0);
+        let label = if overrides.is_empty() {
+            label
+        } else {
+            label.color(theme::accent(dark))
+        };
+        let (resp, _) = MenuButton::from_button(egui::Button::new(label).frame(false))
+            .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| {
+                ui.set_min_width(280.0);
+                ui.label(RichText::new("Tools for this chat").strong());
+                ui.label(
+                    RichText::new("Applies from the next message. Defaults are in Settings.")
+                        .small()
+                        .weak(),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Built-in").small().weak());
+                        for (_, key, name) in BUILTINS {
+                            let mut on = sel.builtin_on(key);
+                            let ic = match key {
+                                "time" => icon::CLOCK,
+                                "calculator" => icon::CALCULATOR,
+                                "tasks" => icon::LIST_CHECKS,
+                                _ => icon::ROBOT,
+                            };
+                            if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
+                                changes.push((
+                                    ToolOverrides::builtin_key(key),
+                                    on,
+                                    sel.builtin_default(key),
+                                ));
+                            }
+                        }
+                        for (id, name) in &servers {
+                            ui.add_space(4.0);
+                            ui.separator();
+                            let view = views.iter().find(|v| &v.id == id);
+                            let connected = view.is_some_and(|v| {
+                                v.status == crate::mcp::manager::ServerStatus::Connected
+                            });
+                            let mut on = sel.server_on(id);
+                            let resp = ui.checkbox(&mut on, RichText::new(name).strong());
+                            if resp.changed() {
+                                changes.push((ToolOverrides::server_key(id), on, true));
+                            }
+                            match view {
+                                Some(v) if connected && !v.tools.is_empty() => {
+                                    ui.indent(("tools", id), |ui| {
+                                        ui.add_enabled_ui(on, |ui| {
+                                            for t in &v.tools {
+                                                let default = sel.tool_default(id, &t.name);
+                                                let mut t_on = overrides
+                                                    .get(&ToolOverrides::tool_key(id, &t.name))
+                                                    .unwrap_or(default);
+                                                let r = ui.checkbox(&mut t_on, &t.name);
+                                                let r = if t.description.is_empty() {
+                                                    r
+                                                } else {
+                                                    r.on_hover_text(&t.description)
+                                                };
+                                                if r.changed() {
+                                                    changes.push((
+                                                        ToolOverrides::tool_key(id, &t.name),
+                                                        t_on,
+                                                        default,
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                                Some(_) if connected => {
+                                    ui.weak("No tools");
+                                }
+                                _ => {
+                                    ui.weak("Not connected");
+                                }
+                            }
+                        }
+                    });
+                if !overrides.is_empty() {
+                    ui.separator();
+                    if ui
+                        .button(format!("{}  Reset to defaults", icon::REGENERATE))
+                        .clicked()
+                    {
+                        reset = true;
+                    }
+                }
+            });
+        resp.on_hover_text(format!(
+            "Tools for this chat: {} on{}",
+            builtins_on + mcp_on,
+            if overrides.is_empty() {
+                ""
+            } else {
+                " (changed from the defaults)"
+            }
+        ));
+        for (key, on, default) in changes {
+            self.set_tool_override(key, on, default);
+        }
+        if reset {
+            self.reset_tool_overrides();
+        }
     }
 
     fn delete_chat(&mut self, id: Uuid) {
@@ -211,11 +402,14 @@ impl ChatApp {
             return;
         };
         self.errors.remove(&id);
+        let selection = ToolSelection::new(&self.settings, &conv.tool_overrides);
         let req = AgentRequest {
             conv_id: id,
             provider: self.settings.provider().clone(),
             general: self.settings.general.clone(),
             history: conv.messages.clone(),
+            delegation: Delegation::new(&self.settings, &selection),
+            selection,
         };
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
@@ -232,6 +426,7 @@ impl ChatApp {
                 task,
                 approvals: Vec::new(),
                 running_tool: None,
+                subagents: HashMap::new(),
             },
         );
     }
@@ -362,6 +557,14 @@ impl ChatApp {
             }
             ChatEvent::ToolRunning(call_id) => {
                 self.runs.get_mut(&id).unwrap().running_tool = Some(call_id);
+                return;
+            }
+            ChatEvent::SubagentProgress { call_id, reports } => {
+                self.runs
+                    .get_mut(&id)
+                    .unwrap()
+                    .subagents
+                    .insert(call_id, reports);
                 return;
             }
             ChatEvent::Error(e) => {
@@ -820,6 +1023,18 @@ impl ChatApp {
                 "MCP servers",
                 "Settings",
                 Command::OpenSettings(Tab::Mcp),
+            ),
+            Entry::new(
+                icon::TOOLBOX,
+                "Built-in tools",
+                "Settings",
+                Command::OpenSettings(Tab::Tools),
+            ),
+            Entry::new(
+                icon::ROBOT,
+                "Subagents",
+                "Settings",
+                Command::OpenSettings(Tab::Subagents),
             ),
             Entry::new(
                 icon::GEAR,
@@ -1334,6 +1549,7 @@ impl ChatApp {
                         {
                             self.attach_paths(paths);
                         }
+                        self.tools_menu(ui);
                         self.mcp_menu(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if running {
@@ -1406,6 +1622,7 @@ impl ChatApp {
                 error: self.errors.get(&conv.id),
                 model: &self.settings.provider().model,
                 show_stats: self.settings.general.show_stats,
+                reasoning: self.settings.general.reasoning_display,
             },
         )
     }

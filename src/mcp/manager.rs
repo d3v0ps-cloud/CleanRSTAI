@@ -92,9 +92,31 @@ enum List {
 pub struct ToolRouter {
     pub specs: Vec<ToolSpec>,
     routes: HashMap<String, (Arc<McpClient>, String)>,
+    /// Function name → (server id, MCP tool name).
+    origins: HashMap<String, (String, String)>,
 }
 
 impl ToolRouter {
+    /// Keep only the tools for which `keep(server_id, tool_name)` is true.
+    pub fn retain(&mut self, keep: impl Fn(&str, &str) -> bool) {
+        let origins = &self.origins;
+        let dropped: Vec<String> = self
+            .specs
+            .iter()
+            .filter(|s| {
+                origins
+                    .get(&s.name)
+                    .is_none_or(|(server, tool)| !keep(server, tool))
+            })
+            .map(|s| s.name.clone())
+            .collect();
+        self.specs.retain(|s| !dropped.contains(&s.name));
+        for name in dropped {
+            self.routes.remove(&name);
+            self.origins.remove(&name);
+        }
+    }
+
     pub async fn call(
         &self,
         function: &str,
@@ -513,6 +535,8 @@ impl McpManager {
         (servers, tools)
     }
 
+    /// Every tool of every connected server, including ones switched off in Settings;
+    /// callers filter with [`ToolRouter::retain`].
     pub fn router(&self) -> ToolRouter {
         let entries = self.entries.lock().unwrap();
         let mut router = ToolRouter::default();
@@ -520,9 +544,6 @@ impl McpManager {
             let Some(client) = &e.client else { continue };
             let prefix = sanitize(&e.config.name);
             for tool in &e.tools {
-                if e.config.disabled_tools.contains(&tool.name) {
-                    continue;
-                }
                 let base: String = format!("{prefix}__{}", sanitize(&tool.name))
                     .chars()
                     .take(64)
@@ -543,6 +564,9 @@ impl McpManager {
                     },
                     parameters: normalize_schema(&tool.input_schema),
                 });
+                router
+                    .origins
+                    .insert(name.clone(), (e.config.id.clone(), tool.name.clone()));
                 router
                     .routes
                     .insert(name, (client.clone(), tool.name.clone()));

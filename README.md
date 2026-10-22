@@ -14,8 +14,28 @@ macOS is the primary platform; Linux and Windows are fully supported.
   provider profiles and switch between them from the toolbar.
 - **Model discovery**: *Fetch models* calls `GET /models` and fills the model picker.
 - **Streaming** responses (SSE), with a non-streaming fallback for servers that don't support it.
-- **Reasoning display**: `reasoning_content` / `reasoning` output appears in a collapsible
-  *Thinking* section.
+- **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thinking*
+  section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
+  expanded only while the model is thinking.
+- **Built-in tools** that work without any MCP server:
+  - **Time & date**: the current date, time, weekday and time zone, and the time at other UTC
+    offsets.
+  - **Calculator**: exact arithmetic and functions (powers, roots, logarithms, trigonometry,
+    rounding, min/max/avg) instead of the model's mental maths.
+  - **Task list**: for multi-step requests the model breaks the work into actionable tasks,
+    shows them as a checklist in the chat and ticks them off as it goes.
+
+  They run locally without asking for approval; switch each one in **Settings → Built-in
+  Tools**.
+- **Subagents**: a `delegate` tool lets the model hand independent tasks to subagents that work
+  in parallel and report back. Each subagent's progress, tools and result show in the chat, and
+  their token usage counts towards the chat's totals. **Settings → Subagents** sets their
+  provider and model (or lets the model pick a provider profile per task, e.g. a fast local
+  model for simple tasks), system prompt, tool access, how many run at once, round limit and
+  time limit.
+- **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools
+  and every MCP server and tool, each with a switch for the current chat. Settings keeps the
+  defaults for new chats.
 - **MCP client**:
   - **stdio** servers (`npx`, `uvx`, `docker`, any binary) with arguments, environment
     variables and a working directory.
@@ -144,7 +164,9 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
 |---|---|
 | Providers | Name, base URL (with presets), API key, model, temperature, max tokens, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| General | System prompt, theme, UI scale, send key, auto-approve tools, max tool rounds, tool timeout, export |
+| Built-in Tools | Time & date, calculator and task list on or off by default |
+| Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
+| General | System prompt, theme, UI scale, send key, reasoning display, auto-approve tools, max tool rounds, tool timeout, updates, export |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
 connection settings changed are reconnected.
@@ -246,6 +268,8 @@ src/
   app.rs          main UI: sidebar, chat view, input, event handling
   ui/             theme and icons, chat view, settings page, command palette, widgets
   agent.rs        generation loop: stream, run tool calls, repeat
+  tools/          built-in tools (time, calculator, task list), per-chat tool switches
+  subagent.rs     the delegate tool: parallel subagents with their own model/tool loop
   llm.rs          OpenAI-compatible /chat/completions and /models client
   sse.rs          incremental Server-Sent Events parser
   mcp/            MCP client: stdio and Streamable HTTP transports, connection manager

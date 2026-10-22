@@ -179,6 +179,101 @@ pub enum Theme {
     Dark,
 }
 
+/// How the model's reasoning ("Thinking") is shown in the chat.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningDisplay {
+    /// Collapsed; click to expand.
+    #[default]
+    Collapsed,
+    /// Always expanded.
+    Expanded,
+    /// Expanded while the model is reasoning, collapsed once the answer starts.
+    WhileStreaming,
+}
+
+impl ReasoningDisplay {
+    pub const ALL: [ReasoningDisplay; 3] = [Self::Collapsed, Self::Expanded, Self::WhileStreaming];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Collapsed => "Collapsed",
+            Self::Expanded => "Expanded",
+            Self::WhileStreaming => "Expanded while thinking",
+        }
+    }
+}
+
+/// Which built-in tools are offered to the model by default.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct BuiltinToolSettings {
+    /// Current date, time and time zone.
+    pub time: bool,
+    /// Exact arithmetic.
+    pub calculator: bool,
+    /// Break a request into a task checklist and track it.
+    pub tasks: bool,
+}
+
+impl Default for BuiltinToolSettings {
+    fn default() -> Self {
+        Self {
+            time: true,
+            calculator: true,
+            tasks: true,
+        }
+    }
+}
+
+/// The `delegate` tool: hands tasks to subagents that work on their own and report back.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SubagentSettings {
+    pub enabled: bool,
+    /// System prompt for every subagent.
+    pub system_prompt: String,
+    /// Provider profile subagents use; empty means the chat's current provider.
+    pub provider_id: String,
+    /// Model override; empty means the provider's selected model.
+    pub model: String,
+    /// Let the model pick another provider profile or model for individual tasks.
+    pub allow_provider_choice: bool,
+    /// Subagents may use the built-in tools (time, calculator).
+    pub builtin_tools: bool,
+    /// Subagents may use the chat's MCP tools. Their calls run without asking.
+    pub mcp_tools: bool,
+    /// How many subagents run at the same time.
+    pub max_parallel: u32,
+    /// Most tasks one `delegate` call may hand out.
+    pub max_tasks: u32,
+    /// Tool-call rounds each subagent may make before it must answer.
+    pub max_rounds: u32,
+    /// Time limit for each subagent.
+    pub timeout_secs: u64,
+}
+
+impl Default for SubagentSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            system_prompt: "You are a subagent working on one task delegated by another \
+                            assistant. Complete the task on your own and reply with a \
+                            concise, complete result. You cannot ask follow-up questions."
+                .into(),
+            provider_id: String::new(),
+            model: String::new(),
+            allow_provider_choice: true,
+            builtin_tools: true,
+            mcp_tools: false,
+            max_parallel: 3,
+            max_tasks: 8,
+            max_rounds: 10,
+            timeout_secs: 300,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GeneralSettings {
@@ -197,6 +292,8 @@ pub struct GeneralSettings {
     pub use_keychain: bool,
     /// Look for a newer release on GitHub at startup.
     pub check_for_updates: bool,
+    pub reasoning_display: ReasoningDisplay,
+    pub builtin_tools: BuiltinToolSettings,
 }
 
 impl Default for GeneralSettings {
@@ -212,6 +309,8 @@ impl Default for GeneralSettings {
             show_stats: true,
             use_keychain: true,
             check_for_updates: true,
+            reasoning_display: ReasoningDisplay::default(),
+            builtin_tools: BuiltinToolSettings::default(),
         }
     }
 }
@@ -223,6 +322,7 @@ pub struct Settings {
     pub active_provider: usize,
     pub mcp_servers: Vec<McpServerConfig>,
     pub general: GeneralSettings,
+    pub subagents: SubagentSettings,
 }
 
 impl Default for Settings {
@@ -232,6 +332,7 @@ impl Default for Settings {
             active_provider: 0,
             mcp_servers: Vec::new(),
             general: GeneralSettings::default(),
+            subagents: SubagentSettings::default(),
         }
     }
 }
@@ -346,6 +447,28 @@ impl Settings {
             self.active_provider = 0;
         }
         self.general.zoom = self.general.zoom.clamp(0.5, 3.0);
+        let sa = &mut self.subagents;
+        sa.max_parallel = sa.max_parallel.clamp(1, 16);
+        sa.max_tasks = sa.max_tasks.clamp(1, 32);
+        sa.max_rounds = sa.max_rounds.clamp(1, 100);
+        sa.timeout_secs = sa.timeout_secs.clamp(10, 3600);
+        if !self.providers.iter().any(|p| p.id == sa.provider_id) {
+            sa.provider_id.clear();
+        }
+    }
+
+    /// The provider profile subagents use when a task doesn't name one.
+    pub fn subagent_provider(&self) -> ProviderConfig {
+        let mut p = self
+            .providers
+            .iter()
+            .find(|p| p.id == self.subagents.provider_id)
+            .unwrap_or_else(|| self.provider())
+            .clone();
+        if !self.subagents.model.trim().is_empty() {
+            p.model = self.subagents.model.trim().to_owned();
+        }
+        p
     }
 
     pub fn provider(&self) -> &ProviderConfig {

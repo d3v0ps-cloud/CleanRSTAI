@@ -10,6 +10,8 @@ use uuid::Uuid;
 use crate::config::{GeneralSettings, ProviderConfig};
 use crate::llm::{self, Delta};
 use crate::mcp::manager::McpManager;
+use crate::subagent::{Delegation, SubagentReport};
+use crate::tools::{self, ToolSelection, Toolbox};
 use crate::types::{ChatMessage, Role, ToolCall};
 
 pub enum ChatEvent {
@@ -24,6 +26,11 @@ pub enum ChatEvent {
         respond: oneshot::Sender<bool>,
     },
     ToolRunning(String),
+    /// Live progress of the subagents started by a `delegate` call.
+    SubagentProgress {
+        call_id: String,
+        reports: Vec<SubagentReport>,
+    },
     ToolResult(Box<ChatMessage>),
     Error(String),
     Done,
@@ -66,6 +73,10 @@ pub struct AgentRequest {
     pub provider: ProviderConfig,
     pub general: GeneralSettings,
     pub history: Vec<ChatMessage>,
+    /// Tools this chat may use.
+    pub selection: ToolSelection,
+    /// Subagent setup, when the `delegate` tool is on for this chat.
+    pub delegation: Option<Delegation>,
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -75,7 +86,7 @@ pub async fn run(
     http: reqwest::Client,
     mcp: Arc<McpManager>,
     tx: EventSender,
-    repaint: impl Fn(),
+    repaint: impl Fn() + Send + Sync,
 ) {
     let conv_id = req.conv_id;
     let emit = |event: ChatEvent| {
@@ -94,20 +105,30 @@ pub async fn run(
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
-        let router = mcp.router();
-        let tools = if round < max_rounds {
-            router.specs.as_slice()
+        let toolbox = if round < max_rounds {
+            Toolbox::new(
+                mcp.router(),
+                &req.selection,
+                req.delegation.as_ref().map(Delegation::tool_description),
+            )
         } else {
-            &[]
+            Toolbox::default()
         };
         let messages = llm::to_api_messages(&req.general.system_prompt, &history);
 
         emit(ChatEvent::AssistantStart);
-        let result = llm::chat_completion(&http, &req.provider, messages, tools, |d| match d {
-            Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
-            Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
-        })
-        .await;
+        let result =
+            llm::chat_completion(
+                &http,
+                &req.provider,
+                messages,
+                &toolbox.specs,
+                |d| match d {
+                    Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
+                    Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
+                },
+            )
+            .await;
 
         let turn = match result {
             Ok(t) => t,
@@ -145,7 +166,8 @@ pub async fn run(
         }
 
         for call in &calls {
-            let approved = if req.general.auto_approve_tools {
+            let approved = if req.general.auto_approve_tools || !Toolbox::needs_approval(&call.name)
+            {
                 true
             } else {
                 let (respond, rx) = oneshot::channel();
@@ -157,13 +179,32 @@ pub async fn run(
             };
             let result = if approved {
                 emit(ChatEvent::ToolRunning(call.id.clone()));
-                match router.call(&call.name, &call.arguments, tool_timeout).await {
-                    Ok(out) => {
+                match (
+                    &req.delegation,
+                    call.name == tools::DELEGATE && toolbox.has(&call.name),
+                ) {
+                    (Some(delegation), true) => {
+                        let progress = |reports: &[SubagentReport]| {
+                            emit(ChatEvent::SubagentProgress {
+                                call_id: call.id.clone(),
+                                reports: reports.to_vec(),
+                            })
+                        };
+                        let (out, reports) = delegation
+                            .run(&http, &mcp, &call.arguments, &progress)
+                            .await;
+                        let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
+                        msg.subagents = reports;
+                        msg
+                    }
+                    _ => {
+                        let out = toolbox
+                            .call(&call.name, &call.arguments, tool_timeout)
+                            .await;
                         let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
                         msg.attachments = out.images;
                         msg
                     }
-                    Err(e) => ChatMessage::tool_result(call, format!("Error: {e:#}"), true),
                 }
             } else {
                 ChatMessage::tool_result(call, "The user declined to run this tool.", true)
@@ -292,6 +333,8 @@ mod tests {
                 ..Default::default()
             },
             history: vec![ChatMessage::new(Role::User, "say hi via the tool")],
+            selection: ToolSelection::default(),
+            delegation: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -323,6 +366,184 @@ mod tests {
         assert_eq!(
             second[2]["tool_calls"][0]["function"]["arguments"],
             "{\"message\":\"hi\"}"
+        );
+    }
+
+    /// A mock model that calls `tool` with `args` on its first turn, then answers with the
+    /// tool result it was given.
+    async fn tool_calling_llm(
+        tool: &'static str,
+        args: &'static str,
+    ) -> (String, Arc<std::sync::Mutex<Vec<crate::testutil::Request>>>) {
+        use crate::testutil::{Response, serve};
+        serve(move |req| {
+            let body = req.json();
+            let msgs = body["messages"].as_array().cloned().unwrap_or_default();
+            if let Some(result) = msgs.iter().find(|m| m["role"] == "tool") {
+                return Response::json(serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": format!("Tool said: {}", result["content"].as_str().unwrap())}, "finish_reason": "stop"}]
+                }));
+            }
+            Response::json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": tool, "arguments": args}}
+                ]}, "finish_reason": "tool_calls"}]
+            }))
+        })
+        .await
+    }
+
+    fn request(
+        base: &str,
+        settings: &crate::config::Settings,
+        overrides: &crate::tools::ToolOverrides,
+    ) -> AgentRequest {
+        let selection = ToolSelection::new(settings, overrides);
+        AgentRequest {
+            conv_id: Uuid::new_v4(),
+            provider: ProviderConfig {
+                base_url: format!("{base}/v1"),
+                model: "mock".into(),
+                stream: false,
+                ..Default::default()
+            },
+            general: settings.general.clone(),
+            history: vec![ChatMessage::new(Role::User, "go")],
+            delegation: Delegation::new(settings, &selection),
+            selection,
+        }
+    }
+
+    #[tokio::test]
+    async fn builtin_tools_run_without_approval() {
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "6*7"}"#).await;
+        let settings = crate::config::Settings::default();
+        assert!(!settings.general.auto_approve_tools);
+        let req = request(&base, &settings, &Default::default());
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run(req, http, mcp, tx, || {}).await;
+
+        let mut approvals = 0;
+        let mut result = None;
+        while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
+            match event {
+                ChatEvent::ToolApproval { .. } => approvals += 1,
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                _ => {}
+            }
+        }
+        assert_eq!(approvals, 0);
+        assert_eq!(result.unwrap().content, "6*7 = 42");
+        let first = log.lock().unwrap()[0].json();
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [tools::TIME, tools::CALCULATE, tools::TASKS, tools::DELEGATE]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_switches_hide_tools() {
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1+1"}"#).await;
+        let settings = crate::config::Settings::default();
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::builtin_key("calculator"),
+            false,
+            true,
+        );
+        ov.set(
+            crate::tools::ToolOverrides::builtin_key("subagents"),
+            false,
+            true,
+        );
+        let req = request(&base, &settings, &ov);
+        assert!(req.delegation.is_none());
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run(req, http, mcp, tx, || {}).await;
+
+        let first = log.lock().unwrap()[0].json();
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, [tools::TIME, tools::TASKS]);
+        // A call to a tool that is off for this chat is refused, not run.
+        let mut result = None;
+        while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
+            if let ChatEvent::ToolResult(m) = event {
+                result = Some(*m);
+            }
+        }
+        let result = result.unwrap();
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("not available"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_asks_first_and_reports_subagents() {
+        let (base, _) = tool_calling_llm(
+            tools::DELEGATE,
+            r#"{"tasks": [{"task": "first"}, {"task": "second"}]}"#,
+        )
+        .await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        // Subagents talk to the same mock; it answers them directly (no tool messages).
+        if let Some(d) = &mut req.delegation {
+            d.set_default_provider(req.provider.clone());
+        }
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+
+        let mut progress = 0;
+        let mut result = None;
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            match event {
+                ChatEvent::ToolApproval { call, respond } => {
+                    assert_eq!(call.name, tools::DELEGATE);
+                    respond.send(true).unwrap();
+                }
+                ChatEvent::SubagentProgress { reports, .. } => {
+                    assert_eq!(reports.len(), 2);
+                    progress += 1;
+                }
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                ChatEvent::Done => break,
+                _ => {}
+            }
+        }
+        agent.await.unwrap();
+        assert!(progress >= 3);
+        let result = result.unwrap();
+        assert_eq!(result.subagents.len(), 2);
+        assert!(
+            result
+                .subagents
+                .iter()
+                .all(|r| r.state == crate::subagent::SubagentState::Done)
+        );
+        assert!(
+            result.content.contains("## Subagent 2\nTask: second"),
+            "{}",
+            result.content
         );
     }
 

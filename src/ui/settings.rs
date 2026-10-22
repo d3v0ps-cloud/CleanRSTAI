@@ -14,6 +14,8 @@ use crate::mcp::manager::{ServerStatus, ServerView};
 pub enum Tab {
     Providers,
     Mcp,
+    Tools,
+    Subagents,
     General,
 }
 
@@ -160,6 +162,8 @@ impl SettingsUi {
                     for (tab, ic, label) in [
                         (Tab::Providers, icon::SERVER, "Providers"),
                         (Tab::Mcp, icon::PLUGS, "MCP Servers"),
+                        (Tab::Tools, icon::TOOLBOX, "Built-in Tools"),
+                        (Tab::Subagents, icon::ROBOT, "Subagents"),
                         (Tab::General, icon::GEAR, "General"),
                     ] {
                         if ui
@@ -231,17 +235,23 @@ impl SettingsUi {
             ui.heading(match self.tab {
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
+                Tab::Tools => "Built-in Tools",
+                Tab::Subagents => "Subagents",
                 Tab::General => "General",
             });
             ui.weak(match self.tab {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
+                Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
+                Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
             });
             ui.add_space(8.0);
             match self.tab {
                 Tab::Providers => self.providers_tab(ui, &mut actions),
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
+                Tab::Tools => self.tools_tab(ui),
+                Tab::Subagents => self.subagents_tab(ui),
                 Tab::General => self.general_tab(ui, live, &mut actions),
             }
         });
@@ -831,6 +841,194 @@ impl SettingsUi {
             });
     }
 
+    fn tools_tab(&mut self, ui: &mut egui::Ui) {
+        let b = &mut self.draft.general.builtin_tools;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(
+                    "Built-in tools run on this computer and don't ask for approval. These are \
+                     the defaults for new chats; switch them for one chat from the tools menu \
+                     next to the message box.",
+                );
+                ui.add_space(10.0);
+                for (on, ic, name, desc) in [
+                    (
+                        &mut b.time,
+                        icon::CLOCK,
+                        "Time & date",
+                        "The current date, time, weekday and time zone, and the time at other UTC offsets.",
+                    ),
+                    (
+                        &mut b.calculator,
+                        icon::CALCULATOR,
+                        "Calculator",
+                        "Exact arithmetic and functions (powers, roots, logarithms, trigonometry, rounding, min/max/avg) instead of mental maths.",
+                    ),
+                    (
+                        &mut b.tasks,
+                        icon::LIST_CHECKS,
+                        "Task list",
+                        "For multi-step requests the model breaks the work into actionable tasks, shows them as a checklist in the chat, and ticks them off as it goes.",
+                    ),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(on, egui::RichText::new(format!("{ic}  {name}")).strong());
+                    });
+                    ui.indent(name, |ui| {
+                        ui.weak(desc);
+                    });
+                    ui.add_space(8.0);
+                }
+                ui.weak(format!(
+                    "{}  The subagent tool has its own page: Subagents.",
+                    icon::ROBOT
+                ));
+            });
+    }
+
+    fn subagents_tab(&mut self, ui: &mut egui::Ui) {
+        let providers: Vec<(String, String, Vec<String>)> = self
+            .draft
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone(), p.models.clone()))
+            .collect();
+        let sa = &mut self.draft.subagents;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.checkbox(
+                    &mut sa.enabled,
+                    egui::RichText::new("Let the model delegate tasks to subagents").strong(),
+                );
+                ui.indent("sa-enabled", |ui| {
+                    ui.weak(
+                        "Adds a \"delegate\" tool. Each subagent works on one task on its own, \
+                         in parallel with the others, and its result goes back to the main chat. \
+                         Delegating asks for approval unless tool calls are auto-approved \
+                         (General). It can also be switched per chat from the tools menu.",
+                    );
+                });
+                ui.add_space(10.0);
+                ui.add_enabled_ui(sa.enabled, |ui| {
+                    egui::Grid::new("subagent-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Provider");
+                            let current = providers
+                                .iter()
+                                .find(|(id, ..)| *id == sa.provider_id)
+                                .map_or("Same as the chat".to_owned(), |(_, n, _)| n.clone());
+                            egui::ComboBox::from_id_salt("subagent-provider")
+                                .selected_text(current)
+                                .width(FIELD_WIDTH)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut sa.provider_id,
+                                        String::new(),
+                                        "Same as the chat",
+                                    );
+                                    for (id, name, _) in &providers {
+                                        ui.selectable_value(&mut sa.provider_id, id.clone(), name);
+                                    }
+                                });
+                            ui.end_row();
+
+                            ui.label("Model");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut sa.model)
+                                        .hint_text("the provider's selected model")
+                                        .desired_width(FIELD_WIDTH - 40.0),
+                                );
+                                let models = providers
+                                    .iter()
+                                    .find(|(id, ..)| *id == sa.provider_id)
+                                    .map(|(.., m)| m.clone())
+                                    .unwrap_or_default();
+                                if !models.is_empty() {
+                                    ui.menu_button(icon::CARET_DOWN, |ui| {
+                                        ui.set_max_height(320.0);
+                                        egui::ScrollArea::vertical().show(ui, |ui| {
+                                            for m in models {
+                                                if ui.button(&m).clicked() {
+                                                    sa.model = m;
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Per-task choice");
+                            ui.checkbox(
+                                &mut sa.allow_provider_choice,
+                                "Let the model pick another provider profile or model for a task",
+                            )
+                            .on_hover_text(
+                                "The delegate tool lists your provider profiles, so the model can, \
+                                 for example, send simple tasks to a fast local model.",
+                            );
+                            ui.end_row();
+
+                            ui.label("Tools");
+                            ui.vertical(|ui| {
+                                ui.checkbox(
+                                    &mut sa.builtin_tools,
+                                    "Time and calculator (when on in the chat)",
+                                );
+                                ui.checkbox(&mut sa.mcp_tools, "The chat's MCP tools");
+                                if sa.mcp_tools {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        format!(
+                                            "{}  Subagents call MCP tools without asking for approval.",
+                                            icon::WARNING
+                                        ),
+                                    );
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Run at once");
+                            ui.add(egui::DragValue::new(&mut sa.max_parallel).range(1..=16))
+                                .on_hover_text("How many subagents work at the same time");
+                            ui.end_row();
+
+                            ui.label("Tasks per call");
+                            ui.add(egui::DragValue::new(&mut sa.max_tasks).range(1..=32))
+                                .on_hover_text("Most tasks one delegate call may hand out");
+                            ui.end_row();
+
+                            ui.label("Max tool rounds");
+                            ui.add(egui::DragValue::new(&mut sa.max_rounds).range(1..=100))
+                                .on_hover_text("Tool-call rounds each subagent may make");
+                            ui.end_row();
+
+                            ui.label("Time limit");
+                            ui.add(
+                                egui::DragValue::new(&mut sa.timeout_secs)
+                                    .range(10..=3600)
+                                    .suffix(" s"),
+                            )
+                            .on_hover_text("Per subagent");
+                            ui.end_row();
+                        });
+                    ui.add_space(12.0);
+                    ui.strong("Subagent system prompt");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut sa.system_prompt)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
+    }
+
     fn general_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -942,6 +1140,16 @@ impl SettingsUi {
                         });
                         ui.end_row();
 
+                        ui.label("Reasoning");
+                        ui.vertical(|ui| {
+                            for mode in crate::config::ReasoningDisplay::ALL {
+                                ui.radio_value(&mut g.reasoning_display, mode, mode.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text("How the model's \"Thinking\" section starts out");
+                        ui.end_row();
+
                         ui.label("Stats");
                         ui.checkbox(
                             &mut g.show_stats,
@@ -952,7 +1160,7 @@ impl SettingsUi {
                         ui.label("Tool calls");
                         ui.checkbox(
                             &mut g.auto_approve_tools,
-                            "Run MCP tools without asking for approval",
+                            "Run MCP tools and subagents without asking for approval",
                         );
                         ui.end_row();
 
@@ -1105,12 +1313,33 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Mcp, "MCP", "OAuth sign-in / client ID"),
     (Tab::Mcp, "MCP", "Enable or disable tools"),
     (Tab::Mcp, "MCP", "Resources and prompts"),
+    (Tab::Tools, "Tools", "Time & date tool"),
+    (Tab::Tools, "Tools", "Calculator tool"),
+    (Tab::Tools, "Tools", "Task list / planning tool"),
+    (
+        Tab::Subagents,
+        "Subagents",
+        "Enable subagents (delegate tool)",
+    ),
+    (Tab::Subagents, "Subagents", "Subagent provider and model"),
+    (Tab::Subagents, "Subagents", "Subagent tools and MCP access"),
+    (
+        Tab::Subagents,
+        "Subagents",
+        "Parallel subagents, rounds and time limit",
+    ),
+    (Tab::Subagents, "Subagents", "Subagent system prompt"),
     (Tab::General, "General", "System prompt"),
     (Tab::General, "General", "Theme (light / dark)"),
     (Tab::General, "General", "UI scale / zoom"),
     (Tab::General, "General", "Send with Enter"),
     (Tab::General, "General", "Keychain / secrets"),
     (Tab::General, "General", "Show speed stats"),
+    (
+        Tab::General,
+        "General",
+        "Reasoning / thinking display (collapsed by default)",
+    ),
     (Tab::General, "General", "Auto-approve tool calls"),
     (Tab::General, "General", "Max tool rounds"),
     (Tab::General, "General", "Tool timeout"),
@@ -1142,6 +1371,8 @@ mod tests {
         assert_eq!(hits[0], (Tab::Providers, "Providers", "API key"));
         assert_eq!(search_settings("theme")[0].0, Tab::General);
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
+        assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
+        assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
         assert!(search_settings("zzzz").is_empty());
     }
 }
