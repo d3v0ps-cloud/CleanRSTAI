@@ -1,102 +1,83 @@
 # CleanRSTAI Roadmap
 
-Planned work, roughly in priority order. Items further down are less defined and may change.
-
-## Status
-
-Every item below shipped in **v0.3.0**.
-
-| # | Item | Status |
-|---|---|---|
-| 1 | Prefill and decode speed per request | ✅ Done |
-| 2 | UI redesign | ✅ Done |
-| 3 | Provider types (llama.cpp, LiteLLM, generic) | ✅ Done |
-| 4 | Import settings and conversations | ✅ Done |
-| 5 | Secure credential storage | ✅ Done |
-| 6 | Signed and notarized builds, installers, update check | ✅ Done (signing activates once certificates are added as repository secrets) |
-| 7 | Richer chat input and output | ✅ Done |
-| 8 | Broader MCP support | ✅ Done |
-| — | Node 24 GitHub Actions | ✅ Done |
+Ticked items have shipped. Everything ticked below is in **v0.3.0**; unticked items are still
+open.
 
 ## 1. Display prefill and decode speed per request
 
-Show how fast each response was produced, under each assistant message and as a running total
-for the chat.
+- [x] **Prefill (prompt processing)**: tokens/s spent reading the prompt, plus time to first
+  token
+- [x] **Decode (generation)**: tokens/s while streaming the answer
+- [x] Token counts (prompt, completion, total) and wall-clock duration per request
+- [x] Running total for the whole chat
+- [x] Client-side measurement when the server doesn't report timings (time to first token,
+  decode speed, `stream_options.include_usage`)
+- [x] Estimate completion tokens when the server doesn't send `usage`
+- [x] In a turn with tool calls, show each model request separately, plus a combined total
+- [x] Label each figure as *measured* or *reported by server*
 
-- **Prefill (prompt processing)**: tokens/s spent reading the prompt, plus time to first token.
-- **Decode (generation)**: tokens/s while streaming the answer.
-- Token counts (prompt, completion, total) and wall-clock duration per request.
-- When the server doesn't report timings, measure them client-side:
-  - time to first token comes from the first streamed chunk;
-  - decode speed is completion tokens divided by the time from first to last token;
-  - completion tokens come from `usage`, requested with `stream_options.include_usage`, or are
-    estimated when the server doesn't send them.
-- In a turn with tool calls, show each model request separately, plus a combined total.
-- Label each figure as *measured* or *reported by server*, so they aren't mixed up.
+## 2. UI redesign
 
-## 2. UI Redesign
+- [x] Visual refresh: typography, spacing, colour palette, message layout, icons in place of
+  emoji glyphs
+- [x] Collapsible sidebar, conversation grouping (Today / Yesterday / Last 7 days) and pinned
+  chats
+- [x] Compact tool-call cards, with arguments and results expandable
+- [x] Settings as a full page with a search box
+- [x] Command palette (⌘K) and keyboard shortcuts
+- [x] Screen-reader labels on icon-only buttons
+- [ ] Accessibility pass: focus order and a high-contrast check
 
-A more polished, native-feeling interface, with macOS as the reference platform.
+## 3. Provider types that report stats based on what's provided
 
-- Visual refresh: typography, spacing, colour palette, message layout, icons in place of emoji
-  glyphs.
-- Collapsible sidebar, conversation grouping (Today / Yesterday / Last 7 days) and pinned chats.
-- Clearer tool-call cards: compact by default, with arguments and results expandable.
-- Settings rebuilt as a full page or sheet instead of a floating window, with a search box.
-- Keyboard-first navigation and a command palette (⌘K).
-- Accessibility: screen-reader labels, focus order, high-contrast check.
-
-## 3. Provider type option that reports stats based on what's provided
-
-Let each provider profile declare which kind of server it is, so the app can use that server's
-extra features and report richer stats (feeds into item 1).
-
-- **llama.cpp server**: read its native `timings` (prompt and predicted token counts, ms and
-  tokens/s) for accurate prefill and decode speeds; optionally show slot and context usage.
-- **LiteLLM proxy**: show the underlying model or deployment that served the request, and cost
-  where the proxy reports it.
-- **Generic OpenAI-compatible**: the current behaviour, using standard `usage` plus client-side
-  timing.
-- Possibly later: Ollama, LM Studio, vLLM, OpenRouter (cost and provider routing).
-- Auto-detect the type from the base URL or a probe request, with a manual override.
-- Each type declares which stats it supports, so the UI only shows fields that will be filled.
+- [x] **llama.cpp server**: native `timings` for accurate prefill and decode speeds
+- [x] **llama.cpp server**: context size
+- [ ] **llama.cpp server**: slot usage
+- [x] **LiteLLM proxy**: the model or deployment that served the request, and cost
+- [x] **Generic OpenAI-compatible**: standard `usage` plus client-side timing
+- [x] Auto-detect the type from a probe request, with a manual override
+- [x] Only show stats that the server actually provides
+- [ ] Dedicated types for Ollama, LM Studio, vLLM and OpenRouter (OpenRouter's `usage.cost`
+  is already read)
 
 ## 4. Import settings and conversations
 
-The counterpart to the export added in Settings → General.
-
-- Import a settings export, choosing to merge with or replace the current setup. Re-prompt for
-  any secrets that were left blank in the export.
-- Import a conversations export, skipping chats that already exist (matched by ID).
-- Validate the file's `format` and `format_version` before applying anything.
+- [x] Import a settings export, choosing to merge with or replace the current setup
+- [x] Re-prompt for secrets that were left blank in the export
+- [x] Import a conversations export, skipping chats that already exist (matched by ID)
+- [x] Validate the file's `format` and `format_version` before applying anything
 
 ## 5. Secure credential storage
 
-- Keep API keys and MCP secrets in the OS keychain (macOS Keychain, Windows Credential
-  Manager, Secret Service on Linux) instead of plain text in `settings.json`.
-- Migrate existing plain-text keys on first launch.
+- [x] Keep API keys and MCP secrets in the OS keychain (macOS Keychain, Windows Credential
+  Manager, Secret Service on Linux) instead of plain text in `settings.json`
+- [x] Migrate existing plain-text keys on first launch
 
-## 6. Signed and notarized builds
+## 6. Signed builds, installers and updates
 
-- Sign and notarize the macOS app with an Apple Developer ID so Gatekeeper doesn't block it.
-- Sign the Windows executable; consider an installer (MSI) and a DMG for macOS.
-- In-app update check against GitHub Releases.
-
-The release workflow signs and notarizes when the certificates are configured as repository
-secrets (see the README), and builds a `.dmg` and an `.msi` either way.
+- [x] macOS signing and notarization in the release workflow (Developer ID, hardened runtime,
+  stapled app and DMG)
+- [x] Windows Authenticode signing of the `.exe` and `.msi` in the release workflow
+- [ ] Add the Apple and Windows certificates as repository secrets and ship a signed release
+  (see the README for the secret names)
+- [x] macOS `.dmg`
+- [x] Windows `.msi` installer
+- [x] In-app update check against GitHub Releases
 
 ## 7. Richer chat input and output
 
-- Attach images and files, for vision-capable models.
-- Render images returned by MCP tools.
-- Export a single chat as Markdown.
+- [x] Attach images and files, for vision-capable models
+- [x] Render images returned by MCP tools
+- [x] Export a single chat as Markdown
 
 ## 8. Broader MCP support
 
-- MCP resources and prompts, alongside the tools already supported.
-- OAuth sign-in for remote (Streamable HTTP) MCP servers.
-- Re-fetch tools automatically on `notifications/tools/list_changed`.
+- [x] MCP resources and prompts, alongside tools
+- [x] OAuth sign-in for remote (Streamable HTTP) MCP servers
+- [x] Re-fetch tools, resources and prompts automatically on `list_changed` notifications
 
 ## Maintenance
 
-- Update GitHub Actions that still target the deprecated Node.js 20 runtime.
+- [x] Move GitHub Actions off the deprecated Node.js 20 runtime
+- [ ] Turn on "Automatically delete head branches" in the repository settings, and delete the
+  merged `claude/*` branches
