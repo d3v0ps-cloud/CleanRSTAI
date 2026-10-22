@@ -77,8 +77,9 @@ plus `SHA256SUMS.txt`, and publishes them in two places:
   oras pull ghcr.io/aaronbolton/cleanrstai:v0.1.0
   ```
 
-Running the workflow manually (*Actions → Release → Run workflow*) only builds; the files are
-kept as workflow artifacts and nothing is published.
+You can also release without pushing a tag: *Actions → Release → Run workflow* with a
+`version` such as `v0.1.0` creates the tag on the selected branch and publishes. Leaving
+`version` empty only builds; the files are kept as workflow artifacts.
 
 > The macOS app is ad-hoc signed only, so on first launch macOS will block it. Right-click the
 > app and choose **Open**, or run `xattr -dr com.apple.quarantine CleanRSTAI.app`.
