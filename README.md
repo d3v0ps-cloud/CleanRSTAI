@@ -152,7 +152,7 @@ plus `SHA256SUMS.txt`, and publishes them in two places:
 - **GitHub Packages**: an OCI artifact at `ghcr.io/<owner>/cleanrstai:<tag>`. Stable versions
   are also tagged `latest`. Download with [ORAS](https://oras.land):
   ```sh
-  oras pull ghcr.io/aaronbolton/cleanrstai:v0.1.0
+  oras pull ghcr.io/d3v0ps-cloud/cleanrstai:v0.1.0
   ```
 
 You can also release without pushing a tag: *Actions → Release → Run workflow* with a
