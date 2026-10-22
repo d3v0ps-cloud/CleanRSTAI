@@ -36,6 +36,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Put the rustup toolchain ahead of any system Rust
+        # The Gentoo box also has a system Rust earlier on PATH, which would otherwise win.
+        shell: bash
+        run: |
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          "$CARGO_HOME/bin/rustc" --version
       - uses: Swatinem/rust-cache@v2
       # No system packages needed on Linux: X11/Wayland/xkbcommon are loaded at runtime.
       - run: cargo fmt --check
