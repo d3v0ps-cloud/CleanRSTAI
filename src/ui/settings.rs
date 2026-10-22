@@ -30,6 +30,7 @@ pub enum SettingsAction {
     ExportConversations,
     ImportSettings,
     ImportConversations,
+    CheckForUpdates,
 }
 
 pub struct SettingsUi {
@@ -52,6 +53,9 @@ pub struct SettingsUi {
     pub export_status: Option<Result<String, String>>,
     /// A settings file waiting for the user to choose Merge or Replace.
     pub pending_import: Option<Box<Settings>>,
+    pub checking_update: bool,
+    /// Outcome of the last manual update check: Ok(message) or Err(error).
+    pub update_status: Option<Result<String, String>>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -101,6 +105,8 @@ impl SettingsUi {
             export_include_secrets: false,
             export_status: None,
             pending_import: None,
+            checking_update: false,
+            update_status: None,
         }
     }
 
@@ -897,6 +903,41 @@ impl SettingsUi {
                                     ui.visuals().warn_fg_color,
                                     format!("Keychain unavailable ({e}); secrets will stay in settings.json."),
                                 );
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Updates");
+                        ui.vertical(|ui| {
+                            ui.checkbox(
+                                &mut g.check_for_updates,
+                                "Check GitHub for a new release at startup",
+                            );
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        !self.checking_update,
+                                        egui::Button::new("Check for updates now"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.checking_update = true;
+                                    self.update_status = None;
+                                    actions.push(SettingsAction::CheckForUpdates);
+                                }
+                                if self.checking_update {
+                                    ui.spinner();
+                                }
+                                ui.weak(concat!("Installed: v", env!("CARGO_PKG_VERSION")));
+                            });
+                            match &self.update_status {
+                                Some(Ok(m)) => {
+                                    ui.label(m);
+                                }
+                                Some(Err(e)) => {
+                                    ui.colored_label(ui.visuals().error_fg_color, e);
+                                }
+                                None => {}
                             }
                         });
                         ui.end_row();

@@ -195,6 +195,8 @@ pub struct GeneralSettings {
     pub show_stats: bool,
     /// Keep API keys and other secrets in the OS keychain instead of settings.json.
     pub use_keychain: bool,
+    /// Look for a newer release on GitHub at startup.
+    pub check_for_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -209,6 +211,7 @@ impl Default for GeneralSettings {
             tool_timeout_secs: 120,
             show_stats: true,
             use_keychain: true,
+            check_for_updates: true,
         }
     }
 }

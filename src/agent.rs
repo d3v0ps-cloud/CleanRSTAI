@@ -30,6 +30,11 @@ pub enum ChatEvent {
 }
 
 pub enum AppEvent {
+    /// Result of a GitHub Releases check. `explicit` when the user asked for it.
+    UpdateChecked {
+        result: Result<crate::update::UpdateCheck, String>,
+        explicit: bool,
+    },
     Chat {
         conv_id: Uuid,
         event: ChatEvent,
