@@ -49,6 +49,7 @@ pub struct ChatApp {
     renaming: Option<(Uuid, String)>,
     search: String,
     notice: Option<String>,
+    keychain_warned: bool,
 }
 
 fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
@@ -62,7 +63,8 @@ fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
 
 impl ChatApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
-        let settings = Settings::load();
+        let loaded = Settings::load();
+        let settings = loaded.settings;
         apply_appearance(&cc.egui_ctx, &settings);
 
         let http = llm::build_http_client();
@@ -76,7 +78,7 @@ impl ChatApp {
 
         let conversations = Conversation::load_all();
         let current = conversations.first().map(|c| c.id);
-        Self {
+        let mut app = Self {
             rt,
             http,
             settings,
@@ -92,8 +94,14 @@ impl ChatApp {
             settings_ui: None,
             renaming: None,
             search: String::new(),
-            notice: None,
+            notice: loaded.notice,
+            keychain_warned: false,
+        };
+        if loaded.needs_migration {
+            // Move plain-text secrets from settings.json into the keychain.
+            app.save_settings();
         }
+        app
     }
 
     fn conv_mut(&mut self, id: Uuid) -> Option<&mut Conversation> {
@@ -101,8 +109,15 @@ impl ChatApp {
     }
 
     fn save_settings(&mut self) {
-        if let Err(e) = self.settings.save() {
-            self.notice = Some(format!("Could not save settings: {e:#}"));
+        match self.settings.save() {
+            Ok(None) => self.keychain_warned = false,
+            // Say it once rather than on every save.
+            Ok(Some(warning)) if !self.keychain_warned => {
+                self.keychain_warned = true;
+                self.notice = Some(warning);
+            }
+            Ok(Some(_)) => {}
+            Err(e) => self.notice = Some(format!("Could not save settings: {e:#}")),
         }
     }
 

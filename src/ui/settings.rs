@@ -715,6 +715,26 @@ impl SettingsUi {
                         });
                         ui.end_row();
 
+                        ui.label("Secrets");
+                        ui.vertical(|ui| {
+                            ui.checkbox(
+                                &mut g.use_keychain,
+                                "Store API keys and secrets in the system keychain",
+                            )
+                            .on_hover_text(
+                                "API keys, header values and MCP environment variables are kept in the macOS Keychain, Windows Credential Manager or Secret Service instead of settings.json.",
+                            );
+                            if g.use_keychain
+                                && let Err(e) = crate::secrets::OsKeychain::status()
+                            {
+                                ui.colored_label(
+                                    ui.visuals().warn_fg_color,
+                                    format!("Keychain unavailable ({e}); secrets will stay in settings.json."),
+                                );
+                            }
+                        });
+                        ui.end_row();
+
                         ui.label("Stats");
                         ui.checkbox(
                             &mut g.show_stats,

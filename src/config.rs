@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::secrets::SecretStore;
+
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("net", "bukn", "CleanRSTAI")
 }
@@ -188,6 +190,8 @@ pub struct GeneralSettings {
     pub tool_timeout_secs: u64,
     /// Show prefill/decode speed and token counts under each response.
     pub show_stats: bool,
+    /// Keep API keys and other secrets in the OS keychain instead of settings.json.
+    pub use_keychain: bool,
 }
 
 impl Default for GeneralSettings {
@@ -201,6 +205,7 @@ impl Default for GeneralSettings {
             max_tool_rounds: 20,
             tool_timeout_secs: 120,
             show_stats: true,
+            use_keychain: true,
         }
     }
 }
@@ -230,29 +235,101 @@ impl Settings {
         config_dir().join("settings.json")
     }
 
-    pub fn load() -> Self {
-        let path = Self::path();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Settings>(&text) {
-                Ok(mut s) => {
-                    s.normalize();
-                    s
-                }
-                Err(e) => {
-                    log::error!("Failed to parse {}: {e}", path.display());
-                    // Keep the broken file around rather than silently overwriting it later.
-                    let _ = std::fs::copy(&path, path.with_extension("json.bak"));
-                    Self::default()
-                }
-            },
-            Err(_) => Self::default(),
+    /// Load settings, filling secrets back in from the OS keychain.
+    pub fn load() -> LoadedSettings {
+        Self::load_from(&Self::path(), &crate::secrets::OsKeychain)
+    }
+
+    pub fn load_from(path: &std::path::Path, store: &dyn SecretStore) -> LoadedSettings {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(_) => {
+                return LoadedSettings {
+                    settings: Self::default(),
+                    notice: None,
+                    needs_migration: false,
+                };
+            }
+        };
+        let parsed = serde_json::from_str::<serde_json::Value>(&text)
+            .and_then(|v| Ok((serde_json::from_value::<Settings>(v.clone())?, v)));
+        let (mut settings, raw) = match parsed {
+            Ok(x) => x,
+            Err(e) => {
+                log::error!("Failed to parse {}: {e}", path.display());
+                // Keep the broken file around rather than silently overwriting it later.
+                let _ = std::fs::copy(path, path.with_extension("json.bak"));
+                return LoadedSettings {
+                    settings: Self::default(),
+                    notice: Some(format!(
+                        "settings.json could not be read ({e}); started with defaults. The old file was kept as settings.json.bak."
+                    )),
+                    needs_migration: false,
+                };
+            }
+        };
+        settings.normalize();
+        let in_keychain = raw
+            .get(KEY_IN_KEYCHAIN)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let mut notice = None;
+        if in_keychain {
+            let failed = crate::secrets::internalize(&mut settings, store, &stored_accounts(&raw));
+            if !failed.is_empty() {
+                notice = Some(format!(
+                    "{} secret(s) couldn't be read from the system keychain; re-enter them in Settings.",
+                    failed.len()
+                ));
+            }
+        }
+        let needs_migration = !in_keychain
+            && settings.general.use_keychain
+            && crate::secrets::has_any_secret(&settings);
+        LoadedSettings {
+            settings,
+            notice,
+            needs_migration,
         }
     }
 
-    pub fn save(&self) -> Result<()> {
-        let path = Self::path();
-        let text = serde_json::to_string_pretty(self)?;
-        write_private(&path, text.as_bytes()).with_context(|| format!("writing {}", path.display()))
+    /// Save settings. Returns a warning if secrets had to stay in the file.
+    pub fn save(&self) -> Result<Option<String>> {
+        self.save_to(&Self::path(), &crate::secrets::OsKeychain)
+    }
+
+    pub fn save_to(
+        &self,
+        path: &std::path::Path,
+        store: &dyn SecretStore,
+    ) -> Result<Option<String>> {
+        let previous = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .map(|v| stored_accounts(&v))
+            .unwrap_or_default();
+
+        let mut on_disk = self.clone();
+        let mut accounts = Vec::new();
+        let mut warning = None;
+        if self.general.use_keychain {
+            match crate::secrets::externalize(&mut on_disk, store) {
+                Ok(a) => accounts = a,
+                Err(e) => {
+                    warning = Some(format!(
+                        "Couldn't use the system keychain ({e}); secrets are saved in settings.json instead. Turn off \"Store API keys and secrets in the system keychain\" in Settings → General to stop this message."
+                    ));
+                    on_disk = self.clone();
+                }
+            }
+        }
+        let mut doc = serde_json::to_value(&on_disk)?;
+        doc[KEY_IN_KEYCHAIN] = serde_json::json!(self.general.use_keychain && warning.is_none());
+        doc[KEY_ACCOUNTS] = serde_json::json!(accounts);
+        write_private(path, serde_json::to_string_pretty(&doc)?.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
+        crate::secrets::remove_stale(store, &previous, &accounts);
+        Ok(warning)
     }
 
     pub fn normalize(&mut self) {
@@ -273,6 +350,28 @@ impl Settings {
         let idx = self.active_provider.min(self.providers.len() - 1);
         &mut self.providers[idx]
     }
+}
+
+const KEY_IN_KEYCHAIN: &str = "secrets_in_keychain";
+const KEY_ACCOUNTS: &str = "keychain_accounts";
+
+fn stored_accounts(raw: &serde_json::Value) -> Vec<String> {
+    raw.get(KEY_ACCOUNTS)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub struct LoadedSettings {
+    pub settings: Settings,
+    /// Something the user should know (keychain read failures, unreadable file).
+    pub notice: Option<String>,
+    /// Secrets are still in plain text but should move to the keychain; save once to migrate.
+    pub needs_migration: bool,
 }
 
 /// Write a file atomically; on Unix restrict it to the current user since it may hold API keys.
@@ -384,6 +483,69 @@ mod tests {
         }
         let remote = servers.iter().find(|s| s.name == "remote").unwrap();
         assert!(matches!(remote.transport, McpTransportConfig::Http { .. }));
+    }
+
+    #[test]
+    fn keychain_save_load_migrate_and_fallback() {
+        use crate::secrets::tests::{MemoryStore, sample};
+        let dir = std::env::temp_dir().join(format!("cleanrstai-cfg-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = MemoryStore::default();
+
+        // A legacy plain-text file needs migrating.
+        let legacy = sample();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+        let loaded = Settings::load_from(&path, &store);
+        assert!(loaded.needs_migration);
+        assert_eq!(loaded.settings, legacy);
+
+        // Saving moves secrets out of the file; loading puts them back.
+        assert_eq!(legacy.save_to(&path, &store).unwrap(), None);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("sk-1") && text.contains("\"secrets_in_keychain\": true"),
+            "{text}"
+        );
+        let loaded = Settings::load_from(&path, &store);
+        assert!(!loaded.needs_migration && loaded.notice.is_none());
+        assert_eq!(loaded.settings, legacy);
+
+        // Removing a provider deletes its keychain entry.
+        let mut fewer = legacy.clone();
+        fewer.providers = vec![ProviderConfig::default()];
+        fewer.save_to(&path, &store).unwrap();
+        assert!(
+            !store
+                .items
+                .lock()
+                .unwrap()
+                .contains_key("provider:p1:api_key")
+        );
+
+        // A missing keychain entry is reported.
+        legacy.save_to(&path, &store).unwrap();
+        store.items.lock().unwrap().clear();
+        assert!(Settings::load_from(&path, &store).notice.is_some());
+
+        // A failing keychain falls back to plain text with a warning.
+        let broken = MemoryStore {
+            fail: true,
+            ..Default::default()
+        };
+        assert!(legacy.save_to(&path, &broken).unwrap().is_some());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("sk-1"));
+
+        // Turning the keychain off writes plain text and clears stored entries.
+        let mut off = legacy.clone();
+        off.general.use_keychain = false;
+        off.save_to(&path, &store).unwrap(); // previous save had no accounts
+        legacy.save_to(&path, &store).unwrap();
+        assert!(!store.items.lock().unwrap().is_empty());
+        off.save_to(&path, &store).unwrap();
+        assert!(store.items.lock().unwrap().is_empty());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("sk-1"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

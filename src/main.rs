@@ -8,6 +8,7 @@ mod env_path;
 mod export;
 mod llm;
 mod mcp;
+mod secrets;
 mod sse;
 mod stats;
 #[cfg(test)]
