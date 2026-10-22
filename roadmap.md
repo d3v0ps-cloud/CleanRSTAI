@@ -94,6 +94,8 @@ Tools that ship with the app, so they work without configuring an MCP server.
 - [x] Turn whole servers or single tools on and off for the current chat without opening
   Settings
 - [x] Changes apply from the next request; Settings keeps the default for new chats
+- [ ] On the tool call approval prompt, offer "Always allow this tool" and "Always allow this
+  MCP server" buttons that skip approval for the rest of the session
 
 ## 11. Reasoning display
 
