@@ -9,6 +9,9 @@ mod export;
 mod llm;
 mod mcp;
 mod sse;
+mod stats;
+#[cfg(test)]
+mod testutil;
 mod types;
 mod ui;
 

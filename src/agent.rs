@@ -18,13 +18,13 @@ pub enum ChatEvent {
     ContentDelta(String),
     ReasoningDelta(String),
     /// Replaces the in-progress assistant message with its final form (incl. tool calls).
-    AssistantFinal(ChatMessage),
+    AssistantFinal(Box<ChatMessage>),
     ToolApproval {
         call: ToolCall,
         respond: oneshot::Sender<bool>,
     },
     ToolRunning(String),
-    ToolResult(ChatMessage),
+    ToolResult(Box<ChatMessage>),
     Error(String),
     Done,
 }
@@ -37,6 +37,12 @@ pub enum AppEvent {
     ModelsFetched {
         provider_id: String,
         result: Result<Vec<String>, String>,
+    },
+    KindDetected {
+        provider_id: String,
+        kind: crate::config::ProviderKind,
+        /// Whether the user asked (Detect button) rather than it running alongside a fetch.
+        explicit: bool,
     },
 }
 
@@ -65,6 +71,11 @@ pub async fn run(
     let mut history = req.history;
     let max_rounds = req.general.max_tool_rounds.max(1);
     let tool_timeout = Duration::from_secs(req.general.tool_timeout_secs.max(5));
+    let context_size = if req.provider.kind == crate::config::ProviderKind::LlamaCpp {
+        llm::llama_cpp_context_size(&http, &req.provider).await
+    } else {
+        None
+    };
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
@@ -96,9 +107,12 @@ pub async fn run(
             msg.reasoning = Some(turn.reasoning);
         }
         msg.tool_calls = turn.tool_calls;
+        let mut stats = turn.stats;
+        stats.context_size = context_size;
+        msg.stats = Some(stats);
         let calls = msg.tool_calls.clone();
         history.push(msg.clone());
-        emit(ChatEvent::AssistantFinal(msg));
+        emit(ChatEvent::AssistantFinal(Box::new(msg)));
 
         if calls.is_empty() {
             if turn.finish_reason.as_deref() == Some("length") {
@@ -136,7 +150,7 @@ pub async fn run(
                 ChatMessage::tool_result(call, "The user declined to run this tool.", true)
             };
             history.push(result.clone());
-            emit(ChatEvent::ToolResult(result));
+            emit(ChatEvent::ToolResult(Box::new(result)));
         }
     }
     emit(ChatEvent::Done);
@@ -268,7 +282,7 @@ mod tests {
         while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
             match event {
                 ChatEvent::ContentDelta(s) => content.push_str(&s),
-                ChatEvent::ToolResult(m) => tool_result = Some(m),
+                ChatEvent::ToolResult(m) => tool_result = Some(*m),
                 ChatEvent::Error(e) => errors.push(e),
                 _ => {}
             }

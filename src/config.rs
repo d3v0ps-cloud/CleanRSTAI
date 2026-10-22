@@ -31,6 +31,39 @@ pub struct KeyValue {
     pub value: String,
 }
 
+/// What kind of server a provider is, so the app can use its extra stats.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    /// Any OpenAI-compatible API: standard `usage` plus client-side timing.
+    #[default]
+    Generic,
+    /// llama.cpp `llama-server`: native prefill/decode timings and context size.
+    LlamaCpp,
+    /// LiteLLM proxy: served model and cost.
+    LiteLlm,
+}
+
+impl ProviderKind {
+    pub const ALL: [ProviderKind; 3] = [Self::Generic, Self::LlamaCpp, Self::LiteLlm];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Generic => "Generic OpenAI-compatible",
+            Self::LlamaCpp => "llama.cpp server",
+            Self::LiteLlm => "LiteLLM proxy",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Generic => "Token usage from the API; speeds measured by the app.",
+            Self::LlamaCpp => "Prefill/decode speeds and context size reported by llama.cpp.",
+            Self::LiteLlm => "Shows the model that served each request and its cost.",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -47,6 +80,9 @@ pub struct ProviderConfig {
     pub stream: bool,
     pub extra_headers: Vec<KeyValue>,
     pub timeout_secs: u64,
+    pub kind: ProviderKind,
+    /// Ask for token usage in streamed responses (`stream_options.include_usage`).
+    pub request_usage: bool,
 }
 
 impl Default for ProviderConfig {
@@ -63,6 +99,8 @@ impl Default for ProviderConfig {
             stream: true,
             extra_headers: Vec::new(),
             timeout_secs: 300,
+            kind: ProviderKind::Generic,
+            request_usage: true,
         }
     }
 }
@@ -148,6 +186,8 @@ pub struct GeneralSettings {
     pub auto_approve_tools: bool,
     pub max_tool_rounds: u32,
     pub tool_timeout_secs: u64,
+    /// Show prefill/decode speed and token counts under each response.
+    pub show_stats: bool,
 }
 
 impl Default for GeneralSettings {
@@ -160,6 +200,7 @@ impl Default for GeneralSettings {
             auto_approve_tools: false,
             max_tool_rounds: 20,
             tool_timeout_secs: 120,
+            show_stats: true,
         }
     }
 }

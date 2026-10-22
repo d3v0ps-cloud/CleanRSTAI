@@ -5,8 +5,9 @@ use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, ProviderKind};
 use crate::sse::SseParser;
+use crate::stats::{Collector, RequestStats};
 use crate::types::{ChatMessage, Role, ToolCall};
 
 #[derive(Clone, Debug)]
@@ -27,6 +28,7 @@ pub struct AssistantTurn {
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
+    pub stats: RequestStats,
 }
 
 pub fn build_http_client() -> reqwest::Client {
@@ -70,6 +72,67 @@ async fn error_from_response(resp: reqwest::Response) -> anyhow::Error {
         })
         .unwrap_or(body);
     anyhow::anyhow!("HTTP {status}: {}", detail.trim())
+}
+
+/// Server root, without the trailing `/v1` (where llama.cpp and LiteLLM serve extra endpoints).
+fn origin(p: &ProviderConfig) -> String {
+    let base = p.base_url.trim().trim_end_matches('/');
+    base.strip_suffix("/v1").unwrap_or(base).to_owned()
+}
+
+/// llama.cpp's `/props`: returns the context size if this is a llama.cpp server.
+pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) -> Option<u64> {
+    let v = llama_cpp_props(http, p).await?;
+    v.pointer("/default_generation_settings/n_ctx")
+        .or_else(|| v.get("n_ctx"))
+        .and_then(Value::as_u64)
+}
+
+async fn llama_cpp_props(http: &reqwest::Client, p: &ProviderConfig) -> Option<Value> {
+    let resp = authorize(http.get(format!("{}/props", origin(p))), p)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    (v.get("default_generation_settings").is_some() || v.get("build_info").is_some()).then_some(v)
+}
+
+/// Work out which kind of server a provider points at.
+pub async fn detect_kind(http: &reqwest::Client, p: &ProviderConfig) -> ProviderKind {
+    if llama_cpp_props(http, p).await.is_some() {
+        return ProviderKind::LlamaCpp;
+    }
+    // LiteLLM tags its responses with `x-litellm-*` headers and has a liveness endpoint.
+    let litellm_headers = authorize(http.get(endpoint(p, "models")), p)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .is_ok_and(|r| {
+            r.headers()
+                .keys()
+                .any(|k| k.as_str().starts_with("x-litellm"))
+        });
+    if litellm_headers {
+        return ProviderKind::LiteLlm;
+    }
+    let liveliness = http
+        .get(format!("{}/health/liveliness", origin(p)))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await;
+    if let Ok(r) = liveliness
+        && r.status().is_success()
+        && r.text()
+            .await
+            .is_ok_and(|t| t.to_ascii_lowercase().contains("alive"))
+    {
+        return ProviderKind::LiteLlm;
+    }
+    ProviderKind::Generic
 }
 
 pub async fn list_models(http: &reqwest::Client, p: &ProviderConfig) -> Result<Vec<String>> {
@@ -261,6 +324,11 @@ pub async fn chat_completion(
     if let Some(m) = p.max_tokens {
         body["max_tokens"] = json!(m);
     }
+    if p.stream && p.request_usage {
+        body["stream_options"] = json!({"include_usage": true});
+    }
+
+    let mut stats = Collector::default();
 
     let resp = authorize(http.post(endpoint(p, "chat/completions")), p)
         .timeout(std::time::Duration::from_secs(p.timeout_secs.max(10)))
@@ -271,6 +339,11 @@ pub async fn chat_completion(
     if !resp.status().is_success() {
         return Err(error_from_response(resp).await);
     }
+    stats.header_cost_usd = resp
+        .headers()
+        .get("x-litellm-response-cost")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<f64>().ok());
 
     let mut turn = AssistantTurn::default();
     let mut builder = ToolCallBuilder::default();
@@ -293,6 +366,8 @@ pub async fn chat_completion(
         }
         let choice = v.pointer("/choices/0").context("response has no choices")?;
         let msg = choice.get("message").cloned().unwrap_or(Value::Null);
+        stats.timer.token();
+        stats.observe(&v);
         if let Some(r) = reasoning_of(&msg) {
             on_delta(Delta::Reasoning(r));
             turn.reasoning.push_str(r);
@@ -307,58 +382,71 @@ pub async fn chat_completion(
             .and_then(|f| f.as_str())
             .map(str::to_owned);
         turn.tool_calls = builder.finish();
+        turn.stats = stats.finish(&p.model);
         return Ok(turn);
     }
 
     let mut parser = SseParser::default();
     let mut stream = resp.bytes_stream();
     let mut done = false;
-    let mut handle =
-        |data: &str, turn: &mut AssistantTurn, builder: &mut ToolCallBuilder| -> Result<bool> {
-            let data = data.trim();
-            if data == "[DONE]" {
-                return Ok(true);
-            }
-            if data.is_empty() {
-                return Ok(false);
-            }
-            let v: Value =
-                serde_json::from_str(data).with_context(|| format!("bad chunk: {data}"))?;
-            if let Some(err) = v.get("error") {
-                bail!(
-                    "{}",
-                    err.get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or(&err.to_string())
-                );
-            }
-            if let Some(choice) = v.pointer("/choices/0") {
-                if let Some(delta) = choice.get("delta") {
-                    if let Some(r) = reasoning_of(delta).filter(|r| !r.is_empty()) {
-                        on_delta(Delta::Reasoning(r));
-                        turn.reasoning.push_str(r);
-                    }
-                    if let Some(c) = delta
+    let mut handle = |data: &str,
+                      turn: &mut AssistantTurn,
+                      builder: &mut ToolCallBuilder,
+                      stats: &mut Collector|
+     -> Result<bool> {
+        let data = data.trim();
+        if data == "[DONE]" {
+            return Ok(true);
+        }
+        if data.is_empty() {
+            return Ok(false);
+        }
+        let v: Value = serde_json::from_str(data).with_context(|| format!("bad chunk: {data}"))?;
+        if let Some(err) = v.get("error") {
+            bail!(
+                "{}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(&err.to_string())
+            );
+        }
+        stats.observe(&v);
+        if let Some(choice) = v.pointer("/choices/0") {
+            if let Some(delta) = choice.get("delta") {
+                let produced = reasoning_of(delta).is_some_and(|r| !r.is_empty())
+                    || delta
                         .get("content")
                         .and_then(|c| c.as_str())
-                        .filter(|c| !c.is_empty())
-                    {
-                        on_delta(Delta::Content(c));
-                        turn.content.push_str(c);
-                    }
-                    builder.apply(delta);
+                        .is_some_and(|c| !c.is_empty())
+                    || delta.get("tool_calls").is_some_and(|t| !t.is_null());
+                if produced {
+                    stats.timer.token();
                 }
-                if let Some(f) = choice.get("finish_reason").and_then(|f| f.as_str()) {
-                    turn.finish_reason = Some(f.to_owned());
+                if let Some(r) = reasoning_of(delta).filter(|r| !r.is_empty()) {
+                    on_delta(Delta::Reasoning(r));
+                    turn.reasoning.push_str(r);
                 }
+                if let Some(c) = delta
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .filter(|c| !c.is_empty())
+                {
+                    on_delta(Delta::Content(c));
+                    turn.content.push_str(c);
+                }
+                builder.apply(delta);
             }
-            Ok(false)
-        };
+            if let Some(f) = choice.get("finish_reason").and_then(|f| f.as_str()) {
+                turn.finish_reason = Some(f.to_owned());
+            }
+        }
+        Ok(false)
+    };
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("stream interrupted")?;
         for ev in parser.feed(&chunk) {
-            if handle(&ev.data, &mut turn, &mut builder)? {
+            if handle(&ev.data, &mut turn, &mut builder, &mut stats)? {
                 done = true;
                 break;
             }
@@ -368,9 +456,10 @@ pub async fn chat_completion(
         }
     }
     if !done && let Some(ev) = parser.finish() {
-        handle(&ev.data, &mut turn, &mut builder)?;
+        handle(&ev.data, &mut turn, &mut builder, &mut stats)?;
     }
     turn.tool_calls = builder.finish();
+    turn.stats = stats.finish(&p.model);
     Ok(turn)
 }
 
@@ -422,5 +511,116 @@ mod tests {
         );
         assert_eq!(msgs[4]["tool_call_id"], "2");
         assert!(msgs[2]["content"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod server_tests {
+    //! Against mock llama.cpp / LiteLLM / generic servers over real HTTP.
+    use super::*;
+    use crate::stats::StatsSource;
+    use crate::testutil::{Response, serve};
+
+    fn provider(base: &str, kind: ProviderKind) -> ProviderConfig {
+        ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "m".into(),
+            kind,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_detection_and_server_timings() {
+        let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/props") => Response::json(json!({
+                "default_generation_settings": {"n_ctx": 8192}, "build_info": "b1"})),
+            ("POST", "/v1/chat/completions") => Response::sse(&[
+                json!({"choices": [{"delta": {"content": "Hel"}}]}),
+                json!({"choices": [{"delta": {"content": "lo"}, "finish_reason": "stop"}],
+                       "timings": {"prompt_n": 120, "prompt_ms": 60.0, "prompt_per_second": 2000.0,
+                                   "predicted_n": 2, "predicted_ms": 40.0, "predicted_per_second": 50.0}}),
+            ]),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = build_http_client();
+        let p = provider(&base, ProviderKind::Generic);
+        assert_eq!(detect_kind(&http, &p).await, ProviderKind::LlamaCpp);
+        assert_eq!(llama_cpp_context_size(&http, &p).await, Some(8192));
+
+        let turn = chat_completion(&http, &p, vec![], &[], |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Hello");
+        let s = turn.stats;
+        assert_eq!(s.source, StatsSource::Server);
+        assert_eq!((s.prefill_tps, s.decode_tps), (Some(2000.0), Some(50.0)));
+        assert_eq!((s.prompt_tokens, s.completion_tokens), (Some(120), Some(2)));
+
+        let log = log.lock().unwrap();
+        let chat = log.iter().find(|r| r.method == "POST").unwrap();
+        assert_eq!(chat.json()["stream_options"]["include_usage"], true);
+    }
+
+    #[tokio::test]
+    async fn litellm_detection_cost_and_served_model() {
+        let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/v1/models") => Response::json(json!({"data": [{"id": "alias"}]}))
+                .header("x-litellm-version", "1.0.0"),
+            ("POST", "/v1/chat/completions") => Response::sse(&[
+                json!({"model": "azure/gpt-x", "choices": [{"delta": {"content": "a"}}]}),
+                json!({"model": "azure/gpt-x", "choices": [{"delta": {"content": "b"}}]}),
+                json!({"model": "azure/gpt-x", "choices": [],
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 2}}),
+            ])
+            .header("x-litellm-response-cost", "0.0042"),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = build_http_client();
+        let p = ProviderConfig {
+            model: "alias".into(),
+            api_key: "sk-test".into(),
+            ..provider(&base, ProviderKind::Generic)
+        };
+        assert_eq!(detect_kind(&http, &p).await, ProviderKind::LiteLlm);
+        let s = chat_completion(&http, &p, vec![], &[], |_| {})
+            .await
+            .unwrap()
+            .stats;
+        assert_eq!(s.source, StatsSource::Measured);
+        assert_eq!(s.cost_usd, Some(0.0042));
+        assert_eq!(s.served_model.as_deref(), Some("azure/gpt-x"));
+        assert_eq!((s.prompt_tokens, s.completion_tokens), (Some(10), Some(2)));
+        assert!(!s.tokens_estimated);
+        let log = log.lock().unwrap();
+        let chat = log.iter().find(|r| r.method == "POST").unwrap();
+        assert_eq!(chat.header("authorization"), Some("Bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn generic_server_without_usage_and_opt_out() {
+        let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("POST", "/v1/chat/completions") => Response::sse(&[
+                json!({"choices": [{"delta": {"content": "x"}}]}),
+                json!({"choices": [{"delta": {"content": "y"}}]}),
+            ]),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = build_http_client();
+        let mut p = provider(&base, ProviderKind::Generic);
+        assert_eq!(detect_kind(&http, &p).await, ProviderKind::Generic);
+        p.request_usage = false;
+        let s = chat_completion(&http, &p, vec![], &[], |_| {})
+            .await
+            .unwrap()
+            .stats;
+        assert!(s.tokens_estimated);
+        assert_eq!(s.completion_tokens, Some(2));
+        let log = log.lock().unwrap();
+        let chat = log.iter().find(|r| r.method == "POST").unwrap();
+        assert!(chat.json().get("stream_options").is_none());
     }
 }
