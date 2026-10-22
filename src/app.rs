@@ -347,6 +347,22 @@ impl ChatApp {
         self.save_settings();
     }
 
+    /// Add imported chats that aren't already present; returns a status message.
+    fn import_conversations(&mut self, incoming: Vec<Conversation>) -> String {
+        let (fresh, skipped) = export::new_conversations(&self.conversations, incoming);
+        for c in &fresh {
+            c.save();
+        }
+        let added = fresh.len();
+        self.conversations.extend(fresh);
+        self.conversations
+            .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+        match skipped {
+            0 => format!("Imported {added} conversation(s)."),
+            n => format!("Imported {added} conversation(s); skipped {n} already present."),
+        }
+    }
+
     fn spawn_detect(&self, p: crate::config::ProviderConfig, explicit: bool, ctx: &egui::Context) {
         let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ctx.clone());
         self.rt.spawn(async move {
@@ -793,6 +809,18 @@ impl ChatApp {
     }
 }
 
+/// Ask for an export file and parse it. `None` if the user cancelled the dialog.
+fn import_file() -> Option<Result<export::Imported, String>> {
+    let path = export::pick_open_path()?;
+    Some(
+        std::fs::read(&path)
+            .map_err(|e| format!("Could not read {}: {e}", path.display()))
+            .and_then(|bytes| {
+                export::parse_import(&bytes).map_err(|e| format!("Import failed: {e:#}"))
+            }),
+    )
+}
+
 /// Ask where to save `doc` and write it. `None` if the user cancelled the dialog.
 fn run_export(kind: &str, doc: &serde_json::Value) -> Option<Result<String, String>> {
     let path = export::pick_save_path(&export::default_file_name(kind))?;
@@ -1034,6 +1062,32 @@ impl eframe::App for ChatApp {
                     SettingsAction::ExportSettings { include_secrets } => {
                         let doc = export::settings_document(&self.settings, include_secrets);
                         sui.export_status = run_export("settings", &doc);
+                    }
+                    SettingsAction::ImportSettings => {
+                        sui.export_status = import_file().map(|r| {
+                            r.and_then(|imported| match imported {
+                                export::Imported::Settings(s) => {
+                                    sui.pending_import = Some(s);
+                                    Ok("Choose how to import the settings below.".to_owned())
+                                }
+                                export::Imported::Conversations(_) => Err(
+                                    "That file is a conversations export; use Import conversations.".to_owned(),
+                                ),
+                            })
+                        });
+                    }
+                    SettingsAction::ImportConversations => {
+                        sui.export_status = import_file().map(|r| {
+                            r.and_then(|imported| match imported {
+                                export::Imported::Conversations(list) => {
+                                    Ok(self.import_conversations(list))
+                                }
+                                export::Imported::Settings(_) => {
+                                    Err("That file is a settings export; use Import settings."
+                                        .to_owned())
+                                }
+                            })
+                        });
                     }
                     SettingsAction::ExportConversations => {
                         let doc = export::conversations_document(&self.conversations);

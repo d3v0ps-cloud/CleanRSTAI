@@ -25,6 +25,8 @@ pub enum SettingsAction {
     RefreshTools(String),
     ExportSettings { include_secrets: bool },
     ExportConversations,
+    ImportSettings,
+    ImportConversations,
 }
 
 pub struct SettingsUi {
@@ -41,8 +43,10 @@ pub struct SettingsUi {
     pub detecting_kind: bool,
     pub detect_result: Option<String>,
     export_include_secrets: bool,
-    /// Outcome of the last export: Ok(message) or Err(error).
+    /// Outcome of the last export or import: Ok(message) or Err(error).
     pub export_status: Option<Result<String, String>>,
+    /// A settings file waiting for the user to choose Merge or Replace.
+    pub pending_import: Option<Box<Settings>>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -89,6 +93,7 @@ impl SettingsUi {
             detect_result: None,
             export_include_secrets: false,
             export_status: None,
+            pending_import: None,
         }
     }
 
@@ -661,6 +666,8 @@ impl SettingsUi {
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
+        // Applied after the scroll area, which holds a borrow of the draft.
+        let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
         let g = &mut self.draft.general;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -740,7 +747,7 @@ impl SettingsUi {
 
                 ui.add_space(16.0);
                 ui.separator();
-                ui.strong("Export");
+                ui.strong("Export & import");
                 ui.horizontal(|ui| {
                     if ui
                         .button("Export settings…")
@@ -771,6 +778,44 @@ impl SettingsUi {
                 {
                     actions.push(SettingsAction::ExportConversations);
                 }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Import settings…")
+                        .on_hover_text("Load a settings export into this window for review")
+                        .clicked()
+                    {
+                        actions.push(SettingsAction::ImportSettings);
+                    }
+                    if ui
+                        .button("Import conversations…")
+                        .on_hover_text("Add chats from a conversations export; existing chats are kept")
+                        .clicked()
+                    {
+                        actions.push(SettingsAction::ImportConversations);
+                    }
+                });
+                if let Some(incoming) = &self.pending_import {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.label(format!(
+                            "Import {} provider(s) and {} MCP server(s)?",
+                            incoming.providers.len(),
+                            incoming.mcp_servers.len()
+                        ));
+                        ui.weak("Merge adds them, updating entries that already exist, and keeps your other settings. Replace uses the imported settings as they are.");
+                        ui.horizontal(|ui| {
+                            if ui.button("Merge").clicked() {
+                                import_choice = Some(Some(crate::export::ImportMode::Merge));
+                            }
+                            if ui.button("Replace").clicked() {
+                                import_choice = Some(Some(crate::export::ImportMode::Replace));
+                            }
+                            if ui.button("Cancel").clicked() {
+                                import_choice = Some(None);
+                            }
+                        });
+                    });
+                }
                 match &self.export_status {
                     Some(Ok(msg)) => {
                         ui.colored_label(egui::Color32::from_rgb(60, 170, 90), msg);
@@ -789,5 +834,21 @@ impl SettingsUi {
                     crate::config::data_dir().join("conversations").display()
                 ));
             });
+
+        if let Some(choice) = import_choice
+            && let Some(incoming) = self.pending_import.take()
+        {
+            if let Some(mode) = choice {
+                self.draft = crate::export::apply_settings_import(&self.draft, *incoming, mode);
+                let missing = crate::export::missing_secrets(&self.draft);
+                let mut msg = "Imported. Review the settings, then Apply or Save.".to_owned();
+                if !missing.is_empty() {
+                    msg.push_str(&format!(" Still blank: {}.", missing.join(", ")));
+                }
+                self.export_status = Some(Ok(msg));
+            } else {
+                self.export_status = None;
+            }
+        }
     }
 }
