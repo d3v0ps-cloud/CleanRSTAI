@@ -76,6 +76,47 @@ open.
 - [x] OAuth sign-in for remote (Streamable HTTP) MCP servers
 - [x] Re-fetch tools, resources and prompts automatically on `list_changed` notifications
 
+## 9. Built-in tools
+
+Tools that ship with the app, so they work without configuring an MCP server.
+
+- [ ] **Time & calculation**: current date, time and time zone, and a calculator for exact
+  arithmetic
+- [ ] **Task management**: the agent breaks a request down into actionable tasks, shows them as
+  a checklist in the chat, and updates each one as it works through them
+- [ ] Enable or disable each built-in tool in Settings
+
+## 10. Toggle tools and MCP servers during a session
+
+- [ ] A dropdown next to the input that lists every MCP server and its tools (and the built-in
+  tools), with a switch for each
+- [ ] Turn whole servers or single tools on and off for the current chat without opening
+  Settings
+- [ ] Changes apply from the next request; Settings keeps the default for new chats
+
+## 11. Reasoning display
+
+Today the *Thinking* section is open while the model is reasoning and collapses once the
+answer starts.
+
+- [ ] Collapse reasoning by default
+- [ ] A setting in **Settings → General** to choose the default: collapsed, expanded, or
+  expanded only while streaming
+
+## 12. Subagents
+
+A tool the model can call to delegate tasks to other agents, which run on their own and report
+back.
+
+- [ ] A `delegate` tool that hands one or more tasks to subagents, runs them in parallel, and
+  returns each result to the main agent
+- [ ] Show each subagent's progress and result in the chat, collapsible like tool calls
+- [ ] **Settings → Subagents**: system prompt, which tools and MCP servers subagents may use,
+  maximum parallel subagents, round limit and timeout
+- [ ] Delegate to a different provider and model than the main chat, chosen in Settings or per
+  task, e.g. a fast local model for simple tasks
+- [ ] Count subagent usage in the chat's stats and cost totals
+
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
