@@ -1,7 +1,9 @@
-//! Tools offered to the model: the built-in tools (time, calculator, task list, subagents)
+//! Tools offered to the model: the built-in tools (time, calculator, task list, web fetch,
+//! subagents)
 //! plus MCP tools, filtered by what the user switched on for the current chat.
 
 pub mod calc;
+pub mod fetch;
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -19,13 +21,15 @@ use crate::mcp::manager::{McpManager, ToolRouter};
 pub const TIME: &str = "builtin__get_time";
 pub const CALCULATE: &str = "builtin__calculate";
 pub const TASKS: &str = "builtin__update_tasks";
+pub const FETCH: &str = "builtin__fetch";
 pub const DELEGATE: &str = "builtin__delegate";
 
 /// Built-in tools in display order, with the key used for per-chat switches.
-pub const BUILTINS: [(&str, &str, &str); 4] = [
+pub const BUILTINS: [(&str, &str, &str); 5] = [
     (TIME, "time", "Time & date"),
     (CALCULATE, "calculator", "Calculator"),
     (TASKS, "tasks", "Task list"),
+    (FETCH, "fetch", "Web fetch"),
     (DELEGATE, "subagents", "Subagents"),
 ];
 
@@ -132,6 +136,7 @@ impl ToolSelection {
             "time" => self.builtins.time,
             "calculator" => self.builtins.calculator,
             "tasks" => self.builtins.tasks,
+            "fetch" => self.builtins.fetch,
             "subagents" => self.subagents,
             _ => false,
         }
@@ -151,6 +156,8 @@ impl ToolSelection {
 pub struct Toolbox {
     pub specs: Vec<ToolSpec>,
     mcp: ToolRouter,
+    /// For the fetch tool.
+    http: Option<reqwest::Client>,
 }
 
 impl Toolbox {
@@ -173,7 +180,17 @@ impl Toolbox {
         }
         // A built-in name wins over an MCP tool that happens to sanitise to the same name.
         specs.extend(mcp.specs.iter().filter(|s| !is_builtin(&s.name)).cloned());
-        Self { specs, mcp }
+        Self {
+            specs,
+            mcp,
+            http: None,
+        }
+    }
+
+    /// The HTTP client the fetch tool uses.
+    pub fn with_http(mut self, http: reqwest::Client) -> Self {
+        self.http = Some(http);
+        self
     }
 
     pub fn has(&self, function: &str) -> bool {
@@ -188,9 +205,10 @@ impl Toolbox {
         self.mcp.origin(function)
     }
 
-    /// Built-ins other than `delegate` are local and harmless, so they skip approval.
+    /// The local built-ins (time, calculator, tasks) skip approval; `fetch` reaches the
+    /// network and `delegate` starts subagents, so they ask like MCP tools do.
     pub fn needs_approval(function: &str) -> bool {
-        !is_builtin(function) || function == DELEGATE
+        !is_builtin(function) || function == DELEGATE || function == FETCH
     }
 
     /// Run a built-in (except `delegate`, which the agent handles) or an MCP tool.
@@ -199,6 +217,19 @@ impl Toolbox {
             return error_output(format!(
                 "Error: the tool '{function}' is not available in this chat."
             ));
+        }
+        if function == FETCH {
+            let Some(http) = &self.http else {
+                return error_output("Error: web fetch isn't available here.");
+            };
+            let args = match parse_args(arguments) {
+                Ok(args) => args,
+                Err(e) => return error_output(format!("Error: {e:#}")),
+            };
+            return match fetch::run(http, &args, timeout).await {
+                Ok(out) => out,
+                Err(e) => error_output(format!("Error: {e:#}")),
+            };
         }
         if is_builtin(function) {
             return run_builtin(function, arguments);
@@ -290,6 +321,11 @@ fn builtin_spec(name: &str) -> ToolSpec {
                 },
                 "required": ["tasks"]
             }),
+        },
+        FETCH => ToolSpec {
+            name: FETCH.into(),
+            description: fetch::spec_description(),
+            parameters: fetch::spec_parameters(),
         },
         other => unreachable!("not a built-in tool: {other}"),
     }
@@ -523,12 +559,42 @@ mod tests {
         let sel = ToolSelection::new(&settings, &ToolOverrides::default());
         let tb = Toolbox::new(ToolRouter::default(), &sel, Some("delegate".into()));
         let names: Vec<&str> = tb.specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, [TIME, CALCULATE, DELEGATE]);
+        assert_eq!(names, [TIME, CALCULATE, FETCH, DELEGATE]);
         let tb = Toolbox::new(ToolRouter::default(), &sel, None);
         assert!(!tb.has(DELEGATE));
         assert!(Toolbox::needs_approval(DELEGATE));
+        assert!(Toolbox::needs_approval(FETCH));
         assert!(!Toolbox::needs_approval(CALCULATE));
         assert!(Toolbox::needs_approval("server__tool"));
+    }
+
+    #[tokio::test]
+    async fn fetch_runs_through_the_toolbox() {
+        let (base, _) = crate::testutil::serve(|_| {
+            crate::testutil::Response::with_type(200, "text/plain", "hello from the web")
+        })
+        .await;
+        let sel = ToolSelection::new(&Settings::default(), &ToolOverrides::default());
+        let args = json!({"url": format!("{base}/x")}).to_string();
+        let t = Duration::from_secs(5);
+        // Without an HTTP client (never the case in the app) it fails cleanly.
+        let tb = Toolbox::new(ToolRouter::default(), &sel, None);
+        assert!(tb.call(FETCH, &args, t).await.is_error);
+        let tb = tb.with_http(reqwest::Client::new());
+        let out = tb.call(FETCH, &args, t).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.ends_with("hello from the web"), "{}", out.text);
+        // Switched off for the chat: refused.
+        let mut ov = ToolOverrides::default();
+        ov.set(ToolOverrides::builtin_key("fetch"), false, true);
+        let sel = ToolSelection::new(&Settings::default(), &ov);
+        let tb = Toolbox::new(ToolRouter::default(), &sel, None).with_http(reqwest::Client::new());
+        assert!(
+            tb.call(FETCH, &args, t)
+                .await
+                .text
+                .contains("not available")
+        );
     }
 
     #[tokio::test]

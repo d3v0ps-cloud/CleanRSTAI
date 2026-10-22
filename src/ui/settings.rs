@@ -844,9 +844,10 @@ impl SettingsUi {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.label(
-                    "Built-in tools run on this computer and don't ask for approval. These are \
-                     the defaults for new chats; switch them for one chat from the tools menu \
-                     next to the message box.",
+                    "Built-in tools that run on this computer don't ask for approval; web fetch \
+                     reaches the internet, so it asks first, like MCP tools. These are the \
+                     defaults for new chats; switch them for one chat from the tools menu next \
+                     to the message box.",
                 );
                 ui.add_space(10.0);
                 for (on, ic, name, desc) in [
@@ -867,6 +868,12 @@ impl SettingsUi {
                         icon::LIST_CHECKS,
                         "Task list",
                         "For multi-step requests the model breaks the work into actionable tasks, shows them as a checklist in the chat, and ticks them off as it goes.",
+                    ),
+                    (
+                        &mut b.fetch,
+                        icon::GLOBE,
+                        "Web fetch",
+                        "Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch.",
                     ),
                 ] {
                     ui.horizontal(|ui| {
@@ -983,7 +990,7 @@ impl SettingsUi {
                             ui.vertical(|ui| {
                                 ui.checkbox(
                                     &mut sa.builtin_tools,
-                                    "Time and calculator (when on in the chat)",
+                                    "Time, calculator and web fetch (when on in the chat)",
                                 );
                                 ui.checkbox(&mut sa.mcp_tools, "The chat's MCP tools");
                                 if sa.mcp_tools && !servers.is_empty() {
@@ -1346,6 +1353,7 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Tools, "Tools", "Time & date tool"),
     (Tab::Tools, "Tools", "Calculator tool"),
     (Tab::Tools, "Tools", "Task list / planning tool"),
+    (Tab::Tools, "Tools", "Web fetch tool (read URLs)"),
     (
         Tab::Subagents,
         "Subagents",

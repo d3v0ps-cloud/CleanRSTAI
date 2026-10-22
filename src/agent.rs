@@ -113,6 +113,7 @@ pub async fn run(
                 &req.selection,
                 req.delegation.as_ref().map(Delegation::tool_description),
             )
+            .with_http(http.clone())
         } else {
             Toolbox::default()
         };
@@ -450,7 +451,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [tools::TIME, tools::CALCULATE, tools::TASKS, tools::DELEGATE]
+            [
+                tools::TIME,
+                tools::CALCULATE,
+                tools::TASKS,
+                tools::FETCH,
+                tools::DELEGATE
+            ]
         );
     }
 
@@ -483,7 +490,7 @@ mod tests {
             .iter()
             .map(|t| t["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, [tools::TIME, tools::TASKS]);
+        assert_eq!(names, [tools::TIME, tools::TASKS, tools::FETCH]);
         // A call to a tool that is off for this chat is refused, not run.
         let mut result = None;
         while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {

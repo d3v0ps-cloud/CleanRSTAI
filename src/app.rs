@@ -305,6 +305,7 @@ impl ChatApp {
                                     "time" => icon::CLOCK,
                                     "calculator" => icon::CALCULATOR,
                                     "tasks" => icon::LIST_CHECKS,
+                                    "fetch" => icon::GLOBE,
                                     _ => icon::ROBOT,
                                 };
                                 if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {

@@ -52,6 +52,7 @@ pub mod icon {
     pub const TOOLBOX: &str = "\u{ECA0}";
     pub const CLOCK: &str = "\u{E19A}";
     pub const CALCULATOR: &str = "\u{E538}";
+    pub const GLOBE: &str = "\u{E288}";
 }
 
 /// The colours of one mode.

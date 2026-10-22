@@ -214,6 +214,8 @@ pub struct BuiltinToolSettings {
     pub calculator: bool,
     /// Break a request into a task checklist and track it.
     pub tasks: bool,
+    /// Fetch web URLs (asks for approval, like MCP tools).
+    pub fetch: bool,
 }
 
 impl Default for BuiltinToolSettings {
@@ -222,6 +224,7 @@ impl Default for BuiltinToolSettings {
             time: true,
             calculator: true,
             tasks: true,
+            fetch: true,
         }
     }
 }

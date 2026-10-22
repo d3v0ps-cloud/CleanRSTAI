@@ -24,9 +24,13 @@ macOS is the primary platform; Linux and Windows are fully supported.
     rounding, min/max/avg) instead of the model's mental maths.
   - **Task list**: for multi-step requests the model breaks the work into actionable tasks,
     shows them as a checklist in the chat and ticks them off as it goes.
+  - **Web fetch**: reads an http(s) URL. Web pages come back as readable text with their
+    links listed, plain text and JSON as they are, and images as images; long pages are read
+    in parts. Downloads stop at 5 MB.
 
-  They run locally without asking for approval; switch each one in **Settings → Built-in
-  Tools**.
+  Time, calculator and task list run locally without asking. Web fetch reaches the internet,
+  so it asks for approval like MCP tools do ("Always allow this tool" skips that for the rest
+  of the chat). Switch each one in **Settings → Built-in Tools**.
 - **Subagents**: a `delegate` tool lets the model hand independent tasks to subagents that work
   in parallel and report back. Each subagent's progress, tools and result show in the chat, and
   their token usage counts towards the chat's totals. **Settings → Subagents** sets their
@@ -209,7 +213,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
 |---|---|
 | Providers | Name, base URL (with presets), API key, model, temperature, max tokens, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| Built-in Tools | Time & date, calculator and task list on or off by default |
+| Built-in Tools | Time & date, calculator, task list and web fetch on or off by default |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
 | General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates, export |
 

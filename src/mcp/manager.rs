@@ -616,7 +616,7 @@ mod tests {
                 return Response::with_type(
                     200,
                     "text/event-stream",
-                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n".into(),
+                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n",
                 );
             }
             let req = r.json();

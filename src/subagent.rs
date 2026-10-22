@@ -76,13 +76,13 @@ impl Delegation {
             return None;
         }
         let sa = &settings.subagents;
-        // Subagents never get the task list or `delegate` (no recursion); the time and
-        // calculator tools only when allowed for subagents and on in this chat.
+        // Subagents never get the task list or `delegate` (no recursion); the time,
+        // calculator and fetch tools only when allowed for subagents and on in this chat.
         let mut selection = chat.clone();
         let force = |sel: &mut ToolSelection, key: &str, on: bool| {
             sel.overrides.0.insert(ToolOverrides::builtin_key(key), on);
         };
-        for key in ["time", "calculator"] {
+        for key in ["time", "calculator", "fetch"] {
             let on = sa.builtin_tools && chat.builtin_on(key);
             force(&mut selection, key, on);
         }
@@ -111,8 +111,22 @@ impl Delegation {
     pub fn tool_description(&self) -> String {
         let sa = &self.settings;
         let mut abilities = Vec::new();
-        if self.selection.builtin_on("time") || self.selection.builtin_on("calculator") {
-            abilities.push("the time and calculator tools");
+        let builtins: Vec<&str> = [
+            ("time", "time"),
+            ("calculator", "calculator"),
+            ("fetch", "web fetch"),
+        ]
+        .into_iter()
+        .filter(|(key, _)| self.selection.builtin_on(key))
+        .map(|(_, name)| name)
+        .collect();
+        let builtins = match builtins.as_slice() {
+            [] => None,
+            [one] => Some(format!("the {one} tool")),
+            [rest @ .., last] => Some(format!("the {} and {last} tools", rest.join(", "))),
+        };
+        if let Some(b) = &builtins {
+            abilities.push(b.as_str());
         }
         if sa.mcp_tools {
             abilities.push("this chat's MCP tools");
@@ -285,7 +299,7 @@ impl Delegation {
                 } else {
                     ToolRouter::default()
                 };
-                Toolbox::new(router, &self.selection, None)
+                Toolbox::new(router, &self.selection, None).with_http(http.clone())
             } else {
                 Toolbox::default()
             };
