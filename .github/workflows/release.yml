@@ -56,6 +56,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.targets }}
+      - name: Put the rustup toolchain ahead of any system Rust
+        # The Gentoo box also has a system Rust earlier on PATH, which would otherwise win.
+        shell: bash
+        run: |
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          "$CARGO_HOME/bin/rustc" --version
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
