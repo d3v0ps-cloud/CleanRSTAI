@@ -36,6 +36,8 @@ macOS is the primary platform; Linux and Windows are fully supported.
 - **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools
   and every MCP server and tool, each with a switch for the current chat. Settings keeps the
   defaults for new chats.
+
+![Task list, subagents and the calculator in a chat](docs/tools-subagents.png)
 - **MCP client**:
   - **stdio** servers (`npx`, `uvx`, `docker`, any binary) with arguments, environment
     variables and a working directory.
