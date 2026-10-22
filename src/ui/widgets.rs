@@ -28,7 +28,7 @@ pub fn kv_editor(
                         .password(mask_values)
                         .desired_width(240.0),
                 );
-                if ui.small_button("✖").on_hover_text("Remove").clicked() {
+                if icon_button(ui, super::theme::icon::CLOSE, "Remove").clicked() {
                     remove = Some(i);
                 }
             });
@@ -36,7 +36,10 @@ pub fn kv_editor(
         if let Some(i) = remove {
             list.remove(i);
         }
-        if ui.small_button("＋ Add").clicked() {
+        if ui
+            .small_button(format!("{}  Add", super::theme::icon::PLUS))
+            .clicked()
+        {
             list.push(KeyValue::default());
         }
     });
@@ -61,18 +64,24 @@ pub fn list_editor(
                         .desired_width(super::settings::FIELD_WIDTH - 84.0),
                 );
                 if ui
-                    .add_enabled(i > 0, egui::Button::new("⏶").small())
+                    .add_enabled(
+                        i > 0,
+                        egui::Button::new(super::theme::icon::CARET_UP).small(),
+                    )
                     .clicked()
                 {
                     swap = Some((i - 1, i));
                 }
                 if ui
-                    .add_enabled(i + 1 < len, egui::Button::new("⏷").small())
+                    .add_enabled(
+                        i + 1 < len,
+                        egui::Button::new(super::theme::icon::CARET_DOWN).small(),
+                    )
                     .clicked()
                 {
                     swap = Some((i, i + 1));
                 }
-                if ui.small_button("✖").on_hover_text("Remove").clicked() {
+                if icon_button(ui, super::theme::icon::CLOSE, "Remove").clicked() {
                     remove = Some(i);
                 }
             });
@@ -83,7 +92,10 @@ pub fn list_editor(
         if let Some(i) = remove {
             list.remove(i);
         }
-        if ui.small_button("＋ Add argument").clicked() {
+        if ui
+            .small_button(format!("{}  Add argument", super::theme::icon::PLUS))
+            .clicked()
+        {
             list.push(String::new());
         }
     });
@@ -122,4 +134,14 @@ pub fn optional_value<T: egui::emath::Numeric>(
             }
         }
     });
+}
+
+/// A frameless icon button with a tooltip and an accessible name.
+pub fn icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
+    let resp = ui
+        .add(egui::Button::new(egui::RichText::new(icon).size(16.0)).frame(false))
+        .on_hover_text(label);
+    let label = label.to_owned();
+    resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+    resp
 }

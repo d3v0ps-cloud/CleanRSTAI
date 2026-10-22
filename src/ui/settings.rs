@@ -3,13 +3,14 @@
 
 use eframe::egui;
 
+use super::theme::icon;
 use super::widgets::{code_block, kv_editor, list_editor, optional_value};
 use crate::config::{
     McpServerConfig, McpTransportConfig, ProviderConfig, Settings, Theme, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Providers,
     Mcp,
@@ -40,6 +41,8 @@ pub struct SettingsUi {
     import_open: bool,
     import_text: String,
     import_error: Option<String>,
+    search: String,
+    queued: Vec<SettingsAction>,
     pub fetching_models: bool,
     pub models_error: Option<String>,
     pub detecting_kind: bool,
@@ -89,6 +92,8 @@ impl SettingsUi {
             import_open: false,
             import_text: String::new(),
             import_error: None,
+            search: String::new(),
+            queued: Vec::new(),
             fetching_models: false,
             models_error: None,
             detecting_kind: false,
@@ -99,60 +104,142 @@ impl SettingsUi {
         }
     }
 
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+    }
+
+    /// Run an action on the next frame as if its button had been pressed (used by the
+    /// command palette for export/import).
+    pub fn queue(&mut self, action: SettingsAction) {
+        self.queued.push(action);
+    }
+
+    pub fn take_queued(&mut self) -> Vec<SettingsAction> {
+        std::mem::take(&mut self.queued)
+    }
+
+    /// Render the settings page into `ui` (it takes over the main area while open).
     pub fn show(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         live: &Settings,
         servers: &[ServerView],
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
-        let mut open = true;
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .default_size([820.0, 560.0])
-            .min_size([560.0, 360.0])
-            .collapsible(false)
-            .resizable(true)
-            .show(ctx, |ui| {
+        let dark = ui.visuals().dark_mode;
+
+        egui::Panel::left("settings-nav")
+            .resizable(false)
+            .exact_size(220.0)
+            .show(ui, |ui| {
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.tab, Tab::Providers, "Providers");
-                    ui.selectable_value(&mut self.tab, Tab::Mcp, "MCP Servers");
-                    ui.selectable_value(&mut self.tab, Tab::General, "General");
-                });
-                ui.separator();
-
-                egui::Panel::bottom("settings-buttons")
-                    .show_separator_line(true)
-                    .show(ui, |ui| {
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let dirty = &self.draft != live;
-                            if ui
-                                .add_enabled(dirty, egui::Button::new("Save & Close"))
-                                .clicked()
-                            {
-                                actions.push(SettingsAction::Apply(self.draft.clone()));
-                                actions.push(SettingsAction::Close);
-                            }
-                            if ui.add_enabled(dirty, egui::Button::new("Apply")).clicked() {
-                                actions.push(SettingsAction::Apply(self.draft.clone()));
-                            }
-                            if ui.button(if dirty { "Cancel" } else { "Close" }).clicked() {
-                                actions.push(SettingsAction::Close);
-                            }
-                            if dirty {
-                                ui.weak("Unsaved changes");
-                            }
-                        });
+                    ui.heading("Settings");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if super::widgets::icon_button(ui, icon::CLOSE, "Close settings (Esc)")
+                            .clicked()
+                        {
+                            actions.push(SettingsAction::Close);
+                        }
                     });
-
-                egui::CentralPanel::default_margins().show(ui, |ui| match self.tab {
-                    Tab::Providers => self.providers_tab(ui, &mut actions),
-                    Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
-                    Tab::General => self.general_tab(ui, live, &mut actions),
                 });
+                ui.add_space(6.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text(format!("{}  Search settings", icon::SEARCH))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+                if self.search.trim().is_empty() {
+                    for (tab, ic, label) in [
+                        (Tab::Providers, icon::SERVER, "Providers"),
+                        (Tab::Mcp, icon::PLUGS, "MCP Servers"),
+                        (Tab::General, icon::GEAR, "General"),
+                    ] {
+                        if ui
+                            .add(
+                                egui::Button::selectable(
+                                    self.tab == tab,
+                                    format!("{ic}   {label}"),
+                                )
+                                .right_text("")
+                                .min_size(egui::vec2(ui.available_width(), 32.0)),
+                            )
+                            .clicked()
+                        {
+                            self.tab = tab;
+                        }
+                    }
+                } else {
+                    let hits = search_settings(&self.search);
+                    if hits.is_empty() {
+                        ui.weak("No matching settings");
+                    }
+                    for (tab, section, label) in hits {
+                        let resp = ui.add(
+                            egui::Button::selectable(self.tab == tab, label)
+                                .right_text(egui::RichText::new(section).small().weak())
+                                .min_size(egui::vec2(ui.available_width(), 28.0)),
+                        );
+                        if resp.clicked() {
+                            self.tab = tab;
+                            self.search.clear();
+                        }
+                    }
+                }
             });
-        if !open {
+
+        egui::Panel::bottom("settings-buttons")
+            .show_separator_line(true)
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let dirty = &self.draft != live;
+                    if ui
+                        .add_enabled(dirty, super::theme::primary_button("Save & Close", dark))
+                        .clicked()
+                    {
+                        actions.push(SettingsAction::Apply(self.draft.clone()));
+                        actions.push(SettingsAction::Close);
+                    }
+                    if ui.add_enabled(dirty, egui::Button::new("Apply")).clicked() {
+                        actions.push(SettingsAction::Apply(self.draft.clone()));
+                    }
+                    if ui
+                        .button(if dirty { "Discard changes" } else { "Close" })
+                        .clicked()
+                    {
+                        actions.push(SettingsAction::Close);
+                    }
+                    if dirty {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            format!("{} Unsaved changes", icon::WARNING),
+                        );
+                    }
+                });
+                ui.add_space(4.0);
+            });
+
+        egui::CentralPanel::default_margins().show(ui, |ui| {
+            ui.heading(match self.tab {
+                Tab::Providers => "Providers",
+                Tab::Mcp => "MCP Servers",
+                Tab::General => "General",
+            });
+            ui.weak(match self.tab {
+                Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
+                Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
+                Tab::General => "Appearance, behaviour, secrets and data.",
+            });
+            ui.add_space(8.0);
+            match self.tab {
+                Tab::Providers => self.providers_tab(ui, &mut actions),
+                Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
+                Tab::General => self.general_tab(ui, live, &mut actions),
+            }
+        });
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
             actions.push(SettingsAction::Close);
         }
         actions
@@ -185,7 +272,11 @@ impl SettingsUi {
                         }
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("＋").on_hover_text("Add provider").clicked() {
+                    if ui
+                        .button(icon::PLUS)
+                        .on_hover_text("Add provider")
+                        .clicked()
+                    {
                         draft.providers.push(ProviderConfig {
                             name: format!("Provider {}", draft.providers.len() + 1),
                             ..Default::default()
@@ -427,7 +518,7 @@ impl SettingsUi {
                         }
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("＋ Add").clicked() {
+                    if ui.button(format!("{}  Add", icon::PLUS)).clicked() {
                         draft.mcp_servers.push(McpServerConfig::default());
                         self.selected_server = draft.mcp_servers.len() - 1;
                         self.import_open = false;
@@ -643,7 +734,7 @@ impl SettingsUi {
                                 Some(ServerStatus::NeedsSignIn | ServerStatus::Error(_))
                             )
                             && ui
-                                .button("Sign in…")
+                                .button(format!("{}  Sign in…", icon::SIGN_IN))
                                 .on_hover_text("Opens your browser to sign in to this server")
                                 .clicked()
                         {
@@ -695,7 +786,7 @@ impl SettingsUi {
                         egui::CollapsingHeader::new(format!("Resources ({})", v.resources.len()))
                             .id_salt(("resources", &s.id))
                             .show(ui, |ui| {
-                                ui.weak("Attach these to a message from the 📚 MCP menu next to the input.");
+                                ui.weak(format!("Attach these to a message from the {} menu next to the input.", icon::BOOKS));
                                 for r in &v.resources {
                                     ui.label(&r.name).on_hover_text(if r.description.is_empty() {
                                         r.uri.clone()
@@ -709,7 +800,7 @@ impl SettingsUi {
                         egui::CollapsingHeader::new(format!("Prompts ({})", v.prompts.len()))
                             .id_salt(("prompts", &s.id))
                             .show(ui, |ui| {
-                                ui.weak("Insert these from the 📚 MCP menu next to the input.");
+                                ui.weak(format!("Insert these from the {} menu next to the input.", icon::BOOKS));
                                 for p in &v.prompts {
                                     let args: Vec<&str> =
                                         p.arguments.iter().map(|a| a.name.as_str()).collect();
@@ -945,5 +1036,71 @@ impl SettingsUi {
                 self.export_status = None;
             }
         }
+    }
+}
+
+/// Settings the search box can find: (tab, section, label).
+const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
+    (Tab::Providers, "Providers", "Base URL / endpoint"),
+    (Tab::Providers, "Providers", "API key"),
+    (Tab::Providers, "Providers", "Model"),
+    (Tab::Providers, "Providers", "Fetch models"),
+    (
+        Tab::Providers,
+        "Providers",
+        "Server type (llama.cpp, LiteLLM, OpenAI)",
+    ),
+    (Tab::Providers, "Providers", "Temperature"),
+    (Tab::Providers, "Providers", "Max tokens"),
+    (Tab::Providers, "Providers", "Streaming"),
+    (Tab::Providers, "Providers", "Token usage (stream_options)"),
+    (Tab::Providers, "Providers", "Timeout"),
+    (Tab::Providers, "Providers", "Extra headers"),
+    (Tab::Mcp, "MCP", "Add server"),
+    (Tab::Mcp, "MCP", "Import mcpServers JSON"),
+    (Tab::Mcp, "MCP", "stdio command and arguments"),
+    (Tab::Mcp, "MCP", "Environment variables"),
+    (Tab::Mcp, "MCP", "Streamable HTTP URL and headers"),
+    (Tab::Mcp, "MCP", "OAuth sign-in / client ID"),
+    (Tab::Mcp, "MCP", "Enable or disable tools"),
+    (Tab::Mcp, "MCP", "Resources and prompts"),
+    (Tab::General, "General", "System prompt"),
+    (Tab::General, "General", "Theme (light / dark)"),
+    (Tab::General, "General", "UI scale / zoom"),
+    (Tab::General, "General", "Send with Enter"),
+    (Tab::General, "General", "Keychain / secrets"),
+    (Tab::General, "General", "Show speed stats"),
+    (Tab::General, "General", "Auto-approve tool calls"),
+    (Tab::General, "General", "Max tool rounds"),
+    (Tab::General, "General", "Tool timeout"),
+    (Tab::General, "General", "Export settings"),
+    (Tab::General, "General", "Export conversations"),
+    (Tab::General, "General", "Import settings"),
+    (Tab::General, "General", "Import conversations"),
+    (Tab::General, "General", "Check for updates"),
+];
+
+fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
+    let mut hits: Vec<(i32, Tab, &str, &str)> = SEARCH_INDEX
+        .iter()
+        .filter_map(|&(tab, section, label)| {
+            super::palette::score(query, label).map(|s| (s, tab, section, label))
+        })
+        .collect();
+    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+    hits.into_iter().map(|(_, t, s, l)| (t, s, l)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_settings() {
+        let hits = search_settings("api key");
+        assert_eq!(hits[0], (Tab::Providers, "Providers", "API key"));
+        assert_eq!(search_settings("theme")[0].0, Tab::General);
+        assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
+        assert!(search_settings("zzzz").is_empty());
     }
 }

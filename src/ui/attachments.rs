@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use eframe::egui;
 
+use super::theme::icon;
 use super::widgets::code_block;
 use crate::attach::Attachment;
 
@@ -65,7 +66,7 @@ pub fn show(
     }
     for (n, a) in list.iter().enumerate() {
         if let Some(text) = &a.text {
-            egui::CollapsingHeader::new(format!("📄 {} · {}", a.name, a.size_label()))
+            egui::CollapsingHeader::new(format!("{}  {} · {}", icon::FILE, a.name, a.size_label()))
                 .id_salt((key, "file", n))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
@@ -99,11 +100,13 @@ pub fn pending_chips(
                                     .max_width(60.0),
                             );
                         } else {
-                            ui.label("📄");
+                            ui.label(icon::FILE);
                         }
                         ui.label(egui::RichText::new(&a.name).small())
                             .on_hover_text(a.size_label());
-                        if ui.small_button("✖").on_hover_text("Remove").clicked() {
+                        if super::widgets::icon_button(ui, icon::CLOSE, "Remove attachment")
+                            .clicked()
+                        {
                             remove = Some(n);
                         }
                     });
