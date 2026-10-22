@@ -36,7 +36,7 @@ done
 version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 tag="v$version"
 dist="dist/$tag"
-repo="aaronbolton/CleanRSTAI"
+repo="d3v0ps-cloud/CleanRSTAI"
 built=()
 skipped=()
 

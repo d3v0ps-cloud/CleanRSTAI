@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
 pub const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/aaronbolton/cleanrstai/releases/latest";
+    "https://api.github.com/repos/d3v0ps-cloud/CleanRSTAI/releases/latest";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
