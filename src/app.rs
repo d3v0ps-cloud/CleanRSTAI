@@ -56,6 +56,16 @@ pub struct ChatApp {
     pending_attachments: Vec<Attachment>,
     images: ImageCache,
     viewing: Option<(String, egui::load::Bytes, String)>,
+    prompt_form: Option<PromptForm>,
+    /// For background tasks to request a repaint when their results arrive.
+    repaint_ctx: egui::Context,
+}
+
+/// Arguments being filled in for an MCP prompt.
+struct PromptForm {
+    server_id: String,
+    prompt: crate::mcp::McpPrompt,
+    values: std::collections::BTreeMap<String, String>,
 }
 
 fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
@@ -106,6 +116,8 @@ impl ChatApp {
             pending_attachments: Vec::new(),
             images: ImageCache::new(),
             viewing: None,
+            prompt_form: None,
+            repaint_ctx: cc.egui_ctx.clone(),
         };
         if loaded.needs_migration {
             // Move plain-text secrets from settings.json into the keychain.
@@ -262,6 +274,14 @@ impl ChatApp {
                         }
                     }
                 }
+                AppEvent::McpResourceRead { name, result } => match result {
+                    Ok(list) => self.pending_attachments.extend(list),
+                    Err(e) => self.notice = Some(format!("Couldn't read {name}: {e}")),
+                },
+                AppEvent::McpPromptReady { name, result } => match result {
+                    Ok(messages) => self.insert_prompt(messages),
+                    Err(e) => self.notice = Some(format!("Prompt {name} failed: {e}")),
+                },
                 AppEvent::KindDetected {
                     provider_id,
                     kind,
@@ -373,6 +393,228 @@ impl ChatApp {
         apply_appearance(ctx, &self.settings);
         self.mcp.sync(&self.settings.mcp_servers);
         self.save_settings();
+    }
+
+    /// Menu of MCP resources (attach) and prompts (insert) from connected servers.
+    fn mcp_menu(&mut self, ui: &mut egui::Ui, width: f32) {
+        let views = self.mcp.snapshot();
+        let usable: Vec<_> = views
+            .iter()
+            .filter(|v| !v.resources.is_empty() || !v.prompts.is_empty())
+            .collect();
+        if usable.is_empty() {
+            return;
+        }
+        let names: HashMap<&str, &str> = self
+            .settings
+            .mcp_servers
+            .iter()
+            .map(|s| (s.id.as_str(), s.name.as_str()))
+            .collect();
+        let mut read = None;
+        let mut prompt = None;
+        ui.scope(|ui| {
+            ui.set_width(width);
+            ui.menu_button("📚 MCP", |ui| {
+                ui.set_max_height(420.0);
+                for v in &usable {
+                    let name = names.get(v.id.as_str()).copied().unwrap_or("server");
+                    ui.menu_button(name, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(380.0)
+                            .show(ui, |ui| {
+                                if !v.resources.is_empty() {
+                                    ui.label(egui::RichText::new("Attach resource").small().weak());
+                                    for r in &v.resources {
+                                        let resp = ui.button(&r.name);
+                                        let resp = if r.description.is_empty() {
+                                            resp.on_hover_text(&r.uri)
+                                        } else {
+                                            resp.on_hover_text(format!(
+                                                "{}\n{}",
+                                                r.description, r.uri
+                                            ))
+                                        };
+                                        if resp.clicked() {
+                                            read = Some((v.id.clone(), r.clone()));
+                                            ui.close();
+                                        }
+                                    }
+                                }
+                                if !v.prompts.is_empty() {
+                                    ui.separator();
+                                    ui.label(egui::RichText::new("Insert prompt").small().weak());
+                                    for p in &v.prompts {
+                                        let resp = ui.button(&p.name);
+                                        let resp = if p.description.is_empty() {
+                                            resp
+                                        } else {
+                                            resp.on_hover_text(&p.description)
+                                        };
+                                        if resp.clicked() {
+                                            prompt = Some((v.id.clone(), p.clone()));
+                                            ui.close();
+                                        }
+                                    }
+                                }
+                            });
+                    });
+                }
+            })
+            .response
+            .on_hover_text("Attach a resource or insert a prompt from an MCP server");
+        });
+        if let Some((server, res)) = read {
+            self.read_resource(server, res);
+        }
+        if let Some((server_id, prompt)) = prompt {
+            if prompt.arguments.is_empty() {
+                self.run_prompt(server_id, prompt.name, Default::default());
+            } else {
+                let values = prompt
+                    .arguments
+                    .iter()
+                    .map(|a| (a.name.clone(), String::new()))
+                    .collect();
+                self.prompt_form = Some(PromptForm {
+                    server_id,
+                    prompt,
+                    values,
+                });
+            }
+        }
+    }
+
+    fn read_resource(&self, server_id: String, res: crate::mcp::McpResource) {
+        let Some(client) = self.mcp.client(&server_id) else {
+            return;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            let result = client
+                .read_resource(&res.uri)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::McpResourceRead {
+                name: res.name,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn run_prompt(
+        &self,
+        server_id: String,
+        name: String,
+        args: std::collections::BTreeMap<String, String>,
+    ) {
+        let Some(client) = self.mcp.client(&server_id) else {
+            return;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            let result = client
+                .get_prompt(&name, &args)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::McpPromptReady { name, result });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Put a prompt's messages into the chat: earlier messages are added to the
+    /// conversation; a final user message goes into the input box for review.
+    fn insert_prompt(&mut self, mut messages: Vec<crate::mcp::PromptMessage>) {
+        let last_user = messages
+            .last()
+            .is_some_and(|m| m.role == Role::User)
+            .then(|| messages.pop())
+            .flatten();
+        if !messages.is_empty() {
+            if self.current.is_none_or(|id| self.conv_mut(id).is_none()) {
+                self.new_chat();
+            }
+            let id = self.current.unwrap();
+            if self.runs.contains_key(&id) {
+                self.notice = Some("Wait for the current response to finish.".into());
+                return;
+            }
+            let conv = self.conv_mut(id).unwrap();
+            for m in messages {
+                let mut msg = ChatMessage::new(m.role, m.text);
+                msg.attachments = m.attachments;
+                conv.messages.push(msg);
+            }
+            conv.auto_title();
+            conv.save();
+        }
+        if let Some(m) = last_user {
+            if !self.input.trim().is_empty() {
+                self.input.push_str("\n\n");
+            }
+            self.input.push_str(&m.text);
+            self.pending_attachments.extend(m.attachments);
+        }
+    }
+
+    fn prompt_form_window(&mut self, ctx: &egui::Context) {
+        let Some(form) = &mut self.prompt_form else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = false;
+        egui::Window::new(format!("Prompt: {}", form.prompt.name))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if !form.prompt.description.is_empty() {
+                    ui.label(&form.prompt.description);
+                    ui.add_space(6.0);
+                }
+                egui::Grid::new("prompt-args")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        for a in &form.prompt.arguments {
+                            let label = if a.required {
+                                format!("{} *", a.name)
+                            } else {
+                                a.name.clone()
+                            };
+                            ui.label(label).on_hover_text(&a.description);
+                            let value = form.values.entry(a.name.clone()).or_default();
+                            ui.add(
+                                egui::TextEdit::singleline(value)
+                                    .hint_text(&a.description)
+                                    .desired_width(300.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                let missing = form.prompt.arguments.iter().any(|a| {
+                    a.required && form.values.get(&a.name).is_none_or(|v| v.trim().is_empty())
+                });
+                ui.add_space(6.0);
+                if ui
+                    .add_enabled(!missing, egui::Button::new("Insert"))
+                    .clicked()
+                {
+                    submit = true;
+                }
+            });
+        if submit {
+            let form = self.prompt_form.take().unwrap();
+            let args = form
+                .values
+                .into_iter()
+                .filter(|(_, v)| !v.trim().is_empty())
+                .collect();
+            self.run_prompt(form.server_id, form.prompt.name, args);
+        } else if !open {
+            self.prompt_form = None;
+        }
     }
 
     fn export_markdown(&mut self, id: Uuid) {
@@ -737,6 +979,7 @@ impl ChatApp {
                     {
                         self.attach_paths(paths);
                     }
+                    self.mcp_menu(ui, button_w);
                 });
             });
         });
@@ -1182,6 +1425,7 @@ impl eframe::App for ChatApp {
             .inner;
         self.apply_actions(actions, &ctx);
 
+        self.prompt_form_window(&ctx);
         if let Some(image) = &self.viewing
             && !attach_ui::viewer(&ctx, image)
         {

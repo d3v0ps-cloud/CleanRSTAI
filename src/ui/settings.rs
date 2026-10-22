@@ -615,7 +615,7 @@ impl SettingsUi {
                             actions.push(SettingsAction::Reconnect(s.id.clone()));
                         }
                         if view.is_some_and(|v| v.status == ServerStatus::Connected)
-                            && ui.button("Refresh tools").clicked()
+                            && ui.button("Refresh").clicked()
                         {
                             actions.push(SettingsAction::RefreshTools(s.id.clone()));
                         }
@@ -646,6 +646,37 @@ impl SettingsUi {
                                 }
                             }
                         }
+                    }
+                    if !v.resources.is_empty() {
+                        egui::CollapsingHeader::new(format!("Resources ({})", v.resources.len()))
+                            .id_salt(("resources", &s.id))
+                            .show(ui, |ui| {
+                                ui.weak("Attach these to a message from the 📚 MCP menu next to the input.");
+                                for r in &v.resources {
+                                    ui.label(&r.name).on_hover_text(if r.description.is_empty() {
+                                        r.uri.clone()
+                                    } else {
+                                        format!("{}\n{}", r.description, r.uri)
+                                    });
+                                }
+                            });
+                    }
+                    if !v.prompts.is_empty() {
+                        egui::CollapsingHeader::new(format!("Prompts ({})", v.prompts.len()))
+                            .id_salt(("prompts", &s.id))
+                            .show(ui, |ui| {
+                                ui.weak("Insert these from the 📚 MCP menu next to the input.");
+                                for p in &v.prompts {
+                                    let args: Vec<&str> =
+                                        p.arguments.iter().map(|a| a.name.as_str()).collect();
+                                    let label = if args.is_empty() {
+                                        p.name.clone()
+                                    } else {
+                                        format!("{} ({})", p.name, args.join(", "))
+                                    };
+                                    ui.label(label).on_hover_text(&p.description);
+                                }
+                            });
                     }
                     if !v.stderr.is_empty() {
                         egui::CollapsingHeader::new("Server log (stderr)")

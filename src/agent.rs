@@ -38,6 +38,16 @@ pub enum AppEvent {
         provider_id: String,
         result: Result<Vec<String>, String>,
     },
+    /// A resource read from an MCP server, to attach to the next message.
+    McpResourceRead {
+        name: String,
+        result: Result<Vec<crate::attach::Attachment>, String>,
+    },
+    /// Messages from an MCP prompt, to insert into the chat.
+    McpPromptReady {
+        name: String,
+        result: Result<Vec<crate::mcp::PromptMessage>, String>,
+    },
     KindDetected {
         provider_id: String,
         kind: crate::config::ProviderKind,
@@ -418,5 +428,67 @@ mod tests {
         let bytes = img.bytes().unwrap();
         let decoded = crate::attach::Attachment::from_bytes("x".into(), bytes).unwrap();
         assert_eq!(decoded.mime, img.mime, "data matches the declared type");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn e2e_mcp_resources_and_prompts() {
+        let _guard = NPX_LOCK.lock().await;
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), llm::build_http_client());
+        mcp.sync(&[McpServerConfig {
+            id: "ev".into(),
+            name: "everything".into(),
+            transport: McpTransportConfig::Stdio {
+                command: "npx".into(),
+                args: vec![
+                    "-y".into(),
+                    "@modelcontextprotocol/server-everything".into(),
+                ],
+                env: vec![],
+                cwd: String::new(),
+            },
+            ..Default::default()
+        }]);
+        wait_connected(&mcp).await;
+        let view = mcp.snapshot().remove(0);
+        assert!(!view.resources.is_empty(), "server lists resources");
+        assert!(!view.prompts.is_empty(), "server lists prompts");
+        let client = mcp.client("ev").unwrap();
+
+        let text_res = view
+            .resources
+            .iter()
+            .find(|r| {
+                r.mime_type
+                    .as_deref()
+                    .is_some_and(|m| m.starts_with("text/"))
+            })
+            .unwrap_or(&view.resources[0]);
+        let read = client.read_resource(&text_res.uri).await.unwrap();
+        assert!(!read.is_empty());
+
+        // Some prompts validate their arguments, so try each one with simple values and
+        // require that prompts both with and without arguments work.
+        let (mut with_args, mut without_args) = (0, 0);
+        for prompt in &view.prompts {
+            let args: std::collections::BTreeMap<String, String> = prompt
+                .arguments
+                .iter()
+                .map(|a| (a.name.clone(), "1".to_owned()))
+                .collect();
+            if let Ok(msgs) = client.get_prompt(&prompt.name, &args).await
+                && !msgs.is_empty()
+            {
+                if prompt.arguments.is_empty() {
+                    without_args += 1;
+                } else {
+                    with_args += 1;
+                }
+            }
+        }
+        assert!(
+            with_args > 0 && without_args > 0,
+            "{with_args} / {without_args}"
+        );
     }
 }

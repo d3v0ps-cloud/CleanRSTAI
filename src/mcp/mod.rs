@@ -4,6 +4,7 @@ pub mod http;
 pub mod manager;
 pub mod stdio;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -13,6 +14,39 @@ use serde_json::{Value, json};
 use crate::config::McpTransportConfig;
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Called with the method name of every notification the server sends.
+pub type NotifyFn = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct McpResource {
+    pub uri: String,
+    pub name: String,
+    pub description: String,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromptArgument {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct McpPrompt {
+    pub name: String,
+    pub description: String,
+    pub arguments: Vec<PromptArgument>,
+}
+
+/// A message produced by `prompts/get`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromptMessage {
+    pub role: crate::types::Role,
+    pub text: String,
+    pub attachments: Vec<crate::attach::Attachment>,
+}
 
 #[derive(Clone, Debug)]
 pub struct McpTool {
@@ -30,7 +64,7 @@ pub struct ToolOutput {
 }
 
 enum Transport {
-    Stdio(stdio::StdioTransport),
+    Stdio(Box<stdio::StdioTransport>),
     Http(http::HttpTransport),
 }
 
@@ -40,6 +74,8 @@ pub struct McpClient {
     pub server_name: String,
     pub server_version: String,
     pub instructions: Option<String>,
+    /// The server's `capabilities` from `initialize`.
+    pub capabilities: Value,
 }
 
 /// Turn a JSON-RPC response into its `result`, or an error.
@@ -79,16 +115,22 @@ pub(crate) fn response_id(msg: &Value) -> Option<u64> {
 }
 
 impl McpClient {
-    pub async fn connect(cfg: &McpTransportConfig, http: reqwest::Client) -> Result<Self> {
+    pub async fn connect(
+        cfg: &McpTransportConfig,
+        http: reqwest::Client,
+        on_notify: NotifyFn,
+    ) -> Result<Self> {
         let transport = match cfg {
             McpTransportConfig::Stdio {
                 command,
                 args,
                 env,
                 cwd,
-            } => Transport::Stdio(stdio::StdioTransport::spawn(command, args, env, cwd).await?),
+            } => Transport::Stdio(Box::new(
+                stdio::StdioTransport::spawn(command, args, env, cwd, on_notify).await?,
+            )),
             McpTransportConfig::Http { url, headers } => {
-                Transport::Http(http::HttpTransport::new(http, url, headers)?)
+                Transport::Http(http::HttpTransport::new(http, url, headers, on_notify)?)
             }
         };
         let mut client = Self {
@@ -97,6 +139,7 @@ impl McpClient {
             server_name: String::new(),
             server_version: String::new(),
             instructions: None,
+            capabilities: Value::Null,
         };
 
         let init = client
@@ -123,6 +166,7 @@ impl McpClient {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_owned();
+        client.capabilities = init.get("capabilities").cloned().unwrap_or(Value::Null);
         client.instructions = init
             .get("instructions")
             .and_then(|v| v.as_str())
@@ -139,6 +183,9 @@ impl McpClient {
             .notify("notifications/initialized", None)
             .await
             .context("sending initialized notification")?;
+        if let Transport::Http(h) = &client.transport {
+            h.start_listening();
+        }
         Ok(client)
     }
 
@@ -194,6 +241,139 @@ impl McpClient {
             Transport::Stdio(t) => t.send(&msg).await,
             Transport::Http(t) => t.notify(&msg).await,
         }
+    }
+
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities
+            .get(capability)
+            .is_some_and(|c| !c.is_null())
+    }
+
+    /// Fetch every page of a paginated list method (`tools/list`, `resources/list`, …).
+    async fn list_all(&self, method: &str, key: &str) -> Result<Vec<Value>> {
+        let mut items = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = match &cursor {
+                Some(c) => json!({"cursor": c}),
+                None => json!({}),
+            };
+            let res = self
+                .request(method, params, Duration::from_secs(60))
+                .await?;
+            items.extend(
+                res.get(key)
+                    .and_then(|t| t.as_array())
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+            cursor = res
+                .get("nextCursor")
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(str::to_owned);
+            if cursor.is_none() {
+                return Ok(items);
+            }
+        }
+    }
+
+    pub async fn list_resources(&self) -> Result<Vec<McpResource>> {
+        if !self.supports("resources") {
+            return Ok(Vec::new());
+        }
+        let items = self.list_all("resources/list", "resources").await?;
+        Ok(items
+            .iter()
+            .filter_map(|r| {
+                let uri = r.get("uri")?.as_str()?.to_owned();
+                Some(McpResource {
+                    name: str_field(r, "title")
+                        .or_else(|| str_field(r, "name"))
+                        .unwrap_or_else(|| uri.clone()),
+                    description: str_field(r, "description").unwrap_or_default(),
+                    mime_type: str_field(r, "mimeType"),
+                    uri,
+                })
+            })
+            .collect())
+    }
+
+    /// Read a resource as attachments: text contents become text files, blobs with an
+    /// image type become images.
+    pub async fn read_resource(&self, uri: &str) -> Result<Vec<crate::attach::Attachment>> {
+        let res = self
+            .request(
+                "resources/read",
+                json!({"uri": uri}),
+                Duration::from_secs(60),
+            )
+            .await?;
+        let mut out = Vec::new();
+        for c in res
+            .get("contents")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(a) = content_to_attachment(c) {
+                out.push(a);
+            }
+        }
+        if out.is_empty() {
+            bail!("the resource has no text or image content");
+        }
+        Ok(out)
+    }
+
+    pub async fn list_prompts(&self) -> Result<Vec<McpPrompt>> {
+        if !self.supports("prompts") {
+            return Ok(Vec::new());
+        }
+        let items = self.list_all("prompts/list", "prompts").await?;
+        Ok(items
+            .iter()
+            .filter_map(|p| {
+                Some(McpPrompt {
+                    name: p.get("name")?.as_str()?.to_owned(),
+                    description: str_field(p, "description")
+                        .or_else(|| str_field(p, "title"))
+                        .unwrap_or_default(),
+                    arguments: p
+                        .get("arguments")
+                        .and_then(|a| a.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|a| {
+                            Some(PromptArgument {
+                                name: a.get("name")?.as_str()?.to_owned(),
+                                description: str_field(a, "description").unwrap_or_default(),
+                                required: a
+                                    .get("required")
+                                    .and_then(|r| r.as_bool())
+                                    .unwrap_or(false),
+                            })
+                        })
+                        .collect(),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Vec<PromptMessage>> {
+        let res = self
+            .request(
+                "prompts/get",
+                json!({"name": name, "arguments": arguments}),
+                Duration::from_secs(60),
+            )
+            .await?;
+        Ok(prompt_messages(&res))
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
@@ -270,6 +450,99 @@ impl McpClient {
             t.close().await;
         }
     }
+}
+
+fn str_field(v: &Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .filter(|x| !x.is_empty())
+        .map(str::to_owned)
+}
+
+/// Turn an MCP resource-contents object (`{uri, mimeType, text | blob}`) into an attachment.
+fn content_to_attachment(c: &Value) -> Option<crate::attach::Attachment> {
+    let uri = c.get("uri").and_then(|u| u.as_str()).unwrap_or("resource");
+    let name = uri
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(uri)
+        .to_owned();
+    let mime = str_field(c, "mimeType");
+    if let Some(text) = c.get("text").and_then(|t| t.as_str()) {
+        return Some(crate::attach::Attachment {
+            name,
+            mime: mime.unwrap_or_else(|| "text/plain".into()),
+            text: Some(text.to_owned()),
+            data: None,
+        });
+    }
+    let blob = c.get("blob").and_then(|b| b.as_str())?;
+    let mime = mime.filter(|m| m.starts_with("image/"))?;
+    Some(crate::attach::Attachment {
+        name,
+        mime,
+        text: None,
+        data: Some(blob.to_owned()),
+    })
+}
+
+/// Convert a `prompts/get` result into messages.
+pub fn prompt_messages(res: &Value) -> Vec<PromptMessage> {
+    use crate::types::Role;
+    let mut out: Vec<PromptMessage> = Vec::new();
+    for m in res
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let role = match m.get("role").and_then(|r| r.as_str()) {
+            Some("assistant") => Role::Assistant,
+            _ => Role::User,
+        };
+        let c = m.get("content").cloned().unwrap_or(Value::Null);
+        let mut msg = PromptMessage {
+            role,
+            text: String::new(),
+            attachments: Vec::new(),
+        };
+        match c.get("type").and_then(|t| t.as_str()) {
+            Some("text") => msg.text = str_field(&c, "text").unwrap_or_default(),
+            Some("image") => {
+                if let (Some(data), Some(mime)) = (str_field(&c, "data"), str_field(&c, "mimeType"))
+                {
+                    msg.attachments.push(crate::attach::Attachment {
+                        name: format!("image.{}", mime.rsplit('/').next().unwrap_or("png")),
+                        mime,
+                        text: None,
+                        data: Some(data),
+                    });
+                }
+            }
+            Some("resource") => {
+                if let Some(a) = c.get("resource").and_then(content_to_attachment) {
+                    msg.attachments.push(a);
+                }
+            }
+            _ => {}
+        }
+        // Merge consecutive messages from the same role.
+        match out.last_mut() {
+            Some(last) if last.role == msg.role => {
+                if !msg.text.is_empty() {
+                    if !last.text.is_empty() {
+                        last.text.push_str("\n\n");
+                    }
+                    last.text.push_str(&msg.text);
+                }
+                last.attachments.extend(msg.attachments);
+            }
+            _ => out.push(msg),
+        }
+    }
+    out
 }
 
 pub fn format_tool_result(res: &Value) -> ToolOutput {
@@ -374,5 +647,22 @@ mod tests {
         assert_eq!(response_id(&json!({"id": 3, "result": {}})), Some(3));
         assert_eq!(response_id(&json!({"id": "4", "result": {}})), Some(4));
         assert_eq!(response_id(&json!({"id": 3, "method": "ping"})), None);
+    }
+
+    #[test]
+    fn converts_prompt_messages() {
+        let msgs = prompt_messages(&json!({"messages": [
+            {"role": "user", "content": {"type": "text", "text": "Explain"}},
+            {"role": "user", "content": {"type": "resource",
+                "resource": {"uri": "file:///src/main.rs", "mimeType": "text/x-rust", "text": "fn main(){}"}}},
+            {"role": "assistant", "content": {"type": "text", "text": "Sure"}},
+            {"role": "user", "content": {"type": "image", "data": "AAAA", "mimeType": "image/png"}}
+        ]}));
+        assert_eq!(msgs.len(), 3, "consecutive user messages merge");
+        assert_eq!(msgs[0].text, "Explain");
+        assert_eq!(msgs[0].attachments[0].name, "main.rs");
+        assert_eq!(msgs[0].attachments[0].text.as_deref(), Some("fn main(){}"));
+        assert_eq!(msgs[1].role, crate::types::Role::Assistant);
+        assert!(msgs[2].attachments[0].is_image());
     }
 }

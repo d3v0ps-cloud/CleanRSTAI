@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
-use super::{McpClient, McpTool, ToolOutput};
+use super::{McpClient, McpPrompt, McpResource, McpTool, NotifyFn, ToolOutput};
 use crate::config::McpServerConfig;
 use crate::llm::ToolSpec;
 
@@ -26,6 +26,8 @@ pub struct ServerView {
     pub id: String,
     pub status: ServerStatus,
     pub tools: Vec<McpTool>,
+    pub resources: Vec<McpResource>,
+    pub prompts: Vec<McpPrompt>,
     pub server_info: String,
     pub stderr: Vec<String>,
 }
@@ -34,6 +36,8 @@ struct Entry {
     config: McpServerConfig,
     status: ServerStatus,
     tools: Vec<McpTool>,
+    resources: Vec<McpResource>,
+    prompts: Vec<McpPrompt>,
     client: Option<Arc<McpClient>>,
     generation: u64,
     task: Option<JoinHandle<()>>,
@@ -48,6 +52,8 @@ impl Entry {
             rt.spawn(async move { c.shutdown().await });
         }
         self.tools.clear();
+        self.resources.clear();
+        self.prompts.clear();
         self.generation += 1;
     }
 }
@@ -57,6 +63,14 @@ pub struct McpManager {
     rt: Handle,
     http: reqwest::Client,
     on_change: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum List {
+    Tools,
+    Resources,
+    Prompts,
+    All,
 }
 
 /// Tools offered to the model for one request, plus how to route each call.
@@ -165,6 +179,8 @@ impl McpManager {
                             config: cfg.clone(),
                             status: ServerStatus::Disabled,
                             tools: Vec::new(),
+                            resources: Vec::new(),
+                            prompts: Vec::new(),
                             client: None,
                             generation: 0,
                             task: None,
@@ -197,11 +213,21 @@ impl McpManager {
         let generation = e.generation;
         let transport = e.config.transport.clone();
         let (this, id, http) = (self.clone(), id.to_owned(), self.http.clone());
+        let on_notify = self.notify_handler(&id, generation);
         e.task = Some(self.rt.spawn(async move {
             let result = async {
-                let client = McpClient::connect(&transport, http).await?;
+                let client = McpClient::connect(&transport, http, on_notify).await?;
                 let tools = client.list_tools().await.context("listing tools")?;
-                Ok::<_, anyhow::Error>((Arc::new(client), tools))
+                // Resources and prompts are optional extras; don't fail the connection on them.
+                let resources = client.list_resources().await.unwrap_or_else(|e| {
+                    log::warn!("listing resources: {e:#}");
+                    Vec::new()
+                });
+                let prompts = client.list_prompts().await.unwrap_or_else(|e| {
+                    log::warn!("listing prompts: {e:#}");
+                    Vec::new()
+                });
+                Ok::<_, anyhow::Error>((Arc::new(client), tools, resources, prompts))
             }
             .await;
             {
@@ -212,9 +238,11 @@ impl McpManager {
                 {
                     e.task = None;
                     match result {
-                        Ok((client, tools)) => {
+                        Ok((client, tools, resources, prompts)) => {
                             e.status = ServerStatus::Connected;
                             e.tools = tools;
+                            e.resources = resources;
+                            e.prompts = prompts;
                             e.client = Some(client);
                         }
                         Err(err) => {
@@ -228,21 +256,65 @@ impl McpManager {
         }));
     }
 
-    /// Re-fetch the tool list of a connected server.
+    /// React to `notifications/*/list_changed` from a server by re-fetching that list.
+    fn notify_handler(self: &Arc<Self>, id: &str, generation: u64) -> NotifyFn {
+        let this = Arc::downgrade(self);
+        let id = id.to_owned();
+        Arc::new(move |method: &str| {
+            let list = match method {
+                "notifications/tools/list_changed" => List::Tools,
+                "notifications/resources/list_changed" => List::Resources,
+                "notifications/prompts/list_changed" => List::Prompts,
+                _ => return,
+            };
+            if let Some(this) = this.upgrade() {
+                this.refresh(&id, generation, list);
+            }
+        })
+    }
+
+    /// Re-fetch tools, resources and prompts of a connected server.
     pub fn refresh_tools(self: &Arc<Self>, id: &str) {
+        let generation = {
+            let entries = self.entries.lock().unwrap();
+            entries
+                .iter()
+                .find(|e| e.config.id == id && e.client.is_some())
+                .map(|e| e.generation)
+        };
+        match generation {
+            Some(g) => self.refresh(id, g, List::All),
+            None => self.connect(id),
+        }
+    }
+
+    fn refresh(self: &Arc<Self>, id: &str, generation: u64, list: List) {
         let client = {
             let entries = self.entries.lock().unwrap();
             entries
                 .iter()
-                .find(|e| e.config.id == id)
-                .and_then(|e| e.client.clone().map(|c| (c, e.generation)))
+                .find(|e| e.config.id == id && e.generation == generation)
+                .and_then(|e| e.client.clone())
         };
-        let Some((client, generation)) = client else {
-            return self.connect(id);
-        };
+        let Some(client) = client else { return };
         let (this, id) = (self.clone(), id.to_owned());
         self.rt.spawn(async move {
-            let result = client.list_tools().await;
+            let want = |l: List| list == List::All || list == l;
+            let tools = if want(List::Tools) {
+                Some(client.list_tools().await)
+            } else {
+                None
+            };
+            let resources = if want(List::Resources) {
+                Some(client.list_resources().await)
+            } else {
+                None
+            };
+            let prompts = if want(List::Prompts) {
+                Some(client.list_prompts().await)
+            } else {
+                None
+            };
             if let Some(e) = this
                 .entries
                 .lock()
@@ -250,13 +322,30 @@ impl McpManager {
                 .iter_mut()
                 .find(|e| e.config.id == id && e.generation == generation)
             {
-                match result {
-                    Ok(tools) => e.tools = tools,
-                    Err(err) => e.status = ServerStatus::Error(format!("{err:#}")),
+                match tools {
+                    Some(Ok(t)) => e.tools = t,
+                    Some(Err(err)) => e.status = ServerStatus::Error(format!("{err:#}")),
+                    None => {}
+                }
+                if let Some(Ok(r)) = resources {
+                    e.resources = r;
+                }
+                if let Some(Ok(p)) = prompts {
+                    e.prompts = p;
                 }
             }
             this.changed();
         });
+    }
+
+    /// The live client for a server, for one-off calls (reading a resource, getting a prompt).
+    pub fn client(&self, id: &str) -> Option<Arc<McpClient>> {
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.config.id == id)
+            .and_then(|e| e.client.clone())
     }
 
     pub fn snapshot(&self) -> Vec<ServerView> {
@@ -268,6 +357,8 @@ impl McpManager {
                 id: e.config.id.clone(),
                 status: e.status.clone(),
                 tools: e.tools.clone(),
+                resources: e.resources.clone(),
+                prompts: e.prompts.clone(),
                 server_info: e
                     .client
                     .as_ref()
@@ -360,5 +451,61 @@ mod tests {
         assert_eq!(s["properties"], json!({}));
         let s = normalize_schema(&Value::Null);
         assert_eq!(s["type"], "object");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_list_changed_notification_refreshes_tools() {
+        use crate::testutil::{Response, serve};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let lists = Arc::new(AtomicUsize::new(0));
+        let seen = lists.clone();
+        let (base, _) = serve(move |r| {
+            if r.method == "GET" {
+                // The server-push stream: announce that the tool list changed.
+                return Response::with_type(
+                    200,
+                    "text/event-stream",
+                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n".into(),
+                );
+            }
+            let req = r.json();
+            let id = req["id"].clone();
+            match req["method"].as_str().unwrap_or("") {
+                "initialize" => Response::json(json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {"tools": {"listChanged": true}},
+                    "serverInfo": {"name": "mock", "version": "1"}}})),
+                "tools/list" => {
+                    let n = seen.fetch_add(1, Ordering::SeqCst);
+                    let name = if n == 0 { "old_tool" } else { "new_tool" };
+                    Response::json(json!({"jsonrpc": "2.0", "id": id,
+                        "result": {"tools": [{"name": name, "inputSchema": {"type": "object"}}]}}))
+                }
+                _ => Response::status(202),
+            }
+        })
+        .await;
+        let mcp = McpManager::new(Handle::current(), crate::llm::build_http_client());
+        mcp.sync(&[McpServerConfig {
+            id: "s".into(),
+            name: "mock".into(),
+            transport: crate::config::McpTransportConfig::Http {
+                url: format!("{base}/mcp"),
+                headers: vec![],
+            },
+            ..Default::default()
+        }]);
+        for _ in 0..100 {
+            let v = mcp.snapshot();
+            if v[0].tools.iter().any(|t| t.name == "new_tool") {
+                assert!(lists.load(Ordering::SeqCst) >= 2);
+                return;
+            }
+            if let ServerStatus::Error(e) = &v[0].status {
+                panic!("{e}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("tool list was not refreshed: {:?}", mcp.snapshot()[0].tools);
     }
 }
