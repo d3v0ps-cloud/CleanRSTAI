@@ -16,7 +16,6 @@ use crate::llm;
 use crate::mcp::manager::McpManager;
 use crate::subagent::Delegation;
 use crate::tools::{ToolOverrides, ToolSelection};
-use crate::types::Group;
 use crate::types::{ChatMessage, Conversation, Role};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
@@ -58,6 +57,8 @@ pub struct ChatApp {
     input: String,
     runs: HashMap<Uuid, Run>,
     errors: HashMap<Uuid, String>,
+    /// First name for the greeting, from the OS account.
+    user_name: Option<String>,
     /// Tools and servers the user chose to always allow, per chat, until the app quits.
     always_allow: HashMap<Uuid, AlwaysAllow>,
     md_cache: CommonMarkCache,
@@ -86,6 +87,20 @@ struct PromptForm {
     server_id: String,
     prompt: crate::mcp::McpPrompt,
     values: std::collections::BTreeMap<String, String>,
+}
+
+/// "aaron.bolton" or "aaron" → "Aaron", from the OS account; `None` for root or when unset.
+fn user_first_name() -> Option<String> {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .ok()?;
+    let first = user.split(['.', '_', '-', ' ']).next()?.trim();
+    if first.is_empty() || first == "root" {
+        return None;
+    }
+    let mut chars = first.chars();
+    let head = chars.next()?.to_uppercase();
+    Some(head.chain(chars).collect())
 }
 
 fn apply_appearance(ctx: &egui::Context, settings: &Settings) {
@@ -129,6 +144,7 @@ impl ChatApp {
             input: String::new(),
             runs: HashMap::new(),
             errors: HashMap::new(),
+            user_name: user_first_name(),
             always_allow: HashMap::new(),
             md_cache: CommonMarkCache::default(),
             drawings: Default::default(),
@@ -258,7 +274,8 @@ impl ChatApp {
         let mut changes: Vec<(String, bool, bool)> = Vec::new();
         let mut reset = false;
         let dark = ui.visuals().dark_mode;
-        let label = RichText::new(format!("tools {}", builtins_on + mcp_on)).small();
+        let label =
+            RichText::new(format!("{}  {}", icon::SLIDERS, builtins_on + mcp_on)).size(14.0);
         let label = if overrides.is_empty() {
             label
         } else {
@@ -684,7 +701,7 @@ impl ChatApp {
             let w = &mut ui.visuals_mut().widgets.inactive;
             w.bg_stroke = egui::Stroke::NONE;
             w.weak_bg_fill = egui::Color32::TRANSPARENT;
-            ui.menu_button(RichText::new("mcp").small(), |ui| {
+            ui.menu_button(RichText::new(icon::BOOKS).size(16.0), |ui| {
                 ui.set_max_height(420.0);
                 for v in &usable {
                     let name = names.get(v.id.as_str()).copied().unwrap_or("server");
@@ -1200,87 +1217,14 @@ impl ChatApp {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let dark = ui.visuals().dark_mode;
+        let p = theme::palette(dark);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            if icon_button(
-                ui,
-                icon::SIDEBAR,
-                if self.sidebar_open {
-                    "Hide sidebar (⌘B)"
-                } else {
-                    "Show sidebar (⌘B)"
-                },
-            )
-            .clicked()
+            // With the sidebar open, its own header has the toggle.
+            if !self.sidebar_open && icon_button(ui, icon::SIDEBAR, "Show sidebar (⌘B)").clicked()
             {
-                self.sidebar_open = !self.sidebar_open;
+                self.sidebar_open = true;
             }
-            let p = theme::palette(dark);
-            // A plain wordmark, then where messages go: provider / model.
-            ui.label(
-                RichText::new("cleanrstai")
-                    .family(egui::FontFamily::Name(theme::MONO_MEDIUM.into()))
-                    .size(13.5)
-                    .color(p.ink),
-            );
-            ui.label(RichText::new("/").monospace().color(p.rule));
-
-            let mut changed = false;
-            let providers: Vec<(usize, String)> = self
-                .settings
-                .providers
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (i, p.name.clone()))
-                .collect();
-            egui::ComboBox::from_id_salt("provider")
-                .selected_text(RichText::new(&self.settings.provider().name).small())
-                .show_ui(ui, |ui| {
-                    for (i, name) in providers {
-                        changed |= ui
-                            .selectable_value(&mut self.settings.active_provider, i, name)
-                            .changed();
-                    }
-                })
-                .response
-                .on_hover_text("Provider");
-            ui.label(RichText::new("/").monospace().color(p.rule));
-
-            let p = self.settings.provider_mut();
-            if p.models.is_empty() {
-                changed |= ui
-                    .add(
-                        egui::TextEdit::singleline(&mut p.model)
-                            .hint_text("model")
-                            .font(egui::TextStyle::Small)
-                            .desired_width(200.0),
-                    )
-                    .on_hover_text("Model (fetch the list in Settings → Providers)")
-                    .lost_focus();
-            } else {
-                let models = p.models.clone();
-                egui::ComboBox::from_id_salt("model")
-                    .selected_text(
-                        RichText::new(if p.model.is_empty() {
-                            "select model".to_owned()
-                        } else {
-                            p.model.clone()
-                        })
-                        .small(),
-                    )
-                    .height(420.0)
-                    .show_ui(ui, |ui| {
-                        for m in models {
-                            changed |= ui.selectable_value(&mut p.model, m.clone(), m).changed();
-                        }
-                    })
-                    .response
-                    .on_hover_text("Model");
-            }
-            if changed {
-                self.save_settings();
-            }
-
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_button(ui, icon::GEAR, "Settings (⌘,)").clicked() {
                     self.open_settings(Tab::Providers);
@@ -1289,11 +1233,11 @@ impl ChatApp {
                     self.palette.toggle();
                 }
                 if let Some(r) = &self.update {
-                    let text = RichText::new(format!("update {}", r.version))
+                    let text = RichText::new(format!("Update to {}", r.version))
                         .small()
-                        .color(theme::accent(dark));
+                        .color(p.signal);
                     let resp = ui
-                        .add(egui::Button::new(text).frame(false))
+                        .add(egui::Button::new(text).frame_when_inactive(false))
                         .on_hover_text("Open the release page to download it");
                     if resp.clicked()
                         && let Err(e) = open::that_detached(&r.url)
@@ -1314,23 +1258,21 @@ impl ChatApp {
                         .snapshot()
                         .iter()
                         .any(|v| v.status == crate::mcp::manager::ServerStatus::NeedsSignIn);
-                    let color = if needs_sign_in {
-                        ui.visuals().warn_fg_color
+                    let (dot, hover) = if needs_sign_in {
+                        (p.warn, "An MCP server needs you to sign in")
                     } else if servers == configured {
-                        theme::success(dark)
+                        (p.ok, "MCP servers connected")
                     } else {
-                        ui.visuals().weak_text_color()
+                        (p.pencil, "Some MCP servers aren't connected")
                     };
-                    let text = RichText::new(format!("mcp {servers}/{configured} · {tools} tools"))
-                        .small()
-                        .color(color);
-                    let hover = if needs_sign_in {
-                        "An MCP server needs you to sign in"
-                    } else {
-                        "MCP servers connected · tools available"
-                    };
+                    let text = (
+                        RichText::new("●").size(9.0).color(dot),
+                        RichText::new(format!("{tools} tools"))
+                            .small()
+                            .color(p.pencil),
+                    );
                     if ui
-                        .add(egui::Button::new(text).frame(false))
+                        .add(egui::Button::new(text).frame_when_inactive(false))
                         .on_hover_text(hover)
                         .clicked()
                     {
@@ -1339,6 +1281,68 @@ impl ChatApp {
                 }
             });
         });
+    }
+
+    /// Model and provider, under the composer: "model  Provider ⌄".
+    fn model_picker(&mut self, ui: &mut egui::Ui) {
+        use egui::containers::menu::{MenuButton, MenuConfig};
+        let p = theme::palette(ui.visuals().dark_mode);
+        let provider = self.settings.provider();
+        let model = if provider.model.is_empty() {
+            "Choose a model".to_owned()
+        } else {
+            provider.model.clone()
+        };
+        let label = (
+            RichText::new(model).color(p.ink2),
+            RichText::new(&provider.name).color(p.pencil),
+            RichText::new(icon::CARET_DOWN).size(11.0).color(p.pencil),
+        );
+        let mut changed = false;
+        MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
+            .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| {
+                ui.set_min_width(260.0);
+                ui.label(RichText::new("Provider").small().color(p.pencil));
+                let names: Vec<String> = self
+                    .settings
+                    .providers
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                for (i, name) in names.into_iter().enumerate() {
+                    changed |= ui
+                        .selectable_value(&mut self.settings.active_provider, i, name)
+                        .changed();
+                }
+                ui.separator();
+                ui.label(RichText::new("Model").small().color(p.pencil));
+                let provider = self.settings.provider_mut();
+                if provider.models.is_empty() {
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut provider.model)
+                                .hint_text("model name")
+                                .desired_width(240.0),
+                        )
+                        .on_hover_text("Or fetch the list in Settings → Providers")
+                        .lost_focus();
+                } else {
+                    let models = provider.models.clone();
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for m in models {
+                                changed |= ui
+                                    .selectable_value(&mut provider.model, m.clone(), m)
+                                    .changed();
+                            }
+                        });
+                }
+            });
+        if changed {
+            self.save_settings();
+        }
     }
 
     fn open_settings(&mut self, tab: Tab) {
@@ -1353,24 +1357,55 @@ impl ChatApp {
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui.visuals().dark_mode);
-        ui.add_space(12.0);
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if icon_button(ui, icon::SIDEBAR, "Hide sidebar (⌘B)").clicked() {
+                self.sidebar_open = false;
+            }
+        });
+        ui.add_space(6.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text(format!("{}  Search", icon::SEARCH))
+                .desired_width(f32::INFINITY),
+        );
+        ui.add_space(6.0);
+        // Sidebar rows: no outline, a soft fill when hovered or current.
+        let row = |text: RichText, current: bool| {
+            egui::Button::new(text)
+                .frame_when_inactive(current)
+                .fill(if current {
+                    p.selected
+                } else {
+                    egui::Color32::TRANSPARENT
+                })
+                .stroke(egui::Stroke::NONE)
+        };
         if ui
             .add(
-                egui::Button::new(RichText::new("+ new chat").small())
-                    .right_text(RichText::new("⌘N").small().color(p.pencil))
-                    .min_size(egui::vec2(ui.available_width(), 28.0)),
+                row(
+                    RichText::new(theme::labelled(icon::PLUS, "New chat")).color(p.ink),
+                    true,
+                )
+                .min_size(egui::vec2(ui.available_width(), 30.0)),
             )
+            .on_hover_text("⌘N")
             .clicked()
         {
             self.new_chat();
         }
-        ui.add_space(6.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.search)
-                .hint_text(RichText::new("search").small())
-                .font(egui::TextStyle::Small)
-                .desired_width(f32::INFINITY),
-        );
+        if ui
+            .add(
+                row(
+                    RichText::new(theme::labelled(icon::GEAR, "Settings")).color(p.ink2),
+                    false,
+                )
+                .min_size(egui::vec2(ui.available_width(), 30.0)),
+            )
+            .clicked()
+        {
+            self.open_settings(Tab::Providers);
+        }
         ui.add_space(4.0);
 
         let mut select = None;
@@ -1379,10 +1414,11 @@ impl ChatApp {
         let mut toggle_pin = None;
         let mut rename_commit = None;
         let needle = self.search.to_lowercase();
-        let today = chrono::Local::now().date_naive();
-        let mut rows: Vec<(Group, &Conversation)> = self
+        let mut rows: Vec<(bool, &Conversation)> = self
             .conversations
             .iter()
+            // An empty new chat isn't listed until it has a message.
+            .filter(|c| !c.messages.is_empty() || self.runs.contains_key(&c.id))
             .filter(|c| {
                 needle.is_empty()
                     || c.title.to_lowercase().contains(&needle)
@@ -1390,22 +1426,26 @@ impl ChatApp {
                         .iter()
                         .any(|m| m.content.to_lowercase().contains(&needle))
             })
-            .map(|c| (Group::of(c, today), c))
+            .map(|c| (c.pinned, c))
             .collect();
-        rows.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.updated_at.cmp(&a.1.updated_at)));
+        // Pinned chats first, then everything else, newest first.
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.updated_at.cmp(&a.1.updated_at)));
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if rows.is_empty() && !needle.is_empty() {
-                    ui.label(RichText::new("no matches").small().color(p.pencil));
+                    ui.label(RichText::new("No matching chats").small().color(p.pencil));
                 }
                 let mut last_group = None;
                 for (group, c) in rows {
                     if last_group != Some(group) {
-                        ui.add_space(12.0);
-                        ui.label(theme::caps(group.label()).color(p.pencil));
-                        ui.add_space(2.0);
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new(if group { "Pinned" } else { "Recents" })
+                                .small()
+                                .color(p.pencil),
+                        );
                         last_group = Some(group);
                     }
                     if let Some((rid, text)) = &mut self.renaming
@@ -1421,41 +1461,19 @@ impl ChatApp {
                     }
                     let running = self.runs.contains_key(&c.id);
                     let selected = self.current == Some(c.id);
-                    // Titles in the reading serif; the open chat is marked by a signal bar.
-                    let title = RichText::new(&c.title)
-                        .size(14.5)
-                        .family(egui::FontFamily::Proportional)
-                        .color(if selected {
-                            p.ink
-                        } else {
-                            p.ink.gamma_multiply(0.8)
-                        });
+                    let title =
+                        RichText::new(&c.title).color(if selected { p.ink } else { p.ink2 });
                     let mark = match (running, c.pinned) {
-                        (true, _) => RichText::new("…").small().color(p.signal),
-                        (false, true) => RichText::new("pin").small().color(p.pencil),
+                        (true, _) => RichText::new(icon::HOURGLASS).size(12.0).color(p.signal),
+                        (false, true) => RichText::new(icon::PIN).size(12.0).color(p.pencil),
                         _ => RichText::new(""),
                     };
                     let resp = ui.add(
-                        egui::Button::new(title)
-                            .frame_when_inactive(selected)
-                            .fill(if selected {
-                                p.paper
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            })
-                            .stroke(egui::Stroke::NONE)
+                        row(title, selected)
                             .truncate()
                             .right_text(mark)
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                            .min_size(egui::vec2(ui.available_width(), 30.0)),
                     );
-                    if selected {
-                        let r = resp.rect;
-                        ui.painter().vline(
-                            r.left(),
-                            r.y_range().shrink(4.0),
-                            egui::Stroke::new(2.0, p.signal),
-                        );
-                    }
                     let resp = resp.on_hover_text(format!(
                         "{}\n{}",
                         c.title,
@@ -1527,8 +1545,17 @@ impl ChatApp {
 
     fn composer(&mut self, ui: &mut egui::Ui) {
         let dark = ui.visuals().dark_mode;
+        let p = theme::palette(dark);
         let id = egui::Id::unique(INPUT_ID);
         let running = self.current.is_some_and(|c| self.runs.contains_key(&c));
+        let fresh = self
+            .current
+            .and_then(|c| self.conversations.iter().find(|x| x.id == c))
+            .is_none_or(|c| c.messages.is_empty());
+        // A new chat is ready to type into.
+        if fresh && ui.memory(|m| m.focused().is_none()) {
+            ui.memory_mut(|m| m.request_focus(id));
+        }
         let has_focus = ui.memory(|m| m.has_focus(id));
         let mut send = false;
         if has_focus && !running {
@@ -1544,22 +1571,25 @@ impl ChatApp {
         centered(ui, |ui| {
             if let Some(n) = self.notice.clone() {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(n).small().color(ui.visuals().warn_fg_color));
+                    ui.label(RichText::new(n).small().color(p.warn));
                     if icon_button(ui, icon::CLOSE, "Dismiss").clicked() {
                         self.notice = None;
                     }
                 });
             }
-            let p = theme::palette(dark);
-            // Focus darkens the outline to ink; no glow.
             egui::Frame::new()
-                .fill(p.paper)
+                .fill(p.raised)
                 .stroke(egui::Stroke::new(
                     1.0,
-                    if has_focus { p.ink } else { p.rule },
+                    if has_focus { p.pencil } else { p.outline },
                 ))
-                .corner_radius(2)
-                .inner_margin(egui::Margin::symmetric(12, 8))
+                .corner_radius(16)
+                .inner_margin(egui::Margin {
+                    left: 14,
+                    right: 10,
+                    top: 12,
+                    bottom: 8,
+                })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     if let Some(n) =
@@ -1567,34 +1597,35 @@ impl ChatApp {
                     {
                         self.pending_attachments.remove(n);
                     }
-                    let hint = if self.settings.general.send_with_enter {
-                        "Write a message"
+                    let hint = if fresh {
+                        "How can I help you today?"
                     } else {
-                        "Write a message · ⌘/Ctrl+Enter sends"
+                        "Reply…"
                     };
                     egui::ScrollArea::vertical()
                         .id_salt("input-scroll")
-                        .max_height(220.0)
+                        .max_height(240.0)
                         .show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::multiline(&mut self.input)
                                     .id(id)
-                                    .hint_text(hint)
+                                    .hint_text(RichText::new(hint).color(p.pencil))
                                     .frame(egui::Frame::NONE)
                                     .desired_rows(2)
                                     .lock_focus(true)
                                     .desired_width(f32::INFINITY),
                             );
                         });
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        ui.spacing_mut().item_spacing.x = 2.0;
+                        // Icon buttons without outlines, like the rest of the box.
+                        let w = &mut ui.visuals_mut().widgets.inactive;
+                        w.bg_stroke = egui::Stroke::NONE;
+                        w.weak_bg_fill = egui::Color32::TRANSPARENT;
+                        ui.spacing_mut().item_spacing.x = 4.0;
                         if ui
-                            .add(
-                                egui::Button::new(RichText::new("attach").small())
-                                    .frame_when_inactive(false),
-                            )
-                            .on_hover_text("Images or text files; you can also drop them here")
+                            .add(egui::Button::new(RichText::new(icon::PLUS).size(17.0)))
+                            .on_hover_text("Attach images or text files (or drop them here)")
                             .clicked()
                             && let Some(paths) = rfd::FileDialog::new()
                                 .set_title("Attach files")
@@ -1606,15 +1637,39 @@ impl ChatApp {
                         self.mcp_menu(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if running {
-                                if ui.add(egui::Button::new("Stop")).clicked() {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new(icon::STOP).size(15.0).color(p.paper),
+                                        )
+                                        .fill(p.ink)
+                                        .min_size(egui::vec2(32.0, 32.0)),
+                                    )
+                                    .on_hover_text("Stop")
+                                    .clicked()
+                                {
                                     let cid = self.current.unwrap();
                                     self.stop(cid);
                                 }
                             } else {
                                 let can_send = !self.input.trim().is_empty()
                                     || !self.pending_attachments.is_empty();
+                                let fill = if can_send { p.signal } else { p.selected };
                                 if ui
-                                    .add_enabled(can_send, theme::primary_button("Send", dark))
+                                    .add_enabled(
+                                        can_send,
+                                        egui::Button::new(
+                                            RichText::new(icon::ARROW_UP).size(16.0).color(
+                                                if can_send {
+                                                    egui::Color32::WHITE
+                                                } else {
+                                                    p.pencil
+                                                },
+                                            ),
+                                        )
+                                        .fill(fill)
+                                        .min_size(egui::vec2(32.0, 32.0)),
+                                    )
                                     .on_hover_text(if self.settings.general.send_with_enter {
                                         "Send (Enter) · Shift+Enter for a new line"
                                     } else {
@@ -1628,8 +1683,14 @@ impl ChatApp {
                         });
                     });
                 });
+            // Under the box: the model the message goes to.
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.model_picker(ui);
+                });
+            });
         });
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         if send {
             let ctx = ui.ctx().clone();
             self.send(&ctx);
@@ -1639,30 +1700,39 @@ impl ChatApp {
 
     // ---------------------------------------------------------------- chat
 
-    fn chat_area(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
-        let conv = self
-            .current
+    /// True when the open chat has nothing in it yet: show the greeting with the composer.
+    fn is_fresh_chat(&self) -> bool {
+        self.current
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
-            .filter(|c| !c.messages.is_empty() || self.runs.contains_key(&c.id));
-        let Some(conv) = conv else {
+            .is_none_or(|c| c.messages.is_empty() && !self.runs.contains_key(&c.id))
+    }
+
+    fn chat_area(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
+        if self.is_fresh_chat() {
+            ui.add_space((ui.available_height() * 0.3 - 40.0).max(24.0));
+            chat_view::greeting(ui, self.user_name.as_deref());
+            ui.add_space(18.0);
+            self.composer(ui);
             let p = self.settings.provider();
-            let (servers, tools) = self.mcp.connected_tool_count();
             let local = ["localhost", "127.0.0.1", "0.0.0.0"]
                 .iter()
                 .any(|h| p.base_url.contains(h));
-            chat_view::empty_state(
-                ui,
-                chat_view::EmptyInfo {
-                    provider: &p.name,
-                    base_url: &p.base_url,
-                    model: &p.model,
-                    mcp_servers: servers,
-                    mcp_tools: tools,
-                    missing_key: p.api_key.is_empty() && !local,
-                },
-            );
+            if p.api_key.is_empty() && !local {
+                let warn = theme::palette(ui.visuals().dark_mode).warn;
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("No API key for this provider: add one in Settings (⌘,).")
+                            .small()
+                            .color(warn),
+                    );
+                });
+            }
             return Vec::new();
-        };
+        }
+        let conv = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .expect("not a fresh chat");
         chat_view::show(
             ui,
             &mut self.md_cache,
@@ -1672,7 +1742,6 @@ impl ChatApp {
                 conv,
                 run: self.runs.get(&conv.id),
                 error: self.errors.get(&conv.id),
-                model: &self.settings.provider().model,
                 show_stats: self.settings.general.show_stats,
                 reasoning: self.settings.general.reasoning_display,
                 remote_images: self.settings.general.load_remote_images,
@@ -1769,20 +1838,13 @@ impl eframe::App for ChatApp {
         let ctx = ui.ctx().clone();
 
         let dark = ui.visuals().dark_mode;
-        egui::Panel::top("top-bar")
-            .frame(
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
-            )
-            .show(ui, |ui| self.top_bar(ui));
-
         let settings_open = self.settings_ui.is_some();
+        // The sidebar runs the full height; the top bar only spans the main area.
         if self.sidebar_open && !settings_open {
             egui::Panel::left("sidebar")
                 .resizable(true)
-                .default_size(250.0)
-                .size_range(180.0..=420.0)
+                .default_size(270.0)
+                .size_range(200.0..=420.0)
                 .frame(
                     egui::Frame::new()
                         .fill(theme::palette(dark).shelf)
@@ -1790,15 +1852,27 @@ impl eframe::App for ChatApp {
                 )
                 .show(ui, |ui| self.sidebar(ui));
         }
+        egui::Panel::top("top-bar")
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 10)),
+            )
+            .show(ui, |ui| self.top_bar(ui));
+
         if !settings_open {
-            egui::Panel::bottom("composer")
-                .show_separator_line(false)
-                .frame(
-                    egui::Frame::new()
-                        .fill(ui.visuals().panel_fill)
-                        .inner_margin(egui::Margin::symmetric(12, 0)),
-                )
-                .show(ui, |ui| self.composer(ui));
+            // A fresh chat shows the composer under the greeting instead.
+            if !self.is_fresh_chat() {
+                egui::Panel::bottom("composer")
+                    .show_separator_line(false)
+                    .frame(
+                        egui::Frame::new()
+                            .fill(ui.visuals().panel_fill)
+                            .inner_margin(egui::Margin::symmetric(12, 0)),
+                    )
+                    .show(ui, |ui| self.composer(ui));
+            }
             let actions = egui::CentralPanel::no_frame()
                 .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
                 .show(ui, |ui| self.chat_area(ui))

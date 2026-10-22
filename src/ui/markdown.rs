@@ -9,8 +9,8 @@ use eframe::egui::{self, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
-use super::theme;
-use super::widgets::{code_block, text_actions};
+use super::theme::{self, icon};
+use super::widgets::{code_block, quiet_icons};
 use crate::app::Action;
 
 /// Larger SVGs are shown as code rather than drawn.
@@ -204,9 +204,9 @@ pub fn show(
                 ui.style_mut().override_text_style = Some(theme::reading());
                 CommonMarkViewer::new()
                     .max_image_width(Some(ui.available_width() as usize))
-                    // Warm themes to sit with the paper-and-ink palette.
-                    .syntax_theme_dark("base16-mocha.dark")
-                    .syntax_theme_light("Solarized (light)")
+                    // Neutral themes to sit with the charcoal and paper backgrounds.
+                    .syntax_theme_dark("base16-eighties.dark")
+                    .syntax_theme_light("InspiredGitHub")
                     .show_with_id(id.with(i), ui, md_cache, &md);
                 ui.style_mut().override_text_style = previous;
             }
@@ -236,11 +236,7 @@ fn drawing(
             // Drawings assume a light page, so they sit on near-white in both themes.
             let clicked = egui::Frame::new()
                 .fill(egui::Color32::from_rgb(252, 251, 247))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    theme::border(ui.visuals().dark_mode),
-                ))
-                .corner_radius(2)
+                .corner_radius(10)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -263,7 +259,13 @@ fn drawing(
                     format!("{what}.svg"),
                 ));
             }
-            match text_actions(ui, &["copy source", "save as svg"]) {
+            match quiet_icons(
+                ui,
+                &[
+                    (icon::COPY, "Copy source"),
+                    (icon::DOWNLOAD, "Save as SVG…"),
+                ],
+            ) {
                 Some(0) => actions.push(Action::Copy(source.to_owned())),
                 Some(1) => actions.push(Action::SaveSvg(d.svg.to_vec())),
                 _ => {}
@@ -271,7 +273,7 @@ fn drawing(
         }
         Err(e) => {
             ui.label(
-                RichText::new(format!("couldn't draw this {what}: {e}"))
+                RichText::new(format!("Couldn't draw this {what}: {e}"))
                     .small()
                     .color(ui.visuals().warn_fg_color),
             );

@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::attachments::{self as attach_ui, ImageCache};
 use super::markdown::{self, DrawingCache};
 use super::theme::{self, icon};
-use super::widgets::{code_block, text_actions};
+use super::widgets::{code_block, quiet_icons};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::config::ReasoningDisplay;
@@ -17,9 +17,7 @@ use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall};
 
-pub const MAX_CONTENT_WIDTH: f32 = 880.0;
-/// Width of the transcript's left margin, which names who is speaking.
-const MARGIN: f32 = 84.0;
+pub const MAX_CONTENT_WIDTH: f32 = 760.0;
 
 /// Lay out `add` in a centred column of at most [`MAX_CONTENT_WIDTH`].
 pub fn centered<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -37,64 +35,23 @@ pub fn centered<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R
     .inner
 }
 
-/// A transcript row: `label` in the left margin, `add` in the text column beside it.
-fn margin_row<R>(
-    ui: &mut egui::Ui,
-    label: Option<egui::WidgetText>,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    let top = ui.cursor().min;
-    let width = ui.available_width();
-    let column = egui::Rect::from_min_max(
-        egui::pos2(top.x + MARGIN, top.y),
-        egui::pos2(top.x + width, ui.max_rect().bottom().max(top.y + 1.0)),
-    );
-    let inner = ui
-        .scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(column)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-            |ui| {
-                ui.set_width(column.width());
-                add(ui)
-            },
-        )
-        .inner;
-    if let Some(label) = label {
-        // A child Ui, so the label doesn't move the parent's cursor.
-        let rect =
-            egui::Rect::from_min_size(top + egui::vec2(0.0, 3.0), egui::vec2(MARGIN - 14.0, 18.0));
-        ui.new_child(egui::UiBuilder::new().max_rect(rect))
-            .add(egui::Label::new(label).truncate());
-    }
-    inner
-}
-
-/// A log entry inside a reply (tool call, task list, error): content indented past a
-/// vertical hairline in `color`, no box around it.
-fn entry<R>(ui: &mut egui::Ui, color: egui::Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let inner = egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: 12,
-            right: 0,
-            top: 2,
-            bottom: 2,
-        })
+/// A soft bordered card inside a reply: tool calls, task lists, errors.
+fn card<R>(ui: &mut egui::Ui, stroke: egui::Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, stroke))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
-        });
-    let r = inner.response.rect;
-    ui.painter()
-        .vline(r.left() + 1.0, r.y_range(), egui::Stroke::new(2.0, color));
-    inner.inner
+        })
+        .inner
 }
 
 pub struct View<'a> {
     pub conv: &'a Conversation,
     pub run: Option<&'a Run>,
     pub error: Option<&'a String>,
-    pub model: &'a str,
     pub show_stats: bool,
     pub reasoning: ReasoningDisplay,
     pub remote_images: bool,
@@ -139,28 +96,14 @@ pub fn show(
         .show(ui, |ui| {
             ui.add_space(12.0);
             centered(ui, |ui| {
-                let mut first = true;
                 for (i, msg) in conv.messages.iter().enumerate() {
                     match msg.role {
                         Role::Tool | Role::System => continue,
                         Role::User => {
-                            // A hairline opens each exchange, like a new entry in a log.
-                            if !first {
-                                ui.add_space(6.0);
-                                theme::rule(ui);
-                                ui.add_space(14.0);
-                            }
                             user_message(ui, images, conv.id, i, msg, v.run.is_some(), &mut actions)
                         }
                         Role::Assistant => {
                             let streaming = v.run.is_some() && i + 1 == conv.messages.len();
-                            // Consecutive assistant turns (tool rounds) share one header.
-                            let first_of_turn = i == 0
-                                || conv.messages[..i]
-                                    .iter()
-                                    .rev()
-                                    .find(|m| m.role != Role::Tool)
-                                    .is_none_or(|m| m.role != Role::Assistant);
                             assistant_message(
                                 ui,
                                 md_cache,
@@ -176,7 +119,6 @@ pub fn show(
                                     show_stats: v.show_stats,
                                     reasoning: v.reasoning,
                                     remote_images: v.remote_images,
-                                    header: first_of_turn.then_some(v.model),
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                 },
                                 msg,
@@ -184,8 +126,7 @@ pub fn show(
                             );
                         }
                     }
-                    first = false;
-                    ui.add_space(14.0);
+                    ui.add_space(18.0);
                 }
                 if let Some(err) = v.error {
                     error_box(ui, err, v.run.is_none().then_some(conv.id), &mut actions);
@@ -206,29 +147,57 @@ fn user_message(
     actions: &mut Vec<Action>,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
-    margin_row(ui, Some(theme::caps("you").color(p.pencil).into()), |ui| {
-        // What you typed is set in mono, what the model wrote in serif.
-        if !msg.content.is_empty() {
-            ui.add(
-                egui::Label::new(RichText::new(&msg.content).monospace().color(p.ink))
-                    .selectable(true)
-                    .wrap(),
-            );
-        }
-        if !msg.attachments.is_empty()
-            && let Some((uri, bytes, name)) =
-                attach_ui::show(ui, images, &format!("{conv}-{idx}"), &msg.attachments)
-        {
-            actions.push(Action::ViewImage(uri, bytes, name));
-        }
-        let labels: &[&str] = if running {
-            &["copy"]
+    let max_w = ui.available_width() * 0.8;
+    // Size the bubble to its content: the longest line, or room for a thumbnail.
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let text_w = ui.ctx().fonts_mut(|f| {
+        f.layout_no_wrap(msg.content.clone(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    let mut width = text_w.ceil() + 2.0;
+    if msg.attachments.iter().any(|a| a.is_image()) {
+        width = width.max(320.0);
+    } else if !msg.attachments.is_empty() {
+        width = width.max(240.0);
+    }
+    let width = width.min(max_w);
+    // Your messages sit in a bubble on the right; replies run full width.
+    ui.horizontal(|ui| {
+        let margin = 14.0;
+        ui.add_space((ui.available_width() - width - 2.0 * margin).max(0.0));
+        egui::Frame::new()
+            .fill(p.raised)
+            .corner_radius(14)
+            .inner_margin(egui::Margin::symmetric(margin as i8, 10))
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    if !msg.content.is_empty() {
+                        ui.add(
+                            egui::Label::new(RichText::new(&msg.content).color(p.ink))
+                                .selectable(true)
+                                .wrap(),
+                        );
+                    }
+                    if !msg.attachments.is_empty()
+                        && let Some((uri, bytes, name)) =
+                            attach_ui::show(ui, images, &format!("{conv}-{idx}"), &msg.attachments)
+                    {
+                        actions.push(Action::ViewImage(uri, bytes, name));
+                    }
+                });
+            });
+    });
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let items: &[(&str, &str)] = if running {
+            &[(icon::COPY, "Copy")]
         } else {
-            &["copy", "edit"]
+            &[(icon::EDIT, "Edit and resend"), (icon::COPY, "Copy")]
         };
-        match text_actions(ui, labels) {
-            Some(0) => actions.push(Action::Copy(msg.content.clone())),
-            Some(1) => actions.push(Action::EditFrom(conv, idx)),
+        match quiet_icons(ui, items).map(|i| items[i].1) {
+            Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
+            Some("Edit and resend") => actions.push(Action::EditFrom(conv, idx)),
             _ => {}
         }
     });
@@ -244,8 +213,6 @@ struct AssistantCtx<'a> {
     show_stats: bool,
     reasoning: ReasoningDisplay,
     remote_images: bool,
-    /// Show the header row with this model name.
-    header: Option<&'a str>,
     /// The final reply: show Regenerate.
     last: bool,
 }
@@ -270,18 +237,9 @@ fn assistant_message(
     msg: &ChatMessage,
     actions: &mut Vec<Action>,
 ) {
-    let p = theme::palette(ui.visuals().dark_mode);
-    // The margin names the model, without its vendor prefix ("org/model" → "model").
-    let label = cx.header.map(|model| {
-        let short = model.rsplit('/').next().unwrap_or(model);
-        let short = if short.is_empty() { "model" } else { short };
-        theme::caps(short).color(p.signal).into()
-    });
     // Scoped by position: widget ids below use call ids, which servers may reuse.
     ui.push_id(("message", cx.idx), |ui| {
-        margin_row(ui, label, |ui| {
-            assistant_body(ui, md_cache, drawings, images, &cx, msg, actions)
-        });
+        assistant_body(ui, md_cache, drawings, images, &cx, msg, actions)
     });
 }
 
@@ -309,9 +267,9 @@ fn assistant_body(
         state
             .show_header(ui, |ui| {
                 let label = if cx.streaming && msg.content.is_empty() {
-                    "thinking…"
+                    "Thinking…"
                 } else {
-                    "thinking"
+                    "Thought process"
                 };
                 ui.label(RichText::new(label).small().weak());
             })
@@ -325,7 +283,7 @@ fn assistant_body(
     } else if waiting {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(RichText::new("waiting for the first token").small().weak());
+            ui.label(RichText::new("Thinking…").weak());
         });
     }
     if !msg.content.is_empty() {
@@ -352,16 +310,16 @@ fn assistant_body(
     }
     if !cx.streaming && (!msg.content.is_empty() || msg.stats.is_some()) {
         ui.horizontal(|ui| {
-            let mut labels = Vec::new();
+            let mut items = Vec::new();
             if !msg.content.is_empty() {
-                labels.push("copy");
+                items.push((icon::COPY, "Copy"));
             }
             if cx.last {
-                labels.push("regenerate");
+                items.push((icon::REGENERATE, "Retry"));
             }
-            match text_actions(ui, &labels).map(|i| labels[i]) {
-                Some("copy") => actions.push(Action::Copy(msg.content.clone())),
-                Some("regenerate") => actions.push(Action::Regenerate(cx.conv)),
+            match quiet_icons(ui, &items).map(|i| items[i].1) {
+                Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
+                Some("Retry") => actions.push(Action::Regenerate(cx.conv)),
                 _ => {}
             }
             if cx.show_stats
@@ -443,85 +401,94 @@ fn tool_card(
 
     let p = theme::palette(dark);
     let (status, color) = match result {
-        Some(r) if r.is_error => ("failed", p.error),
-        Some(_) => ("ok", p.ok),
-        None if pending_approval => ("approve?", p.signal),
-        None if running => ("running", p.pencil),
-        None => ("not run", p.pencil),
+        Some(r) if r.is_error => ("Failed", p.error),
+        Some(_) => ("Done", p.pencil),
+        None if pending_approval => ("Needs approval", p.signal),
+        None if running => ("Running", p.pencil),
+        None => ("Not run", p.pencil),
     };
     ui.add_space(2.0);
-    entry(ui, if result.is_some() { p.rule } else { color }, |ui| {
-        let id = ui.make_persistent_id(("tool", &call.id));
-        let state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-        state
-            .show_header(ui, |ui| {
-                if running {
-                    ui.spinner();
-                }
-                ui.label(RichText::new(tools::display_name(&call.name)).monospace());
-                ui.label(RichText::new(status).small().color(color));
-                let preview = if call.name == tools::DELEGATE {
-                    delegate_preview(&call.arguments)
-                } else {
-                    args_preview(&call.arguments)
-                };
-                if !preview.is_empty() {
-                    ui.add(egui::Label::new(RichText::new(preview).small().weak()).truncate());
-                }
-            })
-            .body(|ui| {
-                ui.label(theme::caps("arguments").color(p.pencil));
-                code_block(ui, &pretty_args);
-                if let Some(r) = result {
-                    ui.label(
-                        theme::caps(if r.is_error { "error" } else { "result" })
-                            .color(if r.is_error { p.error } else { p.pencil }),
-                    );
-                    const LIMIT: usize = 20_000;
-                    if r.content.len() > LIMIT {
-                        let mut end = LIMIT;
-                        while !r.content.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        code_block(
-                            ui,
-                            &format!(
-                                "{}\n… ({} more bytes)",
-                                &r.content[..end],
-                                r.content.len() - end
-                            ),
-                        );
-                    } else {
-                        code_block(ui, &r.content);
+    card(
+        ui,
+        if pending_approval { p.outline } else { p.rule },
+        |ui| {
+            let id = ui.make_persistent_id(("tool", &call.id));
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                false,
+            );
+            state
+                .show_header(ui, |ui| {
+                    if running {
+                        ui.spinner();
                     }
+                    ui.label(RichText::new(icon::TOOL).color(p.pencil));
+                    ui.label(RichText::new(tools::display_name(&call.name)).color(p.ink));
+                    ui.label(RichText::new(status).small().color(color));
+                    let preview = if call.name == tools::DELEGATE {
+                        delegate_preview(&call.arguments)
+                    } else {
+                        args_preview(&call.arguments)
+                    };
+                    if !preview.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(preview).small().weak()).truncate());
+                    }
+                })
+                .body(|ui| {
+                    ui.label(RichText::new("Arguments").small().color(p.pencil));
+                    code_block(ui, &pretty_args);
+                    if let Some(r) = result {
+                        ui.label(
+                            RichText::new(if r.is_error { "Error" } else { "Result" })
+                                .small()
+                                .color(if r.is_error { p.error } else { p.pencil }),
+                        );
+                        const LIMIT: usize = 20_000;
+                        if r.content.len() > LIMIT {
+                            let mut end = LIMIT;
+                            while !r.content.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            code_block(
+                                ui,
+                                &format!(
+                                    "{}\n… ({} more bytes)",
+                                    &r.content[..end],
+                                    r.content.len() - end
+                                ),
+                            );
+                        } else {
+                            code_block(ui, &r.content);
+                        }
+                    }
+                });
+            // Images and the approval prompt stay visible without expanding.
+            if let Some(r) = result
+                && !r.attachments.is_empty()
+                && let Some((uri, bytes, name)) =
+                    attach_ui::show(ui, images, &format!("tool-{}", call.id), &r.attachments)
+            {
+                actions.push(Action::ViewImage(uri, bytes, name));
+            }
+            if call.name == tools::DELEGATE {
+                let live = run.and_then(|r| r.subagents.get(&call.id));
+                let reports = match result {
+                    Some(r) if !r.subagents.is_empty() => Some(&r.subagents),
+                    _ => live,
+                };
+                if let Some(reports) = reports {
+                    subagent_list(ui, &call.id, reports);
                 }
-            });
-        // Images and the approval prompt stay visible without expanding.
-        if let Some(r) = result
-            && !r.attachments.is_empty()
-            && let Some((uri, bytes, name)) =
-                attach_ui::show(ui, images, &format!("tool-{}", call.id), &r.attachments)
-        {
-            actions.push(Action::ViewImage(uri, bytes, name));
-        }
-        if call.name == tools::DELEGATE {
-            let live = run.and_then(|r| r.subagents.get(&call.id));
-            let reports = match result {
-                Some(r) if !r.subagents.is_empty() => Some(&r.subagents),
-                _ => live,
-            };
-            if let Some(reports) = reports {
-                subagent_list(ui, &call.id, reports);
             }
-        }
-        if let Some(pending) = pending {
-            if !state_is_open(ui, id) {
-                code_block(ui, &pretty_args);
+            if let Some(pending) = pending {
+                if !state_is_open(ui, id) {
+                    code_block(ui, &pretty_args);
+                }
+                approval_prompt(ui, conv, pending, actions);
             }
-            approval_prompt(ui, conv, pending, actions);
-        }
-    });
+        },
+    );
 }
 
 /// "Allow this tool call?" with Run, the two "Always allow" choices, and Deny.
@@ -532,9 +499,11 @@ fn approval_prompt(
     actions: &mut Vec<Action>,
 ) {
     let dark = ui.visuals().dark_mode;
+    let p = theme::palette(dark);
     let mut answer = None;
+    ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("Run this tool?").small());
+        ui.label(RichText::new("Allow this tool to run?").color(p.ink2));
         if ui.add(theme::primary_button("Run", dark)).clicked() {
             answer = Some(Approval::Once);
         }
@@ -574,14 +543,15 @@ fn task_list(ui: &mut egui::Ui, call: &ToolCall, list: &[Task], latest: bool) {
     let p = theme::palette(ui.visuals().dark_mode);
     let done = list.iter().filter(|t| t.status == TaskStatus::Done).count();
     ui.add_space(2.0);
-    entry(ui, if latest { p.signal } else { p.rule }, |ui| {
+    card(ui, p.rule, |ui| {
         // Keyed on `latest` so a list folds once a newer one replaces it.
         let id = ui.make_persistent_id(("tasks", &call.id, latest));
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, latest)
             .show_header(ui, |ui| {
-                ui.label(theme::caps("tasks").color(p.pencil));
+                ui.label(RichText::new(icon::LIST_CHECKS).color(p.pencil));
+                ui.label(RichText::new("Tasks").color(p.ink));
                 ui.label(
-                    RichText::new(format!("{done}/{}", list.len()))
+                    RichText::new(format!("{done} of {} done", list.len()))
                         .small()
                         .color(p.pencil),
                 );
@@ -589,13 +559,12 @@ fn task_list(ui: &mut egui::Ui, call: &ToolCall, list: &[Task], latest: bool) {
             .body(|ui| {
                 for task in list {
                     ui.horizontal(|ui| {
-                        // Plain-text checkboxes, like a list kept by hand.
                         let (mark, color) = match task.status {
-                            TaskStatus::Done => ("[x]", p.ok),
-                            TaskStatus::InProgress => ("[>]", p.signal),
-                            TaskStatus::Pending => ("[ ]", p.pencil),
+                            TaskStatus::Done => (icon::CHECK_SQUARE, p.ok),
+                            TaskStatus::InProgress => (icon::ARROW_RIGHT, p.signal),
+                            TaskStatus::Pending => (icon::SQUARE, p.pencil),
                         };
-                        ui.label(RichText::new(mark).monospace().color(color));
+                        ui.label(RichText::new(mark).color(color));
                         let text = RichText::new(task.title.trim());
                         let text = match task.status {
                             TaskStatus::Done => text.weak().strikethrough(),
@@ -673,7 +642,7 @@ fn subagent_list(ui: &mut egui::Ui, call_id: &str, reports: &[SubagentReport]) {
                     );
                     egui::Frame::new()
                         .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(2)
+                        .corner_radius(8)
                         .inner_margin(8)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -705,71 +674,45 @@ fn state_is_open(ui: &egui::Ui, id: egui::Id) -> bool {
 
 fn error_box(ui: &mut egui::Ui, err: &str, retry: Option<Uuid>, actions: &mut Vec<Action>) {
     let color = ui.visuals().error_fg_color;
-    margin_row(ui, Some(theme::caps("error").color(color).into()), |ui| {
-        entry(ui, color, |ui| {
-            ui.add(egui::Label::new(RichText::new(err).monospace().color(color)).wrap());
-            if let Some(id) = retry
-                && ui.button("Retry").clicked()
-            {
-                actions.push(Action::Regenerate(id));
-            }
+    card(ui, color.gamma_multiply(0.6), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(icon::WARNING).color(color));
+            ui.add(egui::Label::new(RichText::new(err).color(color)).wrap());
         });
+        if let Some(id) = retry
+            && ui
+                .button(theme::labelled(icon::REGENERATE, "Retry"))
+                .clicked()
+        {
+            actions.push(Action::Regenerate(id));
+        }
     });
 }
 
-pub struct EmptyInfo<'a> {
-    pub provider: &'a str,
-    pub base_url: &'a str,
-    pub model: &'a str,
-    pub mcp_servers: usize,
-    pub mcp_tools: usize,
-    pub missing_key: bool,
-}
-
-/// A new chat: what the next message will go to, as a readout. No greeting, no
-/// suggestions; the composer below is the call to action.
-pub fn empty_state(ui: &mut egui::Ui, info: EmptyInfo<'_>) {
+/// The new-chat greeting, "Good evening, Aaron", in the serif with a time-of-day icon.
+pub fn greeting(ui: &mut egui::Ui, name: Option<&str>) {
     let p = theme::palette(ui.visuals().dark_mode);
-    ui.add_space((ui.available_height() * 0.3).max(24.0));
-    centered(ui, |ui| {
-        margin_row(ui, Some(theme::caps("new").color(p.signal).into()), |ui| {
-            let model = if info.model.is_empty() {
-                "none selected"
-            } else {
-                info.model
-            };
-            let tools = match info.mcp_servers {
-                0 => "built-in only".to_owned(),
-                n => format!(
-                    "{} from {n} MCP server{}",
-                    info.mcp_tools,
-                    if n == 1 { "" } else { "s" }
-                ),
-            };
-            egui::Grid::new("empty-readout")
-                .num_columns(2)
-                .spacing([18.0, 4.0])
-                .show(ui, |ui| {
-                    for (key, value) in [
-                        ("provider", info.provider),
-                        ("endpoint", info.base_url),
-                        ("model", model),
-                        ("tools", tools.as_str()),
-                    ] {
-                        ui.label(RichText::new(key).monospace().color(p.pencil));
-                        ui.label(RichText::new(value).monospace().color(p.ink));
-                        ui.end_row();
-                    }
-                });
-            if info.missing_key {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("No API key for this provider. Add one in Settings (⌘,).")
-                        .monospace()
-                        .color(p.warn),
-                );
-            }
-        });
+    let hour = chrono::Timelike::hour(&chrono::Local::now());
+    let (glyph, text) = match hour {
+        5..=11 => (icon::SUN, "Good morning"),
+        12..=17 => (icon::SUN, "Good afternoon"),
+        _ => (icon::MOON, "Good evening"),
+    };
+    let text = match name {
+        Some(n) => format!("{text}, {n}"),
+        None => text.to_owned(),
+    };
+    let font = egui::FontId::new(34.0, egui::FontFamily::Name(theme::SERIF.into()));
+    // Centre the icon and the words together.
+    let width = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), p.ink).size().x)
+        + 44.0;
+    ui.horizontal(|ui| {
+        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+        ui.label(RichText::new(glyph).size(30.0).color(p.signal));
+        ui.add_space(4.0);
+        ui.label(RichText::new(text).font(font).color(p.ink));
     });
 }
 

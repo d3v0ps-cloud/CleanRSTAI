@@ -146,22 +146,23 @@ pub fn icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response
     resp
 }
 
-/// Quiet text actions under a message or drawing ("copy", "edit"); returns which was clicked.
-pub fn text_actions(ui: &mut egui::Ui, labels: &[&str]) -> Option<usize> {
+/// Muted icon buttons under a message or drawing (copy, edit, retry), each with a tooltip
+/// and an accessible name; returns which was clicked.
+pub fn quiet_icons(ui: &mut egui::Ui, items: &[(&str, &str)]) -> Option<usize> {
+    let pencil = super::theme::palette(ui.visuals().dark_mode).pencil;
     let mut clicked = None;
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
-        // Line the first label's text up with the column, not its hover frame.
-        ui.add_space(-4.0);
-        for (i, label) in labels.iter().enumerate() {
-            let text = egui::RichText::new(*label)
-                .small()
-                .color(ui.visuals().weak_text_color());
-            if ui
-                .add(egui::Button::new(text).frame_when_inactive(false))
-                .clicked()
-            {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, (glyph, label)) in items.iter().enumerate() {
+            let resp = ui
+                .add(
+                    egui::Button::new(egui::RichText::new(*glyph).size(15.0).color(pencil))
+                        .frame_when_inactive(false),
+                )
+                .on_hover_text(*label);
+            let label = (*label).to_owned();
+            resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+            if resp.clicked() {
                 clicked = Some(i);
             }
         }
