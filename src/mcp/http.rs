@@ -1,29 +1,52 @@
 //! MCP "Streamable HTTP" transport: every message is POSTed to a single endpoint; the
-//! server answers with either a JSON body or an SSE stream carrying the response.
+//! server answers with either a JSON body or an SSE stream carrying the response. A
+//! background GET stream, when the server offers one, carries server-initiated messages.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
+use tokio::task::JoinHandle;
 
+use super::NotifyFn;
 use crate::config::KeyValue;
 use crate::sse::SseParser;
 
 const SESSION_HEADER: &str = "mcp-session-id";
 const VERSION_HEADER: &str = "mcp-protocol-version";
 
-pub struct HttpTransport {
+struct Inner {
     http: reqwest::Client,
     url: String,
     headers: HeaderMap,
     session_id: Mutex<Option<String>>,
     protocol_version: Mutex<Option<String>>,
+    on_notify: NotifyFn,
+}
+
+pub struct HttpTransport {
+    inner: Arc<Inner>,
+    listener: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for HttpTransport {
+    fn drop(&mut self) {
+        if let Some(t) = self.listener.lock().unwrap().take() {
+            t.abort();
+        }
+    }
 }
 
 impl HttpTransport {
-    pub fn new(http: reqwest::Client, url: &str, headers: &[KeyValue]) -> Result<Self> {
+    pub fn new(
+        http: reqwest::Client,
+        url: &str,
+        headers: &[KeyValue],
+        on_notify: NotifyFn,
+    ) -> Result<Self> {
         let url = url.trim();
         if url.is_empty() {
             bail!("no URL configured");
@@ -38,18 +61,65 @@ impl HttpTransport {
             map.insert(name, value);
         }
         Ok(Self {
-            http,
-            url: url.to_owned(),
-            headers: map,
-            session_id: Mutex::new(None),
-            protocol_version: Mutex::new(None),
+            inner: Arc::new(Inner {
+                http,
+                url: url.to_owned(),
+                headers: map,
+                session_id: Mutex::new(None),
+                protocol_version: Mutex::new(None),
+                on_notify,
+            }),
+            listener: Mutex::new(None),
         })
     }
 
     pub fn set_protocol_version(&self, v: &str) {
-        *self.protocol_version.lock().unwrap() = Some(v.to_owned());
+        *self.inner.protocol_version.lock().unwrap() = Some(v.to_owned());
     }
 
+    /// Open the optional GET stream for server-initiated notifications and requests.
+    /// Servers that don't offer it answer 405, which simply ends the listener.
+    pub fn start_listening(&self) {
+        let inner = self.inner.clone();
+        let task = tokio::spawn(async move {
+            let mut failures = 0u32;
+            loop {
+                match inner.listen_once().await {
+                    Ok(Listen::NotSupported) => return,
+                    Ok(Listen::Ended) => failures = 0,
+                    Err(e) => {
+                        failures += 1;
+                        log::debug!("MCP notification stream: {e:#}");
+                        if failures >= 5 {
+                            return;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2u64.pow(failures.min(5)))).await;
+            }
+        });
+        *self.listener.lock().unwrap() = Some(task);
+    }
+
+    pub async fn notify(&self, msg: &Value) -> Result<()> {
+        self.inner.post(msg).await.map(|_| ())
+    }
+
+    pub async fn request(&self, id: u64, msg: &Value) -> Result<Value> {
+        self.inner.request(id, msg).await
+    }
+
+    pub async fn close(&self) {
+        self.inner.close().await
+    }
+}
+
+enum Listen {
+    NotSupported,
+    Ended,
+}
+
+impl Inner {
     fn with_session(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req = req.headers(self.headers.clone());
         if let Some(sid) = self.session_id.lock().unwrap().clone() {
@@ -92,11 +162,7 @@ impl HttpTransport {
         Ok(resp)
     }
 
-    pub async fn notify(&self, msg: &Value) -> Result<()> {
-        self.post(msg).await.map(|_| ())
-    }
-
-    pub async fn request(&self, id: u64, msg: &Value) -> Result<Value> {
+    async fn request(&self, id: u64, msg: &Value) -> Result<Value> {
         let resp = self.post(msg).await?;
         let content_type = resp
             .headers()
@@ -110,13 +176,13 @@ impl HttpTransport {
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 for ev in parser.feed(&chunk.context("SSE stream interrupted")?) {
-                    if let Some(found) = self.handle_message(&ev.data, id).await {
+                    if let Some(found) = self.handle_message(&ev.data, Some(id)).await {
                         return Ok(found);
                     }
                 }
             }
             if let Some(ev) = parser.finish()
-                && let Some(found) = self.handle_message(&ev.data, id).await
+                && let Some(found) = self.handle_message(&ev.data, Some(id)).await
             {
                 return Ok(found);
             }
@@ -137,22 +203,57 @@ impl HttpTransport {
         found.context("response did not contain a reply to our request")
     }
 
-    /// Handle one message from an SSE stream; returns it if it is the response we wait for.
-    async fn handle_message(&self, data: &str, id: u64) -> Option<Value> {
+    /// Handle one message from an SSE stream: answer server requests, pass notifications
+    /// on, and return the message if it is the response `id` we wait for.
+    async fn handle_message(&self, data: &str, id: Option<u64>) -> Option<Value> {
         let msg: Value = serde_json::from_str(data.trim()).ok()?;
-        if super::response_id(&msg) == Some(id) {
+        if id.is_some() && super::response_id(&msg) == id {
             return Some(msg);
         }
-        if msg.get("id").is_some() && msg.get("method").is_some() {
-            let reply = super::reply_to_server_request(&msg);
-            if let Err(e) = self.post(&reply).await {
-                log::warn!("failed to answer server request: {e}");
+        match (msg.get("id"), msg.get("method").and_then(|m| m.as_str())) {
+            (Some(_), Some(_)) => {
+                let reply = super::reply_to_server_request(&msg);
+                if let Err(e) = self.post(&reply).await {
+                    log::warn!("failed to answer server request: {e}");
+                }
             }
+            (None, Some(method)) => (self.on_notify)(method),
+            _ => {}
         }
         None
     }
 
-    pub async fn close(&self) {
+    async fn listen_once(&self) -> Result<Listen> {
+        let req = self.http.get(&self.url).header(ACCEPT, "text/event-stream");
+        let resp = self.with_session(req).send().await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+            || status == reqwest::StatusCode::NOT_FOUND
+        {
+            return Ok(Listen::NotSupported);
+        }
+        if !status.is_success() {
+            bail!("HTTP {status}");
+        }
+        let is_sse = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.contains("text/event-stream"));
+        if !is_sse {
+            return Ok(Listen::NotSupported);
+        }
+        let mut parser = SseParser::default();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            for ev in parser.feed(&chunk?) {
+                self.handle_message(&ev.data, None).await;
+            }
+        }
+        Ok(Listen::Ended)
+    }
+
+    async fn close(&self) {
         let has_session = self.session_id.lock().unwrap().is_some();
         if has_session {
             let req = self.with_session(self.http.delete(&self.url));

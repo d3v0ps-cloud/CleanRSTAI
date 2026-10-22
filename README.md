@@ -23,6 +23,10 @@ macOS is the primary platform; Linux and Windows are fully supported.
     and both JSON and SSE responses.
   - Live connection status, tool list, per-tool enable/disable, server stderr log, reconnect.
   - Import the standard `{"mcpServers": {...}}` JSON used by Claude Desktop, Cursor and others.
+  - **Resources and prompts**: the 📚 MCP menu next to the input attaches a server's resources
+    to your message, or inserts one of its prompts, with a form for any arguments.
+  - Tool, resource and prompt lists refresh automatically when a server reports a change,
+    including through the Streamable HTTP server-push stream.
 - **Tool calling loop**: the model can call tools across multiple rounds. Each call shows its
   arguments and result, and asks for your approval unless you turn on auto-approve.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can

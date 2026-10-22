@@ -83,6 +83,7 @@ impl StdioTransport {
         args: &[String],
         env: &[KeyValue],
         cwd: &str,
+        on_notify: super::NotifyFn,
     ) -> Result<Self> {
         let command = command.trim();
         if command.is_empty() {
@@ -165,6 +166,9 @@ impl StdioTransport {
                         let _ = write_line(&mut w, &reply).await;
                     } else {
                         log::debug!("mcp notification: {line}");
+                        if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+                            on_notify(method);
+                        }
                     }
                 }
                 *closed.lock().unwrap() = Some("server process exited".into());
