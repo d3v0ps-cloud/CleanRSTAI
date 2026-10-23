@@ -44,3 +44,9 @@ name = "CleanRSTAI"
 identifier = "net.bukn.cleanrstai"
 category = "public.app-category.productivity"
 short_description = "AI chat client with MCP support"
+
+# egui_commonmark's shared backend with two local fixes: bold text uses the fonts' weight axis
+# (egui's `strong()` only changes colour), and the code-block copy button sits inside the block
+# instead of half outside it. See vendor/egui_commonmark_backend/VENDORED.md.
+[patch.crates-io]
+egui_commonmark_backend = { path = "vendor/egui_commonmark_backend" }
