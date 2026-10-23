@@ -523,17 +523,29 @@ impl ChatApp {
         );
     }
 
+    /// Cancel a generation. The prompt it was answering is withdrawn too, along with any partial
+    /// reply, and put back in the input box, so the next prompt doesn't carry the cancelled one.
     fn stop(&mut self, id: Uuid) {
-        if let Some(run) = self.runs.remove(&id) {
-            run.task.abort();
-            if let Some(conv) = self.conv_mut(id) {
-                if conv.messages.last().is_some_and(|m| {
-                    m.role == Role::Assistant && m.content.is_empty() && m.tool_calls.is_empty()
-                }) {
-                    conv.messages.pop();
-                }
-                conv.updated_at = chrono::Utc::now();
-                conv.save();
+        let Some(run) = self.runs.remove(&id) else {
+            return;
+        };
+        run.task.abort();
+        let Some(conv) = self.conv_mut(id) else {
+            return;
+        };
+        let mut restored = None;
+        if let Some(at) = conv.messages.iter().rposition(|m| m.role == Role::User) {
+            let msg = conv.messages.drain(at..).next().unwrap();
+            restored = Some((msg.content, msg.attachments));
+        }
+        conv.updated_at = chrono::Utc::now();
+        conv.save();
+        if let Some((text, attachments)) = restored {
+            if self.input.trim().is_empty() {
+                self.input = text;
+            }
+            if self.pending_attachments.is_empty() {
+                self.pending_attachments = attachments;
             }
         }
     }
