@@ -192,6 +192,11 @@ fn user_message(
                 });
             });
     });
+    if msg.cancelled {
+        ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+            ui.label(RichText::new("Cancelled").small().color(p.pencil));
+        });
+    }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let items: &[(&str, &str)] = if running {
             &[(icon::COPY, "Copy")]

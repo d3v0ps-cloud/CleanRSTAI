@@ -498,7 +498,12 @@ impl ChatApp {
             conv_id: id,
             provider: self.settings.provider().clone(),
             general: self.settings.general.clone(),
-            history: conv.messages.clone(),
+            history: conv
+                .messages
+                .iter()
+                .filter(|m| !m.cancelled)
+                .cloned()
+                .collect(),
             delegation: Delegation::new(&self.settings, &selection),
             selection,
             workspace: conv.workspace.clone(),
@@ -523,8 +528,9 @@ impl ChatApp {
         );
     }
 
-    /// Cancel a generation. The prompt it was answering is withdrawn too, along with any partial
-    /// reply, and put back in the input box, so the next prompt doesn't carry the cancelled one.
+    /// Cancel a generation. The prompt it was answering stays in the chat, marked cancelled, so
+    /// it can be edited and resent; it and any partial reply are left out of what the next
+    /// prompt sends to the model.
     fn stop(&mut self, id: Uuid) {
         let Some(run) = self.runs.remove(&id) else {
             return;
@@ -533,21 +539,12 @@ impl ChatApp {
         let Some(conv) = self.conv_mut(id) else {
             return;
         };
-        let mut restored = None;
         if let Some(at) = conv.messages.iter().rposition(|m| m.role == Role::User) {
-            let msg = conv.messages.drain(at..).next().unwrap();
-            restored = Some((msg.content, msg.attachments));
+            conv.messages.truncate(at + 1);
+            conv.messages[at].cancelled = true;
         }
         conv.updated_at = chrono::Utc::now();
         conv.save();
-        if let Some((text, attachments)) = restored {
-            if self.input.trim().is_empty() {
-                self.input = text;
-            }
-            if self.pending_attachments.is_empty() {
-                self.pending_attachments = attachments;
-            }
-        }
     }
 
     fn regenerate(&mut self, id: Uuid, ctx: &egui::Context) {
@@ -560,9 +557,10 @@ impl ChatApp {
         while conv.messages.last().is_some_and(|m| m.role != Role::User) {
             conv.messages.pop();
         }
-        if conv.messages.is_empty() {
+        let Some(last) = conv.messages.last_mut() else {
             return;
-        }
+        };
+        last.cancelled = false;
         self.start_run(id, ctx);
     }
 

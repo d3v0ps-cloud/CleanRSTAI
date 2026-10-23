@@ -49,6 +49,10 @@ pub struct ChatMessage {
     /// For a `delegate` tool result: what each subagent did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<crate::subagent::SubagentReport>,
+    /// A user prompt whose generation was cancelled. It stays visible so it can be edited and
+    /// resent, but is never sent to the model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cancelled: bool,
 }
 
 impl ChatMessage {
@@ -64,6 +68,7 @@ impl ChatMessage {
             stats: None,
             attachments: Vec::new(),
             subagents: Vec::new(),
+            cancelled: false,
         }
     }
 
