@@ -11,6 +11,7 @@ use crate::config::{GeneralSettings, ProviderConfig};
 use crate::llm::{self, Delta};
 use crate::mcp::manager::McpManager;
 use crate::subagent::{Delegation, SubagentReport};
+use crate::tools::workspace::Workspace;
 use crate::tools::{self, ToolSelection, Toolbox};
 use crate::types::{ChatMessage, Role, ToolCall};
 
@@ -79,6 +80,8 @@ pub struct AgentRequest {
     pub selection: ToolSelection,
     /// Subagent setup, when the `delegate` tool is on for this chat.
     pub delegation: Option<Delegation>,
+    /// The chat's workspace folder, for the workspace tools.
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -96,6 +99,24 @@ pub async fn run(
         repaint();
     };
 
+    let workspace = match req.workspace.as_deref().map(Workspace::open).transpose() {
+        Ok(ws) => ws,
+        Err(e) => {
+            emit(ChatEvent::Error(format!(
+                "{e:#}. Choose another working folder below the message box."
+            )));
+            emit(ChatEvent::Done);
+            return;
+        }
+    };
+    let system_prompt = match &workspace {
+        Some(ws) => format!(
+            "{}\n\n{}",
+            req.general.system_prompt.trim(),
+            ws.prompt_note()
+        ),
+        None => req.general.system_prompt.clone(),
+    };
     let mut history = req.history;
     let max_rounds = req.general.max_tool_rounds.max(1);
     let tool_timeout = Duration::from_secs(req.general.tool_timeout_secs.max(5));
@@ -108,16 +129,20 @@ pub async fn run(
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
         let toolbox = if round < max_rounds {
-            Toolbox::new(
+            let toolbox = Toolbox::new(
                 mcp.router(),
                 &req.selection,
                 req.delegation.as_ref().map(Delegation::tool_description),
             )
-            .with_http(http.clone())
+            .with_http(http.clone());
+            match &workspace {
+                Some(ws) => toolbox.with_workspace(ws.clone(), &req.selection),
+                None => toolbox,
+            }
         } else {
             Toolbox::default()
         };
-        let messages = llm::to_api_messages(&req.general.system_prompt, &history);
+        let messages = llm::to_api_messages(&system_prompt, &history);
 
         emit(ChatEvent::AssistantStart);
         let result =
@@ -341,6 +366,7 @@ mod tests {
             history: vec![ChatMessage::new(Role::User, "say hi via the tool")],
             selection: ToolSelection::default(),
             delegation: None,
+            workspace: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -417,7 +443,74 @@ mod tests {
             history: vec![ChatMessage::new(Role::User, "go")],
             delegation: Delegation::new(settings, &selection),
             selection,
+            workspace: None,
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_tools_read_freely_and_ask_before_writing() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-ws-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), "remember the milk\n").unwrap();
+        let settings = crate::config::Settings::default();
+        let http = reqwest::Client::new();
+        let run_with = |tool: &'static str, args: &'static str| {
+            let (dir, settings, http) = (dir.clone(), settings.clone(), http.clone());
+            async move {
+                let (base, log) = tool_calling_llm(tool, args).await;
+                let mut req = request(&base, &settings, &Default::default());
+                req.workspace = Some(dir);
+                let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+                let mut approvals = 0;
+                let mut result = None;
+                while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+                    match event {
+                        ChatEvent::ToolApproval { respond, .. } => {
+                            approvals += 1;
+                            respond.send(true).unwrap();
+                        }
+                        ChatEvent::ToolResult(m) => result = Some(*m),
+                        ChatEvent::Done => break,
+                        _ => {}
+                    }
+                }
+                agent.await.unwrap();
+                (approvals, result.unwrap(), log.lock().unwrap()[0].json())
+            }
+        };
+
+        let (approvals, result, first) =
+            run_with(tools::workspace::READ_FILE, r#"{"path": "notes.txt"}"#).await;
+        assert_eq!(approvals, 0);
+        assert!(
+            result.content.contains("remember the milk"),
+            "{}",
+            result.content
+        );
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"exec_shell_command"), "{names:?}");
+        let system = first["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("(the workspace)"), "{system}");
+
+        let (approvals, result, _) = run_with(
+            tools::workspace::WRITE_FILE,
+            r#"{"path": "out/hello.txt", "content": "hi"}"#,
+        )
+        .await;
+        assert_eq!(approvals, 1);
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("out/hello.txt")).unwrap(),
+            "hi"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

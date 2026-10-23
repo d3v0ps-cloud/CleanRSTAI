@@ -875,6 +875,12 @@ impl SettingsUi {
                         "Web fetch",
                         "Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch.",
                     ),
+                    (
+                        &mut b.workspace,
+                        icon::FOLDER,
+                        "Workspace tools",
+                        "When a chat has a working folder (set below the message box): read_file, file_glob_search, grep_search and get_info run freely inside it; write_file, edit_file and exec_shell_command ask for approval. Paths can't leave the folder.",
+                    ),
                 ] {
                     ui.horizontal(|ui| {
                         ui.checkbox(on, egui::RichText::new(format!("{ic}  {name}")).strong());
@@ -1354,6 +1360,11 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Tools, "Tools", "Calculator tool"),
     (Tab::Tools, "Tools", "Task list / planning tool"),
     (Tab::Tools, "Tools", "Web fetch tool (read URLs)"),
+    (
+        Tab::Tools,
+        "Tools",
+        "Workspace tools (files, search, shell)",
+    ),
     (
         Tab::Subagents,
         "Subagents",

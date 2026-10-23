@@ -31,6 +31,13 @@ macOS is the primary platform; Linux and Windows are fully supported.
   Time, calculator and task list run locally without asking. Web fetch reaches the internet,
   so it asks for approval like MCP tools do ("Always allow this tool" skips that for the rest
   of the chat). Switch each one in **Settings → Built-in Tools**.
+- **Workspace**: give a chat a local working folder with **Set working directory** under the
+  message box, and the model gets tools to work in it: `read_file`, `file_glob_search`,
+  `grep_search` and `get_info` run freely; `write_file`, `edit_file` and
+  `exec_shell_command` ask for approval first. Every path is kept inside the folder (no `..`,
+  outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
+  commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
+  **Settings → Built-in Tools** or per chat.
 - **Subagents**: a `delegate` tool lets the model hand independent tasks to subagents that work
   in parallel and report back. Each subagent's progress, tools and result show in the chat, and
   their token usage counts towards the chat's totals. **Settings → Subagents** sets their
@@ -213,7 +220,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
 |---|---|
 | Providers | Name, base URL (with presets), API key, model, temperature, max tokens, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| Built-in Tools | Time & date, calculator, task list and web fetch on or off by default |
+| Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
 | General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates, export |
 
@@ -318,7 +325,7 @@ src/
   ui/             theme and icons, chat view, markdown and drawings, settings page, palette
   agent.rs        generation loop: stream, run tool calls, repeat
   approval.rs     tool-call approvals and the per-chat "Always allow" list
-  tools/          built-in tools (time, calculator, task list), per-chat tool switches
+  tools/          built-in tools (time, calculator, task list, fetch, workspace), per-chat switches
   subagent.rs     the delegate tool: parallel subagents with their own model/tool loop
   llm.rs          OpenAI-compatible /chat/completions and /models client
   sse.rs          incremental Server-Sent Events parser
