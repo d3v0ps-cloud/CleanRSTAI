@@ -1697,7 +1697,10 @@ impl ChatApp {
         if has_focus && !running {
             send = ui.input_mut(|i| {
                 let cmd_enter = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter);
+                // `consume_key` ignores an extra Shift, so check it explicitly to leave
+                // Shift+Enter to the text field as a newline.
                 let enter = self.settings.general.send_with_enter
+                    && !i.modifiers.shift
                     && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
                 cmd_enter || enter
             });
