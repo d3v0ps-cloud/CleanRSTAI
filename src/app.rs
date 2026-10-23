@@ -2159,7 +2159,7 @@ mod enter_key_tests {
 
     fn run(shift: bool) -> (bool, String) {
         let ctx = egui::Context::default();
-        let id = egui::Id::new("probe");
+        let id = egui::Id::unique("probe");
         let mut text = String::from("hi");
         let mut sent = false;
         let mods = if shift {
