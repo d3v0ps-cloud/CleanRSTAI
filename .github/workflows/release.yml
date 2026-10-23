@@ -1,7 +1,7 @@
 name: Release
 
-# Push a tag like `v0.1.0` (or run it manually with a version) to build every OS, create a
-# GitHub Release, and publish the binaries to GitHub Packages (ghcr.io, as an OCI artifact).
+# Push a tag like `v0.1.0` (or run it manually with a version) to build every OS and create a
+# GitHub Release with the binaries attached.
 # A manual run without a version only builds; the binaries are kept as workflow artifacts.
 #
 # Code signing is optional and switches on when these repository secrets exist:
@@ -224,7 +224,6 @@ jobs:
     runs-on: [self-hosted, Linux, X64, gentoo]
     permissions:
       contents: write   # create the GitHub Release
-      packages: write   # push to ghcr.io
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -244,38 +243,3 @@ jobs:
           files: dist/*
           generate_release_notes: true
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
-
-      - uses: oras-project/setup-oras@v2
-
-      - name: Publish to GitHub Packages (ghcr.io)
-        working-directory: dist
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          image="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/cleanrstai"
-          echo "$GH_TOKEN" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
-          files=()
-          for f in *; do
-            case "$f" in
-              *.zip) files+=("$f:application/zip") ;;
-              *.tar.gz) files+=("$f:application/gzip") ;;
-              *.dmg) files+=("$f:application/x-apple-diskimage") ;;
-              *.msi) files+=("$f:application/x-msi") ;;
-              *) files+=("$f:text/plain") ;;
-            esac
-          done
-          tags="${RELEASE_TAG}"
-          case "$RELEASE_TAG" in *-*) ;; *) tags="$tags,latest" ;; esac
-          oras push "$image:$tags" \
-            --artifact-type application/vnd.cleanrstai.release.v1 \
-            --annotation "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-            --annotation "org.opencontainers.image.description=CleanRSTAI desktop builds for macOS, Linux and Windows" \
-            --annotation "org.opencontainers.image.version=${RELEASE_TAG}" \
-            "${files[@]}"
-          {
-            echo "### Published to GitHub Packages"
-            echo
-            echo '```sh'
-            echo "oras pull $image:${RELEASE_TAG}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"

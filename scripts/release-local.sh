@@ -3,8 +3,7 @@
 #
 #   scripts/release-local.sh                 # checks + tests, then build every target this
 #                                            # machine can build into dist/v<version>/
-#   scripts/release-local.sh --publish       # ...then create the GitHub Release and push the
-#                                            # files to GitHub Packages (ghcr.io)
+#   scripts/release-local.sh --publish       # ...then create the GitHub Release
 #   scripts/release-local.sh --skip-tests    # build only
 #
 # The version comes from Cargo.toml; the tag is v<version>. Targets are built when their
@@ -14,11 +13,10 @@
 #                            the .msi needs wixl (msitools)
 #   macOS universal          only on a Mac (cargo-bundle, lipo, hdiutil)
 #
-# Publishing needs `gh`, and `oras` for GitHub Packages, plus a token in GH_TOKEN (or
-# GITHUB_TOKEN): a classic personal access token with the `repo` and `write:packages` scopes
-# (ghcr.io doesn't accept fine-grained tokens). The commit being released must already be
-# on GitHub. Files already in dist/v<version>/ (e.g. a macOS build from a Mac or from an
-# earlier workflow run) are published too, so build on a Mac first if you need it.
+# Publishing needs `gh` and a token in GH_TOKEN (or GITHUB_TOKEN) that can create releases
+# (`repo` scope, or contents: write). The commit being released must already be on GitHub.
+# Files already in dist/v<version>/ (e.g. a macOS build from a Mac or from an earlier
+# workflow run) are published too, so build on a Mac first if you need it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -162,34 +160,6 @@ if [ "$publish" = 1 ]; then
   gh release create "$tag" "$dist"/* --repo "$repo" --target "$commit" \
     --title "$tag" --generate-notes --notes "$notes" \
     $([[ "$tag" == *-* ]] && echo --prerelease)
-
-  step "GitHub Packages (ghcr.io)"
-  if have oras; then
-    image="ghcr.io/$(echo "${repo%%/*}" | tr '[:upper:]' '[:lower:]')/cleanrstai"
-    login=$(gh api user --jq .login)
-    echo "$GH_TOKEN" | oras login ghcr.io -u "$login" --password-stdin
-    files=()
-    for f in "$dist"/*; do
-      name=$(basename "$f")
-      case "$name" in
-        *.zip) files+=("$name:application/zip") ;;
-        *.tar.gz) files+=("$name:application/gzip") ;;
-        *.dmg) files+=("$name:application/x-apple-diskimage") ;;
-        *.msi) files+=("$name:application/x-msi") ;;
-        *) files+=("$name:text/plain") ;;
-      esac
-    done
-    tags="$tag"
-    [[ "$tag" == *-* ]] || tags="$tag,latest"
-    (cd "$dist" && oras push "$image:$tags" \
-      --artifact-type application/vnd.cleanrstai.release.v1 \
-      --annotation "org.opencontainers.image.source=https://github.com/$repo" \
-      --annotation "org.opencontainers.image.description=CleanRSTAI desktop builds" \
-      --annotation "org.opencontainers.image.version=$tag" \
-      "${files[@]}")
-  else
-    skip ghcr "oras not found; the GitHub Release was published, GitHub Packages was not"
-  fi
 fi
 
 step "Done: $tag"
