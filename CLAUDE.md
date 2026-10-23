@@ -97,6 +97,10 @@ prefill/decode, cost, served model).
   drawings: closed top-level ```` ```mermaid ```` / ```` ```svg ```` blocks and inline
   `<svg>`, rendered to SVG and shown through egui's SVG loader. Web images become links
   unless "Load web images in replies" is on.
+- `egui_commonmark_backend` is vendored in `vendor/` (via `[patch.crates-io]`) for real bold
+  text (the `wght` font axis) and the code-block copy button; changes are marked
+  `CleanRSTAI:` and listed in `vendor/egui_commonmark_backend/VENDORED.md`. Re-apply them when
+  upgrading `egui_commonmark`.
 - Widget ids inside a reply are scoped by message index (`push_id`), and tool results are
   matched to the tool messages that directly follow their assistant message, because some
   servers reuse call ids like `call_0` across turns.
