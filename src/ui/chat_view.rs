@@ -705,7 +705,7 @@ pub fn greeting(ui: &mut egui::Ui, name: Option<&str>) {
         Some(n) => format!("{text}, {n}"),
         None => text.to_owned(),
     };
-    let font = egui::FontId::new(34.0, egui::FontFamily::Name(theme::SERIF.into()));
+    let font = egui::FontId::new(34.0, egui::FontFamily::Proportional);
     // Centre the icon and the words together.
     let width = ui
         .ctx()

@@ -97,10 +97,10 @@ prefill/decode, cost, served model).
 
 - The look follows the Claude desktop app: palette, fonts and widget styling live in
   `ui/theme.rs` (`theme::palette(dark)`). Fonts are bundled in `assets/fonts` (Instrument
-  Sans for the interface, Newsreader serif for the greeting and replies, IBM Plex Mono for
-  code, Phosphor for icons; codepoints in `theme::icon`).
+  Sans for the interface and replies, IBM Plex Mono for code, Phosphor for icons; codepoints
+  in `theme::icon`).
 - egui 0.37 takes button text from `TextStyle::Body`, so `Body` is the sans interface style;
-  prose uses the custom `theme::reading()` style, applied around markdown in `ui/markdown.rs`.
+  prose uses `TextStyle::Body` (Instrument Sans), applied around markdown in `ui/markdown.rs`.
 - `ui/markdown.rs` splits replies into markdown segments (rendered by `egui_commonmark`) and
   drawings: closed top-level ```` ```mermaid ```` / ```` ```svg ```` blocks and inline
   `<svg>`, rendered to SVG and shown through egui's SVG loader. Web images become links

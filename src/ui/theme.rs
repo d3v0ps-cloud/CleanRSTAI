@@ -1,7 +1,6 @@
 //! Visual design: a warm charcoal (dark) or warm paper (light) palette with one muted
-//! terracotta accent; Instrument Sans for the interface, Newsreader (a serif) for the
-//! greeting and the model's replies, IBM Plex Mono for code. Soft 8px corners, quiet
-//! borders, no shadows or glows.
+//! terracotta accent; Instrument Sans for the interface, the greeting, and the model's
+//! replies, IBM Plex Mono for code. Soft 8px corners, quiet borders, no shadows or glows.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
@@ -129,15 +128,12 @@ pub fn success(dark: bool) -> Color32 {
     palette(dark).ok
 }
 
-/// The serif family (Newsreader).
-pub const SERIF: &str = "serif";
-
-/// The text style for prose: the model's replies. Interface text uses the sans `Body`.
+/// The text style for prose: the model's replies. Uses the same sans as the interface.
 pub fn reading() -> TextStyle {
-    TextStyle::Name("reading".into())
+    TextStyle::Body
 }
 
-/// Instrument Sans for the interface, Newsreader for prose, Plex Mono for code, and
+/// Instrument Sans for the interface and prose, Plex Mono for code, and
 /// Phosphor icons as a fallback for each.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
@@ -149,10 +145,6 @@ pub fn install_fonts(ctx: &egui::Context) {
     add(
         "instrument-sans",
         include_bytes!("../../assets/fonts/InstrumentSans.ttf"),
-    );
-    add(
-        "newsreader",
-        include_bytes!("../../assets/fonts/Newsreader.ttf"),
     );
     add(
         "plex-mono",
@@ -170,11 +162,6 @@ pub fn install_fonts(ctx: &egui::Context) {
             FontFamily::Proportional,
         ),
         (FontFamily::Monospace, "plex-mono", FontFamily::Monospace),
-        (
-            FontFamily::Name(SERIF.into()),
-            "newsreader",
-            FontFamily::Proportional,
-        ),
     ];
     let lists: Vec<_> = families
         .iter()
@@ -196,11 +183,10 @@ pub fn apply(ctx: &egui::Context) {
         ctx.style_mut_of(theme, |style| {
             let dark = theme == egui::Theme::Dark;
             let p = palette(dark);
-            let serif = |size| FontId::new(size, FontFamily::Name(SERIF.into()));
             style.text_styles = [
-                (TextStyle::Heading, serif(23.0)),
+                (TextStyle::Heading, FontId::proportional(23.0)),
                 (TextStyle::Body, FontId::proportional(14.5)),
-                (reading(), serif(17.0)),
+                (reading(), FontId::proportional(17.0)),
                 (TextStyle::Button, FontId::proportional(14.0)),
                 (TextStyle::Small, FontId::proportional(12.5)),
                 (TextStyle::Monospace, FontId::monospace(13.0)),

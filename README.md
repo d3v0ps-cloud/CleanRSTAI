@@ -75,8 +75,7 @@ source; the release workflow skips it until there is a Windows runner.
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
   for that tool or MCP server for the rest of the chat (until the app quits).
 - **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
-  accent; Instrument Sans for the interface and Newsreader, a serif, for the greeting and the
-  model's replies. A new chat opens on a greeting with the message box centred under it and
+  accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
   the model picker beneath; your messages sit in bubbles on the right, replies run full
   width, and tool calls show as collapsible cards. A collapsible sidebar with search, pinned
   chats and recents, a full-page searchable settings screen and a ⌘K command palette. Fonts
