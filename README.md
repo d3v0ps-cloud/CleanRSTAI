@@ -87,10 +87,21 @@ source; the release workflow skips it until there is a Windows runner.
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
   show as links unless you turn on **Load web images in replies** in Settings → General.
-- **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the **+** button
-  under the message box or by dropping them on the window. Images go to vision models as `image_url` parts and text files
-  are included inline. Images returned by MCP tools appear in the chat; click any image to
-  enlarge it.
+- **Attachments**: attach files with the **+** button under the message box or by dropping
+  them on the window.
+  - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to
+    enlarge it. Images returned by MCP tools appear in the chat too.
+  - **Documents** are sent as their text: PDF (`.pdf`), Word (`.docx`, `.doc`), Excel
+    (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`), PowerPoint (`.pptx`, `.ppt`, with speaker notes),
+    OpenDocument (`.odt`, `.ods`, `.odp`) and RTF. Spreadsheets become one CSV block per
+    sheet and slides are numbered. Scanned PDFs without a text layer and password-protected
+    files can't be read.
+  - **Text files** of any kind (code, Markdown, CSV, JSON, logs…) are included inline, in
+    UTF-8, UTF-16 or Windows-1252.
+
+  Files up to 50 MB can be attached; text beyond a million characters is cut, with a note
+  saying so. MCP resources that are PDFs or Office documents are attached as text the same
+  way.
 - **Export a chat as Markdown** from its right-click menu in the sidebar, including tool calls,
   results and images.
 - **Update check**: at startup (optional) and from **Settings → General**, CleanRSTAI looks
@@ -340,7 +351,8 @@ src/
   config.rs       settings model, persistence, mcpServers JSON import
   export.rs       settings / conversations export and import
   secrets.rs      OS keychain storage for API keys and tokens
-  attach.rs       image and text file attachments
+  attach.rs       image, document and text file attachments
+  documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check
   types.rs        messages and conversation storage

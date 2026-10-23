@@ -74,6 +74,14 @@ tools; time/calculator/fetch only when allowed for subagents). Progress streams 
 loopback redirect) in `mcp/oauth.rs`, and `McpManager`, which keeps connections in sync with
 settings, refreshes tools/resources/prompts on `list_changed`, and builds the `ToolRouter`.
 
+**Attachments** (`attach.rs`): images stay base64 for vision models; everything else becomes
+text inlined into the message as `<file name="…">`. `documents.rs` recognises documents by
+content (not extension) and extracts their text: `pdf-extract` for PDF, `zip` + `quick-xml`
+for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers for legacy
+`.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
+`tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
+`AppEvent::FileAttached`.
+
 **Persistence**: settings are one JSON file (`config.rs`, paths via `directories` with
 `ProjectDirs("net", "bukn", "CleanRSTAI")`); each conversation is its own JSON file
 (`types::Conversation`). New fields must be `#[serde(default)]` (usually with

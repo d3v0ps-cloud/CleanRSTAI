@@ -303,7 +303,7 @@ impl McpClient {
     }
 
     /// Read a resource as attachments: text contents become text files, blobs with an
-    /// image type become images.
+    /// image type become images, and other blobs (PDFs, Office documents) their text.
     pub async fn read_resource(&self, uri: &str) -> Result<Vec<crate::attach::Attachment>> {
         let res = self
             .request(
@@ -481,13 +481,20 @@ fn content_to_attachment(c: &Value) -> Option<crate::attach::Attachment> {
         });
     }
     let blob = c.get("blob").and_then(|b| b.as_str())?;
-    let mime = mime.filter(|m| m.starts_with("image/"))?;
-    Some(crate::attach::Attachment {
-        name,
-        mime,
-        text: None,
-        data: Some(blob.to_owned()),
-    })
+    if let Some(mime) = mime.filter(|m| m.starts_with("image/")) {
+        return Some(crate::attach::Attachment {
+            name,
+            mime,
+            text: None,
+            data: Some(blob.to_owned()),
+        });
+    }
+    // Other blobs (PDFs, Office documents, text in another encoding) as their text.
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(blob)
+        .ok()?;
+    crate::attach::Attachment::from_bytes(name, bytes).ok()
 }
 
 /// Convert a `prompts/get` result into messages.
@@ -642,6 +649,39 @@ mod tests {
         assert_eq!(out.images.len(), 1);
         assert_eq!(out.images[0].mime, "image/png");
         assert_eq!(out.images[0].data.as_deref(), Some("..."));
+    }
+
+    #[test]
+    fn resource_blobs_become_images_or_document_text() {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let docx = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/documents/report.docx"
+        ))
+        .unwrap();
+        let doc = content_to_attachment(&json!({
+            "uri": "file:///reports/report.docx",
+            "mimeType": "application/octet-stream",
+            "blob": b64(&docx),
+        }))
+        .unwrap();
+        assert_eq!(doc.name, "report.docx");
+        assert!(doc.text.unwrap().contains("ZEBRA-7"));
+
+        let img = content_to_attachment(&json!({
+            "uri": "file:///a.png", "mimeType": "image/png", "blob": "iVBOR"
+        }))
+        .unwrap();
+        assert_eq!(img.data.as_deref(), Some("iVBOR"));
+
+        // Unrecognised binary data is still left out.
+        assert!(
+            content_to_attachment(&json!({
+                "uri": "file:///a.bin", "blob": b64(&[0, 1, 2, 3])
+            }))
+            .is_none()
+        );
     }
 
     #[test]

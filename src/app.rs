@@ -69,6 +69,8 @@ pub struct ChatApp {
     notice: Option<String>,
     keychain_warned: bool,
     pending_attachments: Vec<Attachment>,
+    /// Files still being read for `pending_attachments`.
+    reading_files: usize,
     images: ImageCache,
     viewing: Option<(String, egui::load::Bytes, String)>,
     prompt_form: Option<PromptForm>,
@@ -87,6 +89,29 @@ struct PromptForm {
     server_id: String,
     prompt: crate::mcp::McpPrompt,
     values: std::collections::BTreeMap<String, String>,
+}
+
+/// A file to attach: picked in the file dialog, or dropped on the window.
+enum FileSource {
+    Path(std::path::PathBuf),
+    Dropped(egui::DroppedFileHandle),
+}
+
+impl FileSource {
+    fn read(self) -> anyhow::Result<Attachment> {
+        match self {
+            Self::Path(p) => Attachment::from_path(&p),
+            Self::Dropped(f) => {
+                let name = f
+                    .path()
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "file".into());
+                let bytes = f.bytes().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+                Attachment::from_bytes(name, bytes)
+            }
+        }
+    }
 }
 
 /// "aaron.bolton" or "aaron" → "Aaron", from the OS account; `None` for root or when unset.
@@ -154,6 +179,7 @@ impl ChatApp {
             notice: loaded.notice,
             keychain_warned: false,
             pending_attachments: Vec::new(),
+            reading_files: 0,
             images: ImageCache::new(),
             viewing: None,
             prompt_form: None,
@@ -439,6 +465,10 @@ impl ChatApp {
         if text.is_empty() && self.pending_attachments.is_empty() {
             return;
         }
+        if self.reading_files > 0 {
+            self.notice = Some("Wait for the attached files to finish reading.".into());
+            return;
+        }
         if self.current.is_none_or(|id| self.conv_mut(id).is_none()) {
             self.new_chat();
         }
@@ -567,6 +597,20 @@ impl ChatApp {
                             }
                             Err(e) => ui.models_error = Some(e),
                         }
+                    }
+                }
+                AppEvent::FileAttached { result } => {
+                    self.reading_files = self.reading_files.saturating_sub(1);
+                    match result {
+                        Ok(a) => self.pending_attachments.push(a),
+                        // Several files can fail in one drop; list them together.
+                        Err(e) => match &mut self.notice {
+                            Some(n) if n.starts_with("Couldn't attach: ") => {
+                                n.push_str("; ");
+                                n.push_str(&e);
+                            }
+                            n => *n = Some(format!("Couldn't attach: {e}")),
+                        },
                     }
                 }
                 AppEvent::McpResourceRead { name, result } => match result {
@@ -955,39 +999,29 @@ impl ChatApp {
     }
 
     fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>) {
-        let mut errors = Vec::new();
-        for p in paths {
-            match Attachment::from_path(&p) {
-                Ok(a) => self.pending_attachments.push(a),
-                Err(e) => errors.push(format!("{e:#}")),
-            }
-        }
-        if !errors.is_empty() {
-            self.notice = Some(format!("Couldn't attach: {}", errors.join("; ")));
-        }
+        self.read_files(paths.into_iter().map(FileSource::Path).collect());
     }
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let mut errors = Vec::new();
-        for f in dropped {
-            let name = f
-                .path()
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "file".into());
-            let result = f
-                .bytes()
-                .map_err(|e| anyhow::anyhow!("{name}: {e}"))
-                .and_then(|bytes| Attachment::from_bytes(name, bytes));
-            match result {
-                Ok(a) => self.pending_attachments.push(a),
-                Err(e) => errors.push(format!("{e:#}")),
+        self.read_files(dropped.into_iter().map(FileSource::Dropped).collect());
+    }
+
+    /// Read files into attachments off the UI thread, since extracting a large document's
+    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`.
+    fn read_files(&mut self, files: Vec<FileSource>) {
+        if files.is_empty() {
+            return;
+        }
+        self.reading_files += files.len();
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn_blocking(move || {
+            for file in files {
+                let result = file.read().map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AppEvent::FileAttached { result });
+                ctx.request_repaint();
             }
-        }
-        if !errors.is_empty() {
-            self.notice = Some(format!("Couldn't attach: {}", errors.join("; ")));
-        }
+        });
     }
 
     /// Add imported chats that aren't already present; returns a status message.
@@ -1699,6 +1733,20 @@ impl ChatApp {
                     {
                         self.pending_attachments.remove(n);
                     }
+                    if self.reading_files > 0 {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            let n = self.reading_files;
+                            ui.label(
+                                RichText::new(format!(
+                                    "Reading {n} file{}…",
+                                    if n == 1 { "" } else { "s" }
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                        });
+                    }
                     let hint = if fresh {
                         "How can I help you today?"
                     } else {
@@ -1754,8 +1802,9 @@ impl ChatApp {
                                     self.stop(cid);
                                 }
                             } else {
-                                let can_send = !self.input.trim().is_empty()
-                                    || !self.pending_attachments.is_empty();
+                                let can_send = (!self.input.trim().is_empty()
+                                    || !self.pending_attachments.is_empty())
+                                    && self.reading_files == 0;
                                 let fill = if can_send { p.signal } else { p.selected };
                                 if ui
                                     .add_enabled(
