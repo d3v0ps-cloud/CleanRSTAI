@@ -22,8 +22,9 @@ items are still open.
 
 - [x] Visual refresh: typography, spacing, colour palette, message layout, icons in place of
   emoji glyphs
-- [x] Collapsible sidebar, conversation grouping (Today / Yesterday / Last 7 days) and pinned
-  chats
+- [x] Collapsible sidebar with search, pinned chats and recents
+- [x] Quieter look in **v0.5.0**: warm charcoal and paper themes, a serif for replies, a
+  greeting on new chats, user messages in bubbles and the model picker under the message box
 - [x] Compact tool-call cards, with arguments and results expandable
 - [x] Settings as a full page with a search box
 - [x] Command palette (⌘K) and keyboard shortcuts
@@ -129,5 +130,7 @@ back.
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
+- [x] Run CI and releases on self-hosted runners (Linux x64 and macOS ARM64)
+- [ ] A Windows runner, so CI and releases build Windows again
 - [x] Turn on "Automatically delete head branches" in the repository settings, and delete the
   merged `claude/*` branches

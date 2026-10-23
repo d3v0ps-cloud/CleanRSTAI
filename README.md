@@ -3,19 +3,26 @@
 A fast, native desktop AI chat client written in Rust. It talks to any **OpenAI-compatible**
 endpoint and gives the model tools through **MCP servers** (stdio and Streamable HTTP).
 
-macOS is the primary platform; Linux and Windows are fully supported.
+macOS is the primary platform and Linux is fully supported. Windows works when built from
+source; the release workflow skips it until there is a Windows runner.
 
-![Chat with an MCP tool call](docs/screenshot.png)
+![A chat working in a project folder: the model searches the code, reads a file and suggests a fix](docs/screenshot.png)
 
 ## Features
 
 - **Any OpenAI-compatible API**: OpenAI, OpenRouter, Groq, Mistral, DeepSeek, Together, Gemini,
   or local servers such as Ollama, LM Studio, llama.cpp and vLLM. You can configure several
-  provider profiles and switch between them from the toolbar.
+  provider profiles and switch provider and model from the picker under the message box (or
+  with ⌘K).
 - **Model discovery**: *Fetch models* calls `GET /models` and fills the model picker.
 - **Streaming** responses (SSE), with a non-streaming fallback for servers that don't support it.
-- **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thinking*
-  section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
+- **Speed and token stats**: under every reply, prefill and decode speed, prompt time and
+  tokens in and out, plus a running total for the chat. llama.cpp's own `timings` are used
+  when the server reports them, and the cost when OpenRouter or a LiteLLM proxy reports it;
+  otherwise speeds are measured from the stream. Set **Server type** on a provider (or click
+  **Detect**) to get the llama.cpp or LiteLLM extras.
+- **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thought
+  process* section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
   expanded only while the model is thinking.
 - **Built-in tools** that work without any MCP server:
   - **Time & date**: the current date, time, weekday and time zone, and the time at other UTC
@@ -44,11 +51,9 @@ macOS is the primary platform; Linux and Windows are fully supported.
   provider and model (or lets the model pick a provider profile per task, e.g. a fast local
   model for simple tasks), system prompt, tool access, how many run at once, round limit and
   time limit.
-- **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools
-  and every MCP server and tool, each with a switch for the current chat. Settings keeps the
-  defaults for new chats.
-
-![Task list, subagents and the calculator in a chat](docs/tools-subagents.png)
+- **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools,
+  the workspace tools when the chat has a folder, and every MCP server and tool, each with a
+  switch for the current chat. Settings keeps the defaults for new chats.
 - **MCP client**:
   - **stdio** servers (`npx`, `uvx`, `docker`, any binary) with arguments, environment
     variables and a working directory.
@@ -82,8 +87,8 @@ macOS is the primary platform; Linux and Windows are fully supported.
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
   show as links unless you turn on **Load web images in replies** in Settings → General.
-- **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the paperclip button or by
-  dropping them on the window. Images go to vision models as `image_url` parts and text files
+- **Attachments**: attach images (PNG, JPEG, GIF, WebP) and text files with the **+** button
+  under the message box or by dropping them on the window. Images go to vision models as `image_url` parts and text files
   are included inline. Images returned by MCP tools appear in the chat; click any image to
   enlarge it.
 - **Export a chat as Markdown** from its right-click menu in the sidebar, including tool calls,
@@ -93,7 +98,14 @@ macOS is the primary platform; Linux and Windows are fully supported.
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
   (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
 
-![MCP server settings](docs/settings-mcp.png)
+### Screenshots
+
+| | |
+|---|---|
+| ![A new chat: greeting, message box and model picker](docs/new-chat.png) | ![The tools menu with built-in, workspace and MCP tools](docs/tools-menu.png) |
+| A new chat | Per-chat tool switches |
+| ![Subagents, the calculator and the task list in a chat](docs/tools-subagents.png) | ![MCP server settings](docs/settings-mcp.png) |
+| Subagents, calculator and task list | MCP server settings |
 
 ## Build & run
 
@@ -114,7 +126,7 @@ open target/release/bundle/osx/CleanRSTAI.app
 ## Releases
 
 > **CI and releases run on self-hosted runners**, so they use no GitHub Actions minutes:
-> a Linux x64 machine labelled `gentoo` (CI, both Linux release builds, publishing) and a
+> a Linux x64 machine labelled `gentoo` (CI, both Linux release builds, the GitHub Release) and a
 > macOS ARM64 machine (CI, the macOS release build). Windows builds are disabled until there
 > is a Windows runner; `scripts/release-local.sh` (below) can still build the Windows files.
 >
@@ -126,7 +138,7 @@ open target/release/bundle/osx/CleanRSTAI.app
 
 ```sh
 scripts/release-local.sh              # fmt, clippy, unit + e2e tests, then build into dist/v<version>/
-scripts/release-local.sh --publish    # ...and create the GitHub Release and push to ghcr.io
+scripts/release-local.sh --publish    # ...and create the GitHub Release
 scripts/release-local.sh --skip-tests # build only
 ```
 
@@ -140,10 +152,9 @@ every target the machine can:
 | Windows x86_64 `.zip` / `.msi` | MinGW (`x86_64-w64-mingw32-gcc`); the `.msi` also needs `wixl` (msitools) |
 | macOS universal `.zip` / `.dmg` | a Mac |
 
-`--publish` needs `gh`, `oras`, and a token in `GH_TOKEN` (or `GITHUB_TOKEN`): a classic
-personal access token with the `repo` and `write:packages` scopes (GitHub Packages' container
-registry doesn't accept fine-grained tokens). Targets that could not
-be built are listed in the release notes.
+`--publish` needs `gh` and a token in `GH_TOKEN` (or `GITHUB_TOKEN`) that can create
+releases (a classic token with the `repo` scope, or a fine-grained one with *Contents: write*).
+Targets that could not be built are listed in the release notes.
 
 ### Releasing with GitHub Actions
 
@@ -151,7 +162,7 @@ Pushing a version tag runs `.github/workflows/release.yml`:
 
 ```sh
 # bump `version` in Cargo.toml first; the tag must match it
-git tag v0.1.0 && git push origin v0.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 It builds:
@@ -165,18 +176,11 @@ It builds:
 | `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer (Start menu shortcut, upgrades in place); *not built while Windows is disabled* |
 | `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe`; *not built while Windows is disabled* |
 
-plus `SHA256SUMS.txt`, and publishes them in two places:
-
-- **GitHub Releases**: a release for the tag with the files attached (tags containing `-`, such
-  as `v0.2.0-beta.1`, are marked as pre-releases).
-- **GitHub Packages**: an OCI artifact at `ghcr.io/<owner>/cleanrstai:<tag>`. Stable versions
-  are also tagged `latest`. Download with [ORAS](https://oras.land):
-  ```sh
-  oras pull ghcr.io/d3v0ps-cloud/cleanrstai:v0.1.0
-  ```
+plus `SHA256SUMS.txt`, and attaches them to a GitHub Release for the tag (tags containing `-`,
+such as `v1.0.0-beta.1`, are marked as pre-releases).
 
 You can also release without pushing a tag: *Actions → Release → Run workflow* with a
-`version` such as `v0.1.0` creates the tag on the selected branch and publishes. Leaving
+`version` such as `vX.Y.Z` creates the tag on the selected branch and publishes. Leaving
 `version` empty only builds; the files are kept as workflow artifacts.
 
 ### Code signing
@@ -218,7 +222,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
 
 | Tab | What you can set |
 |---|---|
-| Providers | Name, base URL (with presets), API key, model, temperature, max tokens, streaming, timeout, extra headers |
+| Providers | Name, base URL (with presets), API key, model, temperature, max tokens, server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
@@ -310,11 +314,14 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 ## Development
 
 ```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test                  # unit tests
 cargo test -- --ignored     # end-to-end tests: mock LLM + the reference MCP "everything"
                             # server over stdio and Streamable HTTP (needs Node/npx)
-cargo clippy --all-targets
 ```
+
+CI runs the same checks on every push and pull request.
 
 Source layout:
 
@@ -329,7 +336,7 @@ src/
   subagent.rs     the delegate tool: parallel subagents with their own model/tool loop
   llm.rs          OpenAI-compatible /chat/completions and /models client
   sse.rs          incremental Server-Sent Events parser
-  mcp/            MCP client: stdio and Streamable HTTP transports, connection manager
+  mcp/            MCP client: stdio and Streamable HTTP transports, OAuth, connection manager
   config.rs       settings model, persistence, mcpServers JSON import
   export.rs       settings / conversations export and import
   secrets.rs      OS keychain storage for API keys and tokens
@@ -338,6 +345,7 @@ src/
   update.rs       GitHub Releases update check
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
+  testutil.rs     tiny scripted HTTP server for tests
 ```
 
 The UI is built with [egui](https://github.com/emilk/egui) and runs on the main thread. Network
