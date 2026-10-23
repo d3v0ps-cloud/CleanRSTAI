@@ -147,32 +147,35 @@ fn user_message(
     actions: &mut Vec<Action>,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
-    let max_w = ui.available_width() * 0.8;
-    // Size the bubble to its content: the longest line, or room for a thumbnail.
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let text_w = ui.ctx().fonts_mut(|f| {
-        f.layout_no_wrap(msg.content.clone(), font, egui::Color32::WHITE)
-            .size()
-            .x
-    });
-    let mut width = text_w.ceil() + 2.0;
-    if msg.attachments.iter().any(|a| a.is_image()) {
-        width = width.max(320.0);
-    } else if !msg.attachments.is_empty() {
-        width = width.max(240.0);
+    let margin = 14.0;
+    let max_w = ui.available_width() * 0.8 - 2.0 * margin;
+    // Size the bubble to its content: the longest line, a file's header (with room for the
+    // expand arrow), or room for a thumbnail.
+    let text_width = |ui: &egui::Ui, text: String, style: egui::TextStyle| {
+        let font = style.resolve(ui.style());
+        ui.ctx()
+            .fonts_mut(|f| f.layout_no_wrap(text, font, egui::Color32::WHITE).size().x)
+    };
+    let mut width = text_width(ui, msg.content.clone(), egui::TextStyle::Body).ceil() + 2.0;
+    for a in &msg.attachments {
+        width = width.max(if a.is_image() {
+            320.0
+        } else {
+            text_width(ui, attach_ui::file_label(a), egui::TextStyle::Body) + 28.0
+        });
     }
     let width = width.min(max_w);
-    // Your messages sit in a bubble on the right; replies run full width.
-    ui.horizontal(|ui| {
-        let margin = 14.0;
-        ui.add_space((ui.available_width() - width - 2.0 * margin).max(0.0));
+    // Your messages sit in a bubble on the right; replies run full width. Laid out from the
+    // right edge, so the bubble can never reach past the column.
+    ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
         egui::Frame::new()
             .fill(p.raised)
             .corner_radius(14)
             .inner_margin(egui::Margin::symmetric(margin as i8, 10))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(width);
+                // Narrow the (right-aligned) frame first, then lay the content out from its left.
+                ui.set_width(width);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                     if !msg.content.is_empty() {
                         ui.add(
                             egui::Label::new(RichText::new(&msg.content).color(p.ink))

@@ -72,6 +72,8 @@ items are still open.
 ## 7. Richer chat input and output
 
 - [x] Attach images and files, for vision-capable models
+- [x] Attach PDF, Word, Excel, PowerPoint (current and 97–2003 formats), OpenDocument and RTF
+  documents as their text
 - [x] Render images returned by MCP tools
 - [x] Export a single chat as Markdown
 - [x] Rich markdown rendering in chat, including code blocks, tables, images and mermaid diagrams

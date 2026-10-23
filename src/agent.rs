@@ -58,6 +58,10 @@ pub enum AppEvent {
         name: String,
         result: Result<Vec<crate::attach::Attachment>, String>,
     },
+    /// A file read (and, for documents, its text extracted) for the next message.
+    FileAttached {
+        result: Result<crate::attach::Attachment, String>,
+    },
     /// Messages from an MCP prompt, to insert into the chat.
     McpPromptReady {
         name: String,

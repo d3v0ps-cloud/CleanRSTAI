@@ -66,9 +66,14 @@ pub fn show(
     }
     for (n, a) in list.iter().enumerate() {
         if let Some(text) = &a.text {
-            egui::CollapsingHeader::new(format!("{}  {} · {}", icon::FILE, a.name, a.size_label()))
-                .id_salt((key, "file", n))
-                .show(ui, |ui| {
+            let id = ui.make_persistent_id((key, "file", n));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+                .show_header(ui, |ui| {
+                    // Truncated, so a long file name can't push the message past the window.
+                    ui.add(egui::Label::new(file_label(a)).truncate())
+                        .on_hover_text(file_label(a));
+                })
+                .body(|ui| {
                     egui::ScrollArea::vertical()
                         .max_height(320.0)
                         .show(ui, |ui| code_block(ui, text));
@@ -76,6 +81,11 @@ pub fn show(
         }
     }
     clicked
+}
+
+/// "📄  report.pdf · PDF · 7 lines", the header of a text or document attachment.
+pub fn file_label(a: &Attachment) -> String {
+    format!("{}  {} · {}", icon::FILE, a.name, a.size_label())
 }
 
 /// Chips for attachments waiting to be sent. Returns the index the user removed.

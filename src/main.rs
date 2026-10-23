@@ -6,6 +6,7 @@ mod app;
 mod approval;
 mod attach;
 mod config;
+mod documents;
 mod env_path;
 mod export;
 mod llm;
