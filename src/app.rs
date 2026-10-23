@@ -1697,11 +1697,7 @@ impl ChatApp {
         if has_focus && !running {
             send = ui.input_mut(|i| {
                 let cmd_enter = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter);
-                // `consume_key` ignores an extra Shift, so check it explicitly to leave
-                // Shift+Enter to the text field as a newline.
-                let enter = self.settings.general.send_with_enter
-                    && !i.modifiers.shift
-                    && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                let enter = self.settings.general.send_with_enter && consume_plain_enter(i);
                 cmd_enter || enter
             });
         }
@@ -2145,5 +2141,57 @@ impl eframe::App for ChatApp {
         if let Some(cmd) = self.palette.show(&ctx, &entries) {
             self.run_command(cmd, &ctx);
         }
+    }
+}
+
+/// Consume an Enter press that has no Shift held. `InputState::consume_key` ignores an extra
+/// Shift, so Shift+Enter has to be left alone here for the text field to insert a newline.
+fn consume_plain_enter(i: &mut egui::InputState) -> bool {
+    let shifted = i.events.iter().any(|e| {
+        matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.shift)
+    });
+    !shifted && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+}
+
+#[cfg(test)]
+mod enter_key_tests {
+    use eframe::egui;
+
+    fn run(shift: bool) -> (bool, String) {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("probe");
+        let mut text = String::from("hi");
+        let mut sent = false;
+        let mods = if shift {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        for frame in 0..3 {
+            let mut raw = egui::RawInput::default();
+            if frame == 1 {
+                raw.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: Some(egui::Key::Enter),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: mods,
+                });
+            }
+            let mut out = ctx.run_ui(raw, |ui| {
+                ui.memory_mut(|m| m.request_focus(id));
+                let s = ui.input_mut(super::consume_plain_enter);
+                sent |= s;
+                ui.add(egui::TextEdit::multiline(&mut text).id(id).lock_focus(true));
+            });
+            out.textures_delta.clear();
+        }
+        (sent, text)
+    }
+
+    #[test]
+    fn shift_enter_inserts_newline_and_enter_sends() {
+        assert_eq!(run(true), (false, "hi\n".to_owned()));
+        assert_eq!(run(false), (true, "hi".to_owned()));
     }
 }
