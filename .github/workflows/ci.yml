@@ -19,6 +19,14 @@ env:
 jobs:
   build:
     name: ${{ matrix.name }}
+    # The runners are our own machines, and the repository is public: never run a pull
+    # request from a fork on them (it could change the build to run anything). Pushes,
+    # manual runs and PRs from branches of this repository still run. A fork's PR could edit
+    # this line too, so "Require approval for all external contributors" (Settings → Actions)
+    # stays on as well: check a fork's changes to .github/ before approving its run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
