@@ -28,11 +28,15 @@ pub enum SettingsAction {
     RefreshTools(String),
     SignIn(String),
     SignOut(String),
-    ExportSettings { include_secrets: bool },
+    ExportSettings {
+        include_secrets: bool,
+    },
     ExportConversations,
     ImportSettings,
     ImportConversations,
-    CheckForUpdates,
+    /// Check the given "Update from" setting (the draft's, so it works before saving).
+    CheckForUpdates(String),
+    InstallUpdate,
 }
 
 pub struct SettingsUi {
@@ -58,6 +62,8 @@ pub struct SettingsUi {
     pub checking_update: bool,
     /// Outcome of the last manual update check: Ok(message) or Err(error).
     pub update_status: Option<Result<String, String>>,
+    /// The last check found a release this build can install itself.
+    pub update_available: bool,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -109,6 +115,7 @@ impl SettingsUi {
             pending_import: None,
             checking_update: false,
             update_status: None,
+            update_available: false,
         }
     }
 
@@ -1158,6 +1165,23 @@ impl SettingsUi {
                                 "Check GitHub for a new release at startup",
                             );
                             ui.horizontal(|ui| {
+                                ui.label("Update from");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut g.update_url)
+                                        .hint_text("owner/repo or a releases API URL")
+                                        .desired_width(380.0),
+                                )
+                                .on_hover_text(
+                                    "A GitHub owner/repo, a github.com link, or a URL that \
+                                     answers like GitHub's releases/latest API",
+                                );
+                                if g.update_url != crate::update::LATEST_RELEASE_URL
+                                    && ui.button("Reset").clicked()
+                                {
+                                    g.update_url = crate::update::LATEST_RELEASE_URL.into();
+                                }
+                            });
+                            ui.horizontal(|ui| {
                                 if ui
                                     .add_enabled(
                                         !self.checking_update,
@@ -1167,7 +1191,9 @@ impl SettingsUi {
                                 {
                                     self.checking_update = true;
                                     self.update_status = None;
-                                    actions.push(SettingsAction::CheckForUpdates);
+                                    actions.push(SettingsAction::CheckForUpdates(
+                                        g.update_url.clone(),
+                                    ));
                                 }
                                 if self.checking_update {
                                     ui.spinner();
@@ -1176,7 +1202,15 @@ impl SettingsUi {
                             });
                             match &self.update_status {
                                 Some(Ok(m)) => {
-                                    ui.label(m);
+                                    ui.horizontal(|ui| {
+                                        ui.label(m);
+                                        if self.update_available
+                                            && ui.button("Install update").clicked()
+                                        {
+                                            self.update_available = false;
+                                            actions.push(SettingsAction::InstallUpdate);
+                                        }
+                                    });
                                 }
                                 Some(Err(e)) => {
                                     ui.colored_label(ui.visuals().error_fg_color, e);

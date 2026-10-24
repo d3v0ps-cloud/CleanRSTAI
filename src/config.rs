@@ -309,11 +309,19 @@ pub struct GeneralSettings {
     pub use_keychain: bool,
     /// Look for a newer release on GitHub at startup.
     pub check_for_updates: bool,
+    /// Where to look for releases (see `update::release_api_url`). Only written to the file
+    /// once changed, so everyone else follows the built-in default.
+    #[serde(skip_serializing_if = "is_default_update_url")]
+    pub update_url: String,
     pub reasoning_display: ReasoningDisplay,
     /// Load images that replies link to on the web. Off by default: a reply could otherwise
     /// send data to any server just by being shown.
     pub load_remote_images: bool,
     pub builtin_tools: BuiltinToolSettings,
+}
+
+fn is_default_update_url(url: &String) -> bool {
+    url == crate::update::LATEST_RELEASE_URL
 }
 
 impl Default for GeneralSettings {
@@ -329,6 +337,7 @@ impl Default for GeneralSettings {
             show_stats: true,
             use_keychain: true,
             check_for_updates: true,
+            update_url: crate::update::LATEST_RELEASE_URL.into(),
             reasoning_display: ReasoningDisplay::default(),
             load_remote_images: false,
             builtin_tools: BuiltinToolSettings::default(),
@@ -468,6 +477,12 @@ impl Settings {
             self.active_provider = 0;
         }
         self.general.zoom = self.general.zoom.clamp(0.5, 3.0);
+        let url = self.general.update_url.trim();
+        self.general.update_url = if url.is_empty() {
+            crate::update::LATEST_RELEASE_URL.into()
+        } else {
+            url.to_owned()
+        };
         let sa = &mut self.subagents;
         sa.max_parallel = sa.max_parallel.clamp(1, 16);
         sa.max_tasks = sa.max_tasks.clamp(1, 32);
@@ -708,5 +723,20 @@ mod tests {
         assert_eq!(s.general.zoom, 1.5);
         assert!(s.general.send_with_enter);
         assert_eq!(s.providers.len(), 1);
+        assert_eq!(s.general.update_url, crate::update::LATEST_RELEASE_URL);
+    }
+
+    #[test]
+    fn update_url_is_saved_only_when_changed() {
+        let mut s = Settings::default();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("update_url"), "{json}");
+        s.general.update_url = "me/fork".into();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.general.update_url, "me/fork");
+        // Clearing the field goes back to the default.
+        s.general.update_url = "  ".into();
+        s.normalize();
+        assert_eq!(s.general.update_url, crate::update::LATEST_RELEASE_URL);
     }
 }

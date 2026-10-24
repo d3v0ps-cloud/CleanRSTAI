@@ -47,6 +47,13 @@ pub enum AppEvent {
         result: Result<crate::update::UpdateCheck, String>,
         explicit: bool,
     },
+    /// Bytes of the update downloaded so far, and the total when known.
+    UpdateProgress {
+        done: u64,
+        total: Option<u64>,
+    },
+    /// The update was put in place (the path to relaunch), or why it wasn't.
+    UpdateInstalled(Result<std::path::PathBuf, String>),
     Chat {
         conv_id: Uuid,
         event: ChatEvent,
