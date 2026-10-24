@@ -88,6 +88,9 @@ pub struct ChatApp {
     update: Option<crate::update::Release>,
     /// Progress of installing `update`, once the user starts it.
     update_install: Option<UpdateInstall>,
+    /// Whether the window icon currently shown is the dark variant (`None` before the first
+    /// frame), so it is only swapped when the theme changes.
+    window_icon_dark: Option<bool>,
 }
 
 enum UpdateInstall {
@@ -207,6 +210,7 @@ impl ChatApp {
             draft_tool_overrides: ToolOverrides::default(),
             update: None,
             update_install: None,
+            window_icon_dark: None,
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false, app.settings.general.update_url.clone());
@@ -1701,7 +1705,7 @@ impl ChatApp {
             )
             .clicked()
         {
-            self.open_settings(Tab::Providers);
+            self.open_settings(Tab::General);
         }
         ui.add_space(4.0);
 
@@ -2161,6 +2165,10 @@ impl eframe::App for ChatApp {
         let ctx = ui.ctx().clone();
 
         let dark = ui.visuals().dark_mode;
+        if self.window_icon_dark != Some(dark) {
+            self.window_icon_dark = Some(dark);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(theme::window_icon(dark))));
+        }
         let settings_open = self.settings_ui.is_some();
         // The sidebar runs the full height; the top bar only spans the main area.
         if self.sidebar_open && !settings_open {

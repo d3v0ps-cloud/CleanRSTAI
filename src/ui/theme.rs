@@ -84,6 +84,19 @@ pub struct Palette {
     pub error: Color32,
 }
 
+/// The window (and taskbar/dock) icon for the light or dark theme, from `assets/icon` (made by
+/// `scripts/make-icons.py`).
+pub fn window_icon(dark: bool) -> std::sync::Arc<egui::IconData> {
+    let png: &[u8] = if dark {
+        include_bytes!("../../assets/icon/window-dark.png")
+    } else {
+        include_bytes!("../../assets/icon/window-light.png")
+    };
+    std::sync::Arc::new(
+        eframe::icon_data::from_png_bytes(png).expect("bundled icon is a valid PNG"),
+    )
+}
+
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
@@ -268,4 +281,15 @@ pub fn primary_button<'a>(text: impl Into<String>, dark: bool) -> egui::Button<'
 /// Text with a leading icon, e.g. `labelled(icon::PLUS, "New chat")`.
 pub fn labelled(icon: &str, text: &str) -> String {
     format!("{icon}  {text}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn window_icons_decode() {
+        for dark in [false, true] {
+            let icon = super::window_icon(dark);
+            assert_eq!((icon.width, icon.height), (256, 256));
+        }
+    }
 }
