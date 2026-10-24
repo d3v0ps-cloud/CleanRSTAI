@@ -35,7 +35,7 @@ Office document attachments in **v0.7.0**. Unticked items are still open.
 
 - [x] **llama.cpp server**: native `timings` for accurate prefill and decode speeds
 - [x] **llama.cpp server**: context size
-- [ ] **llama.cpp server**: slot usage
+- [x] **llama.cpp server**: slot usage
 - [x] **LiteLLM proxy**: the model or deployment that served the request, and cost
 - [x] **Generic OpenAI-compatible**: standard `usage` plus client-side timing
 - [x] Auto-detect the type from a probe request, with a manual override

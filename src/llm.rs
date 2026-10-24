@@ -99,6 +99,33 @@ pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) 
     Some(n)
 }
 
+/// llama.cpp's `/slots`: how many of the server's parallel slots are in use. Asked at the
+/// start of a generation, like the context size, not on every request.
+pub async fn llama_cpp_slot_usage(
+    http: &reqwest::Client,
+    p: &ProviderConfig,
+) -> Option<crate::stats::SlotUsage> {
+    let resp = authorize(http.get(format!("{}/slots", origin(p))), p)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let slots: Vec<Value> = resp.json().await.ok()?;
+    let total = slots.len() as u64;
+    let busy = slots
+        .iter()
+        .filter(|s| {
+            s.get("state")
+                .and_then(Value::as_str)
+                .is_some_and(|st| st != "idle")
+        })
+        .count() as u64;
+    Some(crate::stats::SlotUsage { busy, total })
+}
+
 async fn llama_cpp_props(http: &reqwest::Client, p: &ProviderConfig) -> Option<Value> {
     let resp = authorize(http.get(format!("{}/props", origin(p))), p)
         .timeout(std::time::Duration::from_secs(5))
@@ -327,6 +354,7 @@ pub async fn chat_completion(
     messages: Vec<Value>,
     tools: &[ToolSpec],
     mut on_delta: impl FnMut(Delta<'_>),
+    mut on_stats: impl FnMut(RequestStats),
 ) -> Result<AssistantTurn> {
     if p.model.trim().is_empty() {
         bail!("No model selected. Choose one in Settings → Providers.");
@@ -374,6 +402,8 @@ pub async fn chat_completion(
 
     let mut turn = AssistantTurn::default();
     let mut builder = ToolCallBuilder::default();
+    // Live stats are pushed at most a few times a second, not on every chunk.
+    let mut last_live = std::time::Instant::now();
 
     let is_sse = resp
         .headers()
@@ -448,6 +478,10 @@ pub async fn chat_completion(
                     || delta.get("tool_calls").is_some_and(|t| !t.is_null());
                 if produced {
                     stats.timer.token();
+                    if last_live.elapsed() >= std::time::Duration::from_millis(100) {
+                        last_live = std::time::Instant::now();
+                        on_stats(stats.snapshot(&p.model));
+                    }
                 }
                 if let Some(r) = reasoning_of(delta).filter(|r| !r.is_empty()) {
                     on_delta(Delta::Reasoning(r));
@@ -587,7 +621,7 @@ mod server_tests {
         assert_eq!(llama_cpp_context_size(&http, &p).await, Some(8192));
         assert_eq!(props(&log), before);
 
-        let turn = chat_completion(&http, &p, vec![], &[], |_| {})
+        let turn = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
             .await
             .unwrap();
         assert_eq!(turn.content, "Hello");
@@ -599,6 +633,32 @@ mod server_tests {
         let log = log.lock().unwrap();
         let chat = log.iter().find(|r| r.method == "POST").unwrap();
         assert_eq!(chat.json()["stream_options"]["include_usage"], true);
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_slot_usage_report() {
+        let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/slots") => Response::json(json!([
+                {"id": 0, "state": "busy", "n_ctx": 4096, "n_ctx_seq": 2048},
+                {"id": 1, "state": "loaded", "n_ctx": 4096, "n_ctx_seq": 2048},
+                {"id": 2, "state": "idle"},
+            ])),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = build_http_client();
+        let p = provider(&base, ProviderKind::LlamaCpp);
+        assert_eq!(
+            llama_cpp_slot_usage(&http, &p).await,
+            Some(crate::stats::SlotUsage { busy: 2, total: 3 })
+        );
+        assert!(log.lock().unwrap().iter().any(|r| r.path == "/slots"));
+        // A 404 (not a llama.cpp slot endpoint) yields nothing rather than panicking.
+        let (base, _) = serve(|_| Response::status(404)).await;
+        assert_eq!(
+            llama_cpp_slot_usage(&http, &provider(&base, ProviderKind::LlamaCpp)).await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -623,7 +683,7 @@ mod server_tests {
             ..provider(&base, ProviderKind::Generic)
         };
         assert_eq!(detect_kind(&http, &p).await, ProviderKind::LiteLlm);
-        let s = chat_completion(&http, &p, vec![], &[], |_| {})
+        let s = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
             .await
             .unwrap()
             .stats;
@@ -651,7 +711,7 @@ mod server_tests {
         let mut p = provider(&base, ProviderKind::Generic);
         assert_eq!(detect_kind(&http, &p).await, ProviderKind::Generic);
         p.request_usage = false;
-        let s = chat_completion(&http, &p, vec![], &[], |_| {})
+        let s = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
             .await
             .unwrap()
             .stats;

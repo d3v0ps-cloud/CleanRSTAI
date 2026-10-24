@@ -60,7 +60,9 @@ impl ProviderKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Generic => "Token usage from the API; speeds measured by the app.",
-            Self::LlamaCpp => "Prefill/decode speeds and context size reported by llama.cpp.",
+            Self::LlamaCpp => {
+                "Prefill/decode speeds, context size and slot usage reported by llama.cpp."
+            }
             Self::LiteLlm => "Shows the model that served each request and its cost.",
         }
     }

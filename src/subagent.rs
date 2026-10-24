@@ -306,7 +306,8 @@ impl Delegation {
             publish(&|r| r[i].activity = "Thinking…".into());
             let messages = llm::to_api_messages(&self.settings.system_prompt, &history);
             let turn =
-                llm::chat_completion(http, provider, messages, &toolbox.specs, |_| {}).await?;
+                llm::chat_completion(http, provider, messages, &toolbox.specs, |_| {}, |_| {})
+                    .await?;
             publish(&|r| r[i].stats.push(turn.stats.clone()));
 
             let mut msg = ChatMessage::new(Role::Assistant, turn.content.clone());

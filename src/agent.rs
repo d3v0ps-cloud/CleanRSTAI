@@ -20,6 +20,8 @@ pub enum ChatEvent {
     AssistantStart,
     ContentDelta(String),
     ReasoningDelta(String),
+    /// A live snapshot of the in-flight request's stats, for the readout above the input box.
+    StatsLive(crate::stats::RequestStats),
     /// Replaces the in-progress assistant message with its final form (incl. tool calls).
     AssistantFinal(Box<ChatMessage>),
     ToolApproval {
@@ -124,10 +126,13 @@ pub async fn run(
     let mut history = req.history;
     let max_rounds = req.general.max_tool_rounds.max(1);
     let tool_timeout = Duration::from_secs(req.general.tool_timeout_secs.max(5));
-    let context_size = if req.provider.kind == crate::config::ProviderKind::LlamaCpp {
-        llm::llama_cpp_context_size(&http, &req.provider).await
+    let (context_size, slot_usage) = if req.provider.kind == crate::config::ProviderKind::LlamaCpp {
+        tokio::join!(
+            llm::llama_cpp_context_size(&http, &req.provider),
+            llm::llama_cpp_slot_usage(&http, &req.provider)
+        )
     } else {
-        None
+        (None, None)
     };
 
     for round in 0.. {
@@ -149,18 +154,18 @@ pub async fn run(
         let messages = llm::to_api_messages(&system_prompt, &history);
 
         emit(ChatEvent::AssistantStart);
-        let result =
-            llm::chat_completion(
-                &http,
-                &req.provider,
-                messages,
-                &toolbox.specs,
-                |d| match d {
-                    Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
-                    Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
-                },
-            )
-            .await;
+        let result = llm::chat_completion(
+            &http,
+            &req.provider,
+            messages,
+            &toolbox.specs,
+            |d| match d {
+                Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
+                Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
+            },
+            |s| emit(ChatEvent::StatsLive(s)),
+        )
+        .await;
 
         let turn = match result {
             Ok(t) => t,
@@ -177,6 +182,7 @@ pub async fn run(
         msg.tool_calls = turn.tool_calls;
         let mut stats = turn.stats;
         stats.context_size = context_size;
+        stats.slot_usage = slot_usage;
         msg.stats = Some(stats);
         let calls = msg.tool_calls.clone();
         history.push(msg.clone());

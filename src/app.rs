@@ -31,6 +31,8 @@ pub(crate) struct Run {
     task: JoinHandle<()>,
     pub(crate) approvals: Vec<PendingApproval>,
     pub(crate) running_tool: Option<String>,
+    /// Stats of the request currently streaming in, for the readout above the input box.
+    pub(crate) live_stats: Option<crate::stats::RequestStats>,
     /// Live subagent progress, by `delegate` call id.
     pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
 }
@@ -526,6 +528,7 @@ impl ChatApp {
                 task,
                 approvals: Vec::new(),
                 running_tool: None,
+                live_stats: None,
                 subagents: HashMap::new(),
             },
         );
@@ -694,6 +697,10 @@ impl ChatApp {
                 self.runs.get_mut(&id).unwrap().running_tool = Some(call_id);
                 return;
             }
+            ChatEvent::StatsLive(s) => {
+                self.runs.get_mut(&id).unwrap().live_stats = Some(s);
+                return;
+            }
             ChatEvent::SubagentProgress { call_id, reports } => {
                 self.runs
                     .get_mut(&id)
@@ -710,6 +717,7 @@ impl ChatApp {
         }
         let done = matches!(event, ChatEvent::Done);
         let is_tool_result = matches!(event, ChatEvent::ToolResult(_));
+        let is_final = matches!(event, ChatEvent::AssistantFinal(_));
         let Some(conv) = self.conv_mut(id) else {
             return;
         };
@@ -758,8 +766,14 @@ impl ChatApp {
             self.runs.remove(&id);
             self.conversations
                 .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-        } else if is_tool_result && let Some(run) = self.runs.get_mut(&id) {
-            run.running_tool = None;
+        } else {
+            // The final stats are attached to the message now, so drop the live readout.
+            if is_final && let Some(run) = self.runs.get_mut(&id) {
+                run.live_stats = None;
+            }
+            if is_tool_result && let Some(run) = self.runs.get_mut(&id) {
+                run.running_tool = None;
+            }
         }
     }
 
@@ -1736,6 +1750,17 @@ impl ChatApp {
                         self.notice = None;
                     }
                 });
+            }
+            // Live stats for the request currently streaming in; the finished response
+            // carries the same figures, so this only shows mid-completion.
+            if self.settings.general.show_stats
+                && let Some(s) = self
+                    .current
+                    .and_then(|c| self.runs.get(&c))
+                    .and_then(|r| r.live_stats.as_ref())
+            {
+                super::ui::stats_view::live_line(ui, s);
+                ui.add_space(6.0);
             }
             egui::Frame::new()
                 .fill(p.raised)
