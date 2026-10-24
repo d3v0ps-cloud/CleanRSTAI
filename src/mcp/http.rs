@@ -16,6 +16,19 @@ use crate::config::KeyValue;
 use crate::sse::SseParser;
 
 const SESSION_HEADER: &str = "mcp-session-id";
+
+/// The server answered 404 to a request carrying our session id: it has forgotten the
+/// session, and the client must start a new one.
+#[derive(Debug)]
+pub struct SessionExpired;
+
+impl std::fmt::Display for SessionExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MCP session expired (HTTP 404)")
+    }
+}
+
+impl std::error::Error for SessionExpired {}
 const VERSION_HEADER: &str = "mcp-protocol-version";
 
 struct Inner {
@@ -80,8 +93,19 @@ impl HttpTransport {
         *self.inner.protocol_version.lock().unwrap() = Some(v.to_owned());
     }
 
+    pub fn session_id(&self) -> Option<String> {
+        self.inner.session_id.lock().unwrap().clone()
+    }
+
+    /// Forget the session id, so the next `initialize` starts a new session.
+    pub fn clear_session(&self) {
+        *self.inner.session_id.lock().unwrap() = None;
+    }
+
     /// Open the optional GET stream for server-initiated notifications and requests.
-    /// Servers that don't offer it answer 405, which simply ends the listener.
+    /// Servers that don't offer it answer 405, which simply ends the listener. Other
+    /// failures (including 401 while a token is refreshed, or 404 while an expired session
+    /// is renewed) are retried with backoff.
     pub fn start_listening(&self) {
         let inner = self.inner.clone();
         let task = tokio::spawn(async move {
@@ -196,7 +220,7 @@ impl Inner {
             let body = resp.text().await.unwrap_or_default();
             if status == reqwest::StatusCode::NOT_FOUND && self.session_id.lock().unwrap().is_some()
             {
-                bail!("MCP session expired (HTTP 404); reconnect the server");
+                return Err(SessionExpired.into());
             }
             bail!("HTTP {status}: {}", body.trim());
         }
@@ -268,16 +292,19 @@ impl Inner {
         let mut req = self
             .with_session(self.http.get(&self.url))
             .header(ACCEPT, "text/event-stream");
-        if let Some(t) = self.bearer().await {
+        let token = self.bearer().await;
+        if let Some(t) = &token {
             req = req.bearer_auth(t);
         }
         let resp = req.send().await?;
         let status = resp.status();
-        if status == reqwest::StatusCode::METHOD_NOT_ALLOWED
-            || status == reqwest::StatusCode::NOT_FOUND
-            || status == reqwest::StatusCode::UNAUTHORIZED
-        {
+        if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Ok(Listen::NotSupported);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && let (Some(auth), Some(t)) = (&self.auth, token.as_deref())
+        {
+            auth.refresh_after_rejection(Some(t)).await;
         }
         if !status.is_success() {
             bail!("HTTP {status}");

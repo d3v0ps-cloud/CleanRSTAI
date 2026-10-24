@@ -15,7 +15,7 @@ use crate::approval::{Approval, PendingApproval};
 use crate::config::ReasoningDisplay;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
-use crate::types::{ChatMessage, Conversation, Role, ToolCall};
+use crate::types::{ChatMessage, Conversation, Role, ToolCall, results_after};
 
 pub const MAX_CONTENT_WIDTH: f32 = 760.0;
 
@@ -223,17 +223,6 @@ struct AssistantCtx<'a> {
     remote_images: bool,
     /// The final reply: show Regenerate.
     last: bool,
-}
-
-/// The tool results answering the calls of the assistant message at `idx`: the tool
-/// messages right after it. (Matching by id across the whole chat would mix up turns from
-/// servers that reuse ids like `call_0`.)
-fn results_after(messages: &[ChatMessage], idx: usize) -> HashMap<&str, &ChatMessage> {
-    messages[idx + 1..]
-        .iter()
-        .take_while(|m| m.role == Role::Tool)
-        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
-        .collect()
 }
 
 fn assistant_message(

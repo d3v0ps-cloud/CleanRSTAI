@@ -16,6 +16,23 @@ use crate::config::McpTransportConfig;
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
+const INIT_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn initialize_params() -> Value {
+    json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "CleanRSTAI", "version": env!("CARGO_PKG_VERSION")},
+    })
+}
+
+/// The protocol version the server chose in its `initialize` result.
+fn negotiated_version(init: &Value) -> &str {
+    init.get("protocolVersion")
+        .and_then(|v| v.as_str())
+        .unwrap_or(PROTOCOL_VERSION)
+}
+
 /// Called with the method name of every notification the server sends.
 pub type NotifyFn = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -77,6 +94,8 @@ pub struct McpClient {
     pub instructions: Option<String>,
     /// The server's `capabilities` from `initialize`.
     pub capabilities: Value,
+    /// Held while an expired HTTP session is being replaced by a new one.
+    renewing: tokio::sync::Mutex<()>,
 }
 
 /// Turn a JSON-RPC response into its `result`, or an error.
@@ -142,18 +161,11 @@ impl McpClient {
             server_version: String::new(),
             instructions: None,
             capabilities: Value::Null,
+            renewing: tokio::sync::Mutex::new(()),
         };
 
         let init = client
-            .request(
-                "initialize",
-                json!({
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "CleanRSTAI", "version": env!("CARGO_PKG_VERSION")},
-                }),
-                Duration::from_secs(120),
-            )
+            .request("initialize", initialize_params(), INIT_TIMEOUT)
             .await
             .map_err(|e| client.annotate(e))
             .context("initialize failed")?;
@@ -174,11 +186,7 @@ impl McpClient {
             .and_then(|v| v.as_str())
             .map(str::to_owned);
         if let Transport::Http(h) = &client.transport {
-            let version = init
-                .get("protocolVersion")
-                .and_then(|v| v.as_str())
-                .unwrap_or(PROTOCOL_VERSION);
-            h.set_protocol_version(version);
+            h.set_protocol_version(negotiated_version(&init));
         }
 
         client
@@ -208,7 +216,44 @@ impl McpClient {
         }
     }
 
+    /// Send a request. When a Streamable HTTP server has forgotten our session, start a new
+    /// one (as the spec asks) and send the request once more.
     async fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+        let Transport::Http(h) = &self.transport else {
+            return self.request_once(method, params, timeout).await;
+        };
+        let session = h.session_id();
+        match self.request_once(method, params.clone(), timeout).await {
+            Err(e) if e.chain().any(|c| c.is::<http::SessionExpired>()) => {
+                self.renew_session(h, session)
+                    .await
+                    .context("the MCP session expired and a new one couldn't be started")?;
+                self.request_once(method, params, timeout).await
+            }
+            r => r,
+        }
+    }
+
+    /// Replace the expired session `stale` with a new one, unless a concurrent request
+    /// already did.
+    async fn renew_session(&self, h: &http::HttpTransport, stale: Option<String>) -> Result<()> {
+        let _guard = self.renewing.lock().await;
+        if h.session_id() != stale {
+            return Ok(());
+        }
+        log::info!(
+            "MCP session of '{}' expired; starting a new one",
+            self.server_name
+        );
+        h.clear_session();
+        let init = self
+            .request_once("initialize", initialize_params(), INIT_TIMEOUT)
+            .await?;
+        h.set_protocol_version(negotiated_version(&init));
+        self.notify("notifications/initialized", None).await
+    }
+
+    async fn request_once(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let fut = async {
@@ -633,6 +678,69 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn starts_a_new_http_session_when_the_old_one_expires() {
+        use crate::testutil::{Response, serve};
+        use std::sync::atomic::AtomicUsize;
+        let inits = Arc::new(AtomicUsize::new(0));
+        let n = inits.clone();
+        let (base, log) = serve(move |r| {
+            if r.method == "GET" {
+                return Response::status(405);
+            }
+            let req = r.json();
+            let id = req["id"].clone();
+            let session = r.header("mcp-session-id").unwrap_or_default().to_owned();
+            match req["method"].as_str().unwrap_or("") {
+                "initialize" => {
+                    let k = n.fetch_add(1, Ordering::SeqCst) + 1;
+                    Response::json(json!({"jsonrpc": "2.0", "id": id, "result": {
+                        "protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "mock", "version": "1"}}}))
+                    .header("mcp-session-id", &format!("s{k}"))
+                }
+                // The server restarted and only knows the second session.
+                "tools/call" if session != "s2" => Response::status(404),
+                "tools/call" => Response::json(json!({"jsonrpc": "2.0", "id": id,
+                    "result": {"content": [{"type": "text", "text": "ok"}]}})),
+                _ => Response::status(202),
+            }
+        })
+        .await;
+        let cfg = McpTransportConfig::Http {
+            url: base,
+            headers: Vec::new(),
+            oauth_client_id: String::new(),
+        };
+        let client = McpClient::connect(&cfg, reqwest::Client::new(), Arc::new(|_| {}), None)
+            .await
+            .unwrap();
+        let out = client
+            .call_tool("echo", json!({}), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(out.text, "ok");
+        assert_eq!(inits.load(Ordering::SeqCst), 2);
+        // The new session was announced with `notifications/initialized` before the retry.
+        let methods: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .map(|r| r.json()["method"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        let tail = &methods[methods.len() - 4..];
+        assert_eq!(
+            tail,
+            [
+                "tools/call",
+                "initialize",
+                "notifications/initialized",
+                "tools/call"
+            ]
+        );
+    }
 
     #[test]
     fn formats_mixed_content() {

@@ -216,6 +216,10 @@ pub struct BuiltinToolSettings {
     pub tasks: bool,
     /// Fetch web URLs (asks for approval, like MCP tools).
     pub fetch: bool,
+    /// Let fetch reach loopback, private and link-local addresses (local services, cloud
+    /// metadata endpoints). Off by default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fetch_private_networks: bool,
     /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
     pub workspace: bool,
 }
@@ -227,6 +231,7 @@ impl Default for BuiltinToolSettings {
             calculator: true,
             tasks: true,
             fetch: true,
+            fetch_private_networks: false,
             workspace: true,
         }
     }
@@ -245,7 +250,8 @@ pub struct SubagentSettings {
     pub model: String,
     /// Let the model pick another provider profile or model for individual tasks.
     pub allow_provider_choice: bool,
-    /// Subagents may use the built-in tools (time, calculator).
+    /// Subagents may use the built-in tools (time, calculator, web fetch). Their fetches run
+    /// without asking.
     pub builtin_tools: bool,
     /// Subagents may use the chat's MCP tools. Their calls run without asking.
     pub mcp_tools: bool,

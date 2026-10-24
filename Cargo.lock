@@ -945,6 +945,7 @@ dependencies = [
  "ignore",
  "image",
  "keyring",
+ "libc",
  "log",
  "mermaid-rs-renderer",
  "open",

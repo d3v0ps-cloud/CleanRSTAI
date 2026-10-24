@@ -31,8 +31,8 @@ step puts `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older 
   cross-builds both Linux tarballs with `cargo-zigbuild` against glibc 2.28, then creates the
   GitHub Release with the files and `SHA256SUMS.txt`.
 - `scripts/release-local.sh [--publish] [--skip-tests]` does the same from a local machine.
-- The repository name is hard-coded in `src/update.rs` (`LATEST_RELEASE_URL`) and
-  `scripts/release-local.sh`.
+- The repository name is hard-coded in `src/update.rs` (the `repo!` macro, used for
+  `LATEST_RELEASE_URL` and the fetch tool's user agent) and `scripts/release-local.sh`.
 - `roadmap.md` tracks which items shipped in which version.
 
 ## Architecture
@@ -58,7 +58,9 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
 `builtin:<key>`, `server:<id>`, `tool:<server id>:<tool>`. `Toolbox::needs_approval` decides
 which calls ask first (MCP tools, `delegate`, `fetch`, and the workspace tools that write or
 run commands); everything else runs directly. Workspace paths are confined to the chosen
-folder (`..`, outside absolute paths and symlinks out are refused).
+folder (`..`, outside absolute paths and symlinks out are refused). `fetch` reaches only
+public addresses (its own client with a filtering DNS resolver and redirect policy) unless
+`fetch_private_networks` is on; tests against `testutil::serve` turn that on.
 
 **Approvals** (`approval.rs`): the agent sends `ChatEvent::ToolApproval` with a oneshot
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers

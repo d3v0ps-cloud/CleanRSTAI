@@ -143,13 +143,7 @@ pub fn conversation_markdown(c: &Conversation) -> String {
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d %H:%M")
     );
-    let results: std::collections::HashMap<&str, &crate::types::ChatMessage> = c
-        .messages
-        .iter()
-        .filter(|m| m.role == Role::Tool)
-        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
-        .collect();
-    for m in &c.messages {
+    for (idx, m) in c.messages.iter().enumerate() {
         match m.role {
             Role::User => {
                 let _ = writeln!(out, "## You\n\n{}\n", m.content.trim_end());
@@ -167,6 +161,7 @@ pub fn conversation_markdown(c: &Conversation) -> String {
                 if !m.content.is_empty() {
                     let _ = writeln!(out, "{}\n", m.content.trim_end());
                 }
+                let results = crate::types::results_after(&c.messages, idx);
                 for call in &m.tool_calls {
                     let args = serde_json::from_str::<Value>(&call.arguments)
                         .ok()
@@ -564,5 +559,30 @@ mod tests {
         assert!(md.contains("````\nhas ``` inside\n````"), "{md}");
         assert_eq!(safe_file_name(&c.title, "md"), "My - chat-.md");
         assert_eq!(safe_file_name("..", "md"), "chat.md");
+    }
+
+    #[test]
+    fn markdown_export_pairs_results_with_their_own_turn() {
+        use crate::types::{ChatMessage, Role, ToolCall};
+        // Two turns whose calls share the id `call_0`, as some local servers produce.
+        let call = ToolCall {
+            id: "call_0".into(),
+            name: "x__echo".into(),
+            arguments: "{}".into(),
+        };
+        let mut c = Conversation::new();
+        let mut a = ChatMessage::new(Role::Assistant, "");
+        a.tool_calls = vec![call.clone()];
+        c.messages = vec![
+            a.clone(),
+            ChatMessage::tool_result(&call, "first result", false),
+            a,
+            ChatMessage::tool_result(&call, "second result", false),
+        ];
+        let md = conversation_markdown(&c);
+        let first = md.find("first result").expect("first result exported");
+        let second = md.find("second result").expect("second result exported");
+        assert!(first < second, "{md}");
+        assert_eq!(md.matches("second result").count(), 1, "{md}");
     }
 }

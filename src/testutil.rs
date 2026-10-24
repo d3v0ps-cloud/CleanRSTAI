@@ -115,8 +115,12 @@ pub async fn serve(
                 let resp = handler(&req);
                 seen.lock().unwrap().push(req);
                 let mut out = format!(
-                    "HTTP/1.1 {} X\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    "HTTP/1.1 {} {}\r\ncontent-length: {}\r\nconnection: close\r\n",
                     resp.status,
+                    reqwest::StatusCode::from_u16(resp.status)
+                        .ok()
+                        .and_then(|s| s.canonical_reason())
+                        .unwrap_or("Unknown"),
                     resp.body.len()
                 );
                 for (k, v) in &resp.headers {

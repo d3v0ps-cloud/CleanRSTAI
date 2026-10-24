@@ -8,8 +8,36 @@ use super::theme::icon;
 use super::widgets::code_block;
 use crate::attach::Attachment;
 
-/// Decoded image bytes by URI, so base64 is decoded once rather than every frame.
-pub type ImageCache = HashMap<String, egui::load::Bytes>;
+/// Images kept before the cache is cleared, by count and by decoded bytes.
+const MAX_CACHED_IMAGES: usize = 256;
+const MAX_CACHED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Decoded image bytes by URI, so base64 is decoded once rather than every frame. Cleared,
+/// together with egui's own copies, when it grows too large (like `DrawingCache`).
+#[derive(Default)]
+pub struct ImageCache {
+    images: HashMap<String, egui::load::Bytes>,
+    total: usize,
+}
+
+impl ImageCache {
+    fn get(&mut self, ctx: &egui::Context, uri: &str, a: &Attachment) -> egui::load::Bytes {
+        if let Some(b) = self.images.get(uri) {
+            return b.clone();
+        }
+        let bytes: egui::load::Bytes = a.bytes().unwrap_or_default().into();
+        if self.images.len() >= MAX_CACHED_IMAGES || self.total + bytes.len() > MAX_CACHED_BYTES {
+            for uri in self.images.keys() {
+                ctx.forget_image(uri);
+            }
+            self.images.clear();
+            self.total = 0;
+        }
+        self.total += bytes.len();
+        self.images.insert(uri.to_owned(), bytes.clone());
+        bytes
+    }
+}
 
 /// egui caches decoded images by URI, so the URI must change when the content does
 /// (e.g. a message edited and resent with a different image at the same position).
@@ -26,12 +54,14 @@ fn uri(key: &str, a: &Attachment) -> String {
     format!("bytes://{key}-{}-{head}{tail}.{ext}", data.len())
 }
 
-fn image_source(cache: &mut ImageCache, key: &str, a: &Attachment) -> (String, egui::load::Bytes) {
+fn image_source(
+    ui: &egui::Ui,
+    cache: &mut ImageCache,
+    key: &str,
+    a: &Attachment,
+) -> (String, egui::load::Bytes) {
     let uri = uri(key, a);
-    let bytes = cache
-        .entry(uri.clone())
-        .or_insert_with(|| a.bytes().unwrap_or_default().into())
-        .clone();
+    let bytes = cache.get(ui.ctx(), &uri, a);
     (uri, bytes)
 }
 
@@ -45,7 +75,7 @@ pub fn show(
     let mut clicked = None;
     // One per row: inside a horizontal layout an image is squeezed to the row height.
     for (n, a) in list.iter().enumerate().filter(|(_, a)| a.is_image()) {
-        let (uri, bytes) = image_source(cache, &format!("{key}-{n}"), a);
+        let (uri, bytes) = image_source(ui, cache, &format!("{key}-{n}"), a);
         let resp = ui
             .add(
                 egui::Image::from_bytes(uri.clone(), bytes.clone())
@@ -103,7 +133,7 @@ pub fn pending_chips(
                     ui.horizontal(|ui| {
                         if a.is_image() {
                             let (uri, bytes) =
-                                image_source(cache, &format!("pending-{n}-{}", a.name), a);
+                                image_source(ui, cache, &format!("pending-{n}-{}", a.name), a);
                             ui.add(
                                 egui::Image::from_bytes(uri, bytes)
                                     .max_height(40.0)

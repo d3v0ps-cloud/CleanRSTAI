@@ -1,6 +1,8 @@
 //! The built-in `fetch` tool: GET a web URL and give the model its content as text: web
 //! pages converted to readable text, plain text and JSON as they are, images as images.
 
+use std::net::{IpAddr, SocketAddr};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
@@ -145,9 +147,110 @@ fn kind_of(content_type: &str, body: &[u8]) -> Kind {
     }
 }
 
-/// Fetch `args.url` and describe what came back for the model.
-pub async fn run(http: &reqwest::Client, args: &Value, timeout: Duration) -> Result<ToolOutput> {
+/// Whether `ip` is a public internet address: not loopback, private, link-local (which
+/// includes cloud metadata endpoints like 169.254.169.254), shared, multicast or reserved.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => {
+            let [b0, b1, ..] = a.octets();
+            !(a.is_unspecified()
+                || a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_broadcast()
+                || a.is_documentation()
+                || a.is_multicast()
+                || b0 == 0
+                || b0 >= 240
+                || (b0 == 100 && (64..128).contains(&b1)))
+        }
+        IpAddr::V6(a) => match a.to_ipv4_mapped() {
+            Some(v4) => is_public(IpAddr::V4(v4)),
+            None => {
+                !(a.is_unspecified()
+                    || a.is_loopback()
+                    || a.is_multicast()
+                    || a.is_unique_local()
+                    || a.is_unicast_link_local())
+            }
+        },
+    }
+}
+
+const PRIVATE_REFUSED: &str = "web fetch only reaches public internet addresses, not this \
+     computer or private networks (Settings → Tools can allow them)";
+
+/// Refuse a URL whose host is a non-public IP literal (names are checked when resolved).
+fn check_ip_literal(url: &reqwest::Url) -> std::result::Result<(), String> {
+    let host = url.host_str().unwrap_or_default();
+    let Ok(ip) = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
+    else {
+        return Ok(());
+    };
+    if is_public(ip) {
+        Ok(())
+    } else {
+        Err(format!("{ip}: {PRIVATE_REFUSED}"))
+    }
+}
+
+/// Resolves host names to their public addresses only, so neither a name nor a redirect
+/// to one can lead to a private address.
+struct PublicResolver;
+
+impl reqwest::dns::Resolve for PublicResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_owned();
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|a| is_public(a.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err(format!("{host}: {PRIVATE_REFUSED}").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// The client for fetches limited to public addresses.
+static PUBLIC_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .dns_resolver(std::sync::Arc::new(PublicResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if let Err(e) = check_ip_literal(attempt.url()) {
+                attempt.error(e)
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .expect("failed to build HTTP client")
+});
+
+/// Fetch `args.url` and describe what came back for the model. Unless `allow_private`,
+/// only public internet addresses are reached, also after redirects; otherwise `http`
+/// is used as it is.
+pub async fn run(
+    http: &reqwest::Client,
+    args: &Value,
+    timeout: Duration,
+    allow_private: bool,
+) -> Result<ToolOutput> {
     let args = parse_args(args)?;
+    let http = if allow_private {
+        http
+    } else {
+        check_ip_literal(&args.url).map_err(anyhow::Error::msg)?;
+        &*PUBLIC_CLIENT
+    };
     let resp = http
         .get(args.url.clone())
         .header(
@@ -155,7 +258,9 @@ pub async fn run(http: &reqwest::Client, args: &Value, timeout: Duration) -> Res
             concat!(
                 "CleanRSTAI/",
                 env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/d3v0ps-cloud/CleanRSTAI)"
+                " (+https://github.com/",
+                crate::update::repo!(),
+                ")"
             ),
         )
         .header(
@@ -261,7 +366,13 @@ mod tests {
         <script>var x = 1;</script></body></html>";
 
     async fn fetch(args: Value) -> Result<ToolOutput> {
-        run(&reqwest::Client::new(), &args, Duration::from_secs(10)).await
+        run(
+            &reqwest::Client::new(),
+            &args,
+            Duration::from_secs(10),
+            true,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -350,6 +461,56 @@ mod tests {
         }
         let err = format!("{:#}", fetch(json!({})).await.unwrap_err());
         assert!(err.contains("missing \"url\""), "{err}");
+    }
+
+    #[tokio::test]
+    async fn refuses_private_addresses_unless_allowed() {
+        let (base, _) = serve(|_| Response::with_type(200, "text/plain", "local")).await;
+        let t = Duration::from_secs(5);
+        let client = reqwest::Client::new();
+        let port = base.rsplit(':').next().unwrap();
+        for url in [
+            base.clone(),
+            format!("http://localhost:{port}/"),
+            "http://169.254.169.254/latest/meta-data/".into(),
+            "http://[::1]/".into(),
+            "http://10.0.0.1/".into(),
+        ] {
+            let err = run(&client, &json!({"url": url}), t, false)
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("public internet"),
+                "{url}: {err:#}"
+            );
+        }
+        let out = run(&client, &json!({"url": base}), t, true).await.unwrap();
+        assert!(out.text.contains("local"), "{}", out.text);
+    }
+
+    #[test]
+    fn tells_public_addresses_from_private_ones() {
+        for ip in ["8.8.8.8", "2606:4700::1111", "100.128.0.1"] {
+            assert!(is_public(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.0.1",
+        ] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+        }
     }
 
     #[test]
