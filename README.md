@@ -105,8 +105,11 @@ source; the release workflow skips it until there is a Windows runner.
   way.
 - **Export a chat as Markdown** from its right-click menu in the sidebar, including tool calls,
   results and images.
-- **Update check**: at startup (optional) and from **Settings → General**, CleanRSTAI looks
-  for a newer release on GitHub and shows a link to it in the top bar.
+- **Updates**: at startup (optional) and from **Settings → General**, CleanRSTAI looks for a
+  newer release on GitHub. On macOS and Linux, **Update to …** in the top bar downloads it,
+  checks it against the release's `SHA256SUMS.txt`, replaces the installed app and offers a
+  restart; elsewhere it links to the release page. The release must be public: GitHub
+  answers a private repository's release check with a 404.
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
   (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
 
@@ -355,7 +358,7 @@ src/
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
   stats.rs        prefill / decode speed and token statistics
-  update.rs       GitHub Releases update check
+  update.rs       GitHub Releases update check and in-place install
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
   testutil.rs     tiny scripted HTTP server for tests

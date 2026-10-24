@@ -33,6 +33,7 @@ pub enum SettingsAction {
     ImportSettings,
     ImportConversations,
     CheckForUpdates,
+    InstallUpdate,
 }
 
 pub struct SettingsUi {
@@ -58,6 +59,8 @@ pub struct SettingsUi {
     pub checking_update: bool,
     /// Outcome of the last manual update check: Ok(message) or Err(error).
     pub update_status: Option<Result<String, String>>,
+    /// The last check found a release this build can install itself.
+    pub update_available: bool,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -109,6 +112,7 @@ impl SettingsUi {
             pending_import: None,
             checking_update: false,
             update_status: None,
+            update_available: false,
         }
     }
 
@@ -1176,7 +1180,15 @@ impl SettingsUi {
                             });
                             match &self.update_status {
                                 Some(Ok(m)) => {
-                                    ui.label(m);
+                                    ui.horizontal(|ui| {
+                                        ui.label(m);
+                                        if self.update_available
+                                            && ui.button("Install update").clicked()
+                                        {
+                                            self.update_available = false;
+                                            actions.push(SettingsAction::InstallUpdate);
+                                        }
+                                    });
                                 }
                                 Some(Err(e)) => {
                                     ui.colored_label(ui.visuals().error_fg_color, e);

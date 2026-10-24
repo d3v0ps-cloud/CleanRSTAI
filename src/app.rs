@@ -86,6 +86,19 @@ pub struct ChatApp {
     draft_tool_overrides: ToolOverrides,
     /// A newer release found on GitHub.
     update: Option<crate::update::Release>,
+    /// Progress of installing `update`, once the user starts it.
+    update_install: Option<UpdateInstall>,
+}
+
+enum UpdateInstall {
+    Downloading {
+        done: u64,
+        total: Option<u64>,
+    },
+    /// Installed; restarting runs the new version from this path.
+    Ready(std::path::PathBuf),
+    /// Installing failed (the reason went to `notice`); the release page is the way now.
+    Failed,
 }
 
 /// Arguments being filled in for an MCP prompt.
@@ -193,6 +206,7 @@ impl ChatApp {
             sidebar_open: true,
             draft_tool_overrides: ToolOverrides::default(),
             update: None,
+            update_install: None,
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false);
@@ -587,12 +601,30 @@ impl ChatApp {
                             }
                             Err(e) => Err(format!("Update check failed: {e}")),
                         });
+                        ui.update_available = matches!(
+                            &result,
+                            Ok(UpdateCheck::Available(r)) if crate::update::can_install(r)
+                        );
                     }
                     match result {
                         Ok(UpdateCheck::Available(r)) => self.update = Some(r),
                         Ok(UpdateCheck::UpToDate) => self.update = None,
                         Err(e) => log::info!("update check failed: {e}"),
                     }
+                }
+                AppEvent::UpdateProgress { done, total } => {
+                    if let Some(UpdateInstall::Downloading { .. }) = self.update_install {
+                        self.update_install = Some(UpdateInstall::Downloading { done, total });
+                    }
+                }
+                AppEvent::UpdateInstalled(result) => {
+                    self.update_install = Some(match result {
+                        Ok(target) => UpdateInstall::Ready(target),
+                        Err(e) => {
+                            self.notice = Some(format!("Couldn't install the update: {e}"));
+                            UpdateInstall::Failed
+                        }
+                    });
                 }
                 AppEvent::ModelsFetched {
                     provider_id,
@@ -1095,6 +1127,49 @@ impl ChatApp {
         });
     }
 
+    /// Download and install `self.update` in the background; progress shows in the top bar.
+    fn start_update_install(&mut self) {
+        if self.update_install.is_some() {
+            return;
+        }
+        let Some(release) = self.update.clone() else {
+            return;
+        };
+        let (Some((name, package)), Ok(target)) = (
+            crate::update::platform_package(),
+            crate::update::install_target(),
+        ) else {
+            return;
+        };
+        self.update_install = Some(UpdateInstall::Downloading {
+            done: 0,
+            total: None,
+        });
+        let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            // Report whole percent steps (or each MiB when the size is unknown), not every chunk.
+            let last = std::sync::atomic::AtomicU64::new(u64::MAX);
+            let result = crate::update::install(
+                &http,
+                &release,
+                (&name, package),
+                &target,
+                |done, total| {
+                    let step = total.map_or(done >> 20, |t| done * 100 / t.max(1));
+                    if last.swap(step, std::sync::atomic::Ordering::Relaxed) != step {
+                        let _ = tx.send(AppEvent::UpdateProgress { done, total });
+                        ctx.request_repaint();
+                    }
+                },
+            )
+            .await
+            .map(|()| target)
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::UpdateInstalled(result));
+            ctx.request_repaint();
+        });
+    }
+
     fn spawn_detect(&self, p: crate::config::ProviderConfig, explicit: bool, ctx: &egui::Context) {
         let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ctx.clone());
         self.rt.spawn(async move {
@@ -1327,6 +1402,7 @@ impl ChatApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let dark = ui.visuals().dark_mode;
         let p = theme::palette(dark);
+        let mut start_install = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             // With the sidebar open, its own header has the toggle.
@@ -1342,16 +1418,59 @@ impl ChatApp {
                     self.palette.toggle();
                 }
                 if let Some(r) = &self.update {
-                    let text = RichText::new(format!("Update to {}", r.version))
-                        .small()
-                        .color(p.signal);
-                    let resp = ui
-                        .add(egui::Button::new(text).frame_when_inactive(false))
-                        .on_hover_text("Open the release page to download it");
-                    if resp.clicked()
-                        && let Err(e) = open::that_detached(&r.url)
-                    {
-                        self.notice = Some(format!("Couldn't open the browser: {e}"));
+                    let link = |label: String| {
+                        egui::Button::new(RichText::new(label).small().color(p.signal))
+                            .frame_when_inactive(false)
+                    };
+                    match &self.update_install {
+                        Some(UpdateInstall::Downloading { done, total }) => {
+                            let label = match total {
+                                Some(t) => format!(
+                                    "Downloading {}… {}%",
+                                    r.version,
+                                    done * 100 / (*t).max(1)
+                                ),
+                                None => format!("Downloading {}…", r.version),
+                            };
+                            ui.label(RichText::new(label).small().weak());
+                            ui.spinner();
+                        }
+                        Some(UpdateInstall::Ready(target)) => {
+                            if ui
+                                .add(link("Restart to finish updating".into()))
+                                .on_hover_text(format!("Version {} is installed", r.version))
+                                .clicked()
+                            {
+                                match crate::update::relaunch(target) {
+                                    Ok(()) => {
+                                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)
+                                    }
+                                    Err(e) => self.notice = Some(format!("{e:#}")),
+                                }
+                            }
+                        }
+                        Some(UpdateInstall::Failed) | None => {
+                            let install =
+                                self.update_install.is_none() && crate::update::can_install(r);
+                            let (label, hover) = if install {
+                                (
+                                    format!("Update to {}", r.version),
+                                    "Download and install it, then restart",
+                                )
+                            } else {
+                                (
+                                    format!("Download {}", r.version),
+                                    "Open the release page to download it",
+                                )
+                            };
+                            if ui.add(link(label)).on_hover_text(hover).clicked() {
+                                if install {
+                                    start_install = true;
+                                } else if let Err(e) = open::that_detached(&r.url) {
+                                    self.notice = Some(format!("Couldn't open the browser: {e}"));
+                                }
+                            }
+                        }
                     }
                 }
                 let (servers, tools) = self.mcp.connected_tool_count();
@@ -1389,6 +1508,9 @@ impl ChatApp {
                 }
             });
         });
+        if start_install {
+            self.start_update_install();
+        }
     }
 
     /// The chat's working folder, under the composer: "Set working directory", or the
@@ -2114,6 +2236,7 @@ impl eframe::App for ChatApp {
                     .show(ui, |ui| sui.show(ui, &self.settings, &views))
                     .inner,
             );
+            let mut install_update = false;
             for action in actions {
                 match action {
                     SettingsAction::Apply(s) => {
@@ -2123,6 +2246,7 @@ impl eframe::App for ChatApp {
                     }
                     SettingsAction::Close => keep = false,
                     SettingsAction::CheckForUpdates => self.spawn_update_check(true),
+                    SettingsAction::InstallUpdate => install_update = true,
                     SettingsAction::ExportSettings { include_secrets } => {
                         let doc = export::settings_document(&self.settings, include_secrets);
                         sui.export_status = run_export("settings", &doc);
@@ -2180,6 +2304,9 @@ impl eframe::App for ChatApp {
             }
             if keep {
                 self.settings_ui = Some(sui);
+            }
+            if install_update {
+                self.start_update_install();
             }
         }
 
