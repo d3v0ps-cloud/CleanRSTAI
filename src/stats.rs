@@ -17,6 +17,13 @@ pub enum StatsSource {
     Server,
 }
 
+/// Occupancy of a llama.cpp server's parallel slots (in use / total).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlotUsage {
+    pub busy: u64,
+    pub total: u64,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RequestStats {
@@ -35,6 +42,8 @@ pub struct RequestStats {
     pub cost_usd: Option<f64>,
     /// Context window size, when the server exposes it (llama.cpp).
     pub context_size: Option<u64>,
+    /// Slot occupancy, when the server exposes it (llama.cpp).
+    pub slot_usage: Option<SlotUsage>,
 }
 
 /// Timestamps and counters collected while a response streams in.
@@ -159,11 +168,17 @@ impl Collector {
     }
 
     pub fn finish(self, requested_model: &str) -> RequestStats {
+        self.snapshot(requested_model)
+    }
+
+    /// A non-destructive view of the stats so far, for a live readout while the response
+    /// streams in. `total_ms` and speeds are recomputed against the current instant.
+    pub fn snapshot(&self, requested_model: &str) -> RequestStats {
         let now = Instant::now();
         let t = &self.timer;
         let total_ms = Timer::ms(t.start, now);
         let ttft_ms = t.first_token.map(|f| Timer::ms(t.start, f));
-        let usage = self.usage.unwrap_or_default();
+        let usage = self.usage.clone().unwrap_or_default();
 
         let mut s = RequestStats {
             prompt_tokens: usage.prompt_tokens,
@@ -175,6 +190,7 @@ impl Collector {
             context_size: self.context_size,
             served_model: self
                 .served_model
+                .clone()
                 .filter(|m| !m.eq_ignore_ascii_case(requested_model.trim())),
             ..Default::default()
         };
@@ -185,7 +201,7 @@ impl Collector {
             s.tokens_estimated = true;
         }
 
-        if let Some(st) = self.timings {
+        if let Some(st) = self.timings.as_ref() {
             s.source = StatsSource::Server;
             s.prefill_tps = st.prompt_per_second;
             s.decode_tps = st.predicted_per_second;

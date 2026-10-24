@@ -4,8 +4,9 @@ use eframe::egui;
 
 use crate::stats::{RequestStats, StatsSource, Totals, fmt_cost, fmt_ms, fmt_rate, fmt_tokens};
 
-/// One compact line under a response; the hover shows the full breakdown.
-pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
+/// The compact parts of a stats readout: speeds, time-to-first-token, token counts, total
+/// time and cost, in that order. Shared by the per-response line and the live readout.
+fn parts(s: &RequestStats) -> Vec<String> {
     let mut parts = Vec::new();
     if let Some(p) = s.prefill_tps {
         parts.push(format!("prefill {}", fmt_rate(p)));
@@ -38,9 +39,24 @@ pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
     if let Some(c) = s.cost_usd {
         parts.push(fmt_cost(c));
     }
-    let text = parts.join(" · ");
+    parts
+}
+
+/// One compact line under a response; the hover shows the full breakdown.
+pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
+    let text = parts(s).join(" · ");
     ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).sense(egui::Sense::hover()))
         .on_hover_ui(|ui| details(ui, s));
+}
+
+/// Live readout of the request currently streaming in, shown above the input box. No hover:
+/// the full breakdown appears in the finished response instead.
+pub fn live_line(ui: &mut egui::Ui, s: &RequestStats) {
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(parts(s).join(" · ")).small().weak());
+    });
 }
 
 fn details(ui: &mut egui::Ui, s: &RequestStats) {
@@ -103,6 +119,12 @@ fn details(ui: &mut egui::Ui, s: &RequestStats) {
                         fmt_tokens(ctx),
                         used as f64 * 100.0 / ctx as f64
                     ),
+                );
+            }
+            if let Some(sl) = s.slot_usage {
+                row(
+                    "Server slots",
+                    format!("{}/{} in use", sl.busy.min(sl.total), sl.total.max(1)),
                 );
             }
             if let Some(m) = &s.served_model {

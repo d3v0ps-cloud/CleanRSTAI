@@ -17,6 +17,8 @@ Office document attachments in **v0.7.0**. Unticked items are still open.
 - [x] Estimate completion tokens when the server doesn't send `usage`
 - [x] In a turn with tool calls, show each model request separately, plus a combined total
 - [x] Label each figure as *measured* or *reported by server*
+- [x] Live readout above the message box while a response is streaming in, which disappears
+  once the request finishes
 
 ## 2. UI redesign
 
@@ -35,7 +37,7 @@ Office document attachments in **v0.7.0**. Unticked items are still open.
 
 - [x] **llama.cpp server**: native `timings` for accurate prefill and decode speeds
 - [x] **llama.cpp server**: context size
-- [ ] **llama.cpp server**: slot usage
+- [x] **llama.cpp server**: slot usage
 - [x] **LiteLLM proxy**: the model or deployment that served the request, and cost
 - [x] **Generic OpenAI-compatible**: standard `usage` plus client-side timing
 - [x] Auto-detect the type from a probe request, with a manual override
