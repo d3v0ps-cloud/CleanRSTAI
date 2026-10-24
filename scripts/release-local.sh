@@ -133,7 +133,9 @@ if [ "$(uname -s)" = Darwin ]; then
   staging=$(mktemp -d)
   cp -R "$app" "$staging/"
   ln -s /Applications "$staging/Applications"
-  hdiutil create -volname CleanRSTAI -srcfolder "$staging" -ov -format UDZO \
+  # hdiutil's own size estimate for -srcfolder can come up short, so give it headroom.
+  size_mb=$(( $(du -sm "$staging" | cut -f1) * 3 / 2 + 20 ))
+  hdiutil create -volname CleanRSTAI -srcfolder "$staging" -size "${size_mb}m" -ov -format UDZO \
     "$dist/CleanRSTAI-macos-universal.dmg" >/dev/null
   built+=(macos-universal)
 elif compgen -G "$dist/CleanRSTAI-macos-*" >/dev/null; then
