@@ -106,6 +106,11 @@ prefill/decode, cost, served model).
   `ui/theme.rs` (`theme::palette(dark)`). Fonts are bundled in `assets/fonts` (Instrument
   Sans for the interface and replies, IBM Plex Mono for code, Phosphor for icons; codepoints
   in `theme::icon`).
+- The app icon lives in `assets/icon/`: `glyph.png` is the source art and
+  `scripts/make-icons.py` (Pillow) makes the rest from it: light/dark 1024 px masters, the
+  `macos/` sizes listed under `[package.metadata.bundle] icon` in `Cargo.toml`, `icon.ico`,
+  and the 256 px `window-{light,dark}.png` that `theme::window_icon` embeds. The app swaps the
+  window icon when the theme changes.
 - egui 0.37 takes button text from `TextStyle::Body`, so `Body` is the sans interface style;
   prose uses `TextStyle::Body` (Instrument Sans), applied around markdown in `ui/markdown.rs`.
 - `ui/markdown.rs` splits replies into markdown segments (rendered by `egui_commonmark`) and

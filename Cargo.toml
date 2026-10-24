@@ -55,6 +55,19 @@ name = "CleanRSTAI"
 identifier = "net.bukn.cleanrstai"
 category = "public.app-category.productivity"
 short_description = "AI chat client with MCP support"
+# Made by scripts/make-icons.py; cargo-bundle builds the .icns from these.
+icon = [
+  "assets/icon/macos/icon_16x16.png",
+  "assets/icon/macos/icon_16x16@2x.png",
+  "assets/icon/macos/icon_32x32.png",
+  "assets/icon/macos/icon_32x32@2x.png",
+  "assets/icon/macos/icon_128x128.png",
+  "assets/icon/macos/icon_128x128@2x.png",
+  "assets/icon/macos/icon_256x256.png",
+  "assets/icon/macos/icon_256x256@2x.png",
+  "assets/icon/macos/icon_512x512.png",
+  "assets/icon/macos/icon_512x512@2x.png",
+]
 
 # egui_commonmark's shared backend with two local fixes: bold text uses the fonts' weight axis
 # (egui's `strong()` only changes colour), and the code-block copy button sits inside the block

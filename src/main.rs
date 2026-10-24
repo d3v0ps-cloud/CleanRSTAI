@@ -41,7 +41,9 @@ fn main() -> eframe::Result {
             .with_title("CleanRSTAI")
             .with_app_id("cleanrstai")
             .with_inner_size([1180.0, 780.0])
-            .with_min_inner_size([640.0, 420.0]),
+            .with_min_inner_size([640.0, 420.0])
+            // Light until the first frame knows the theme; the app swaps it to match.
+            .with_icon(ui::theme::window_icon(false)),
         ..Default::default()
     };
 
