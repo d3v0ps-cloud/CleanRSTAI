@@ -12,11 +12,11 @@ use crate::mcp::manager::{ServerStatus, ServerView};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
+    General,
     Providers,
     Mcp,
     Tools,
     Subagents,
-    General,
 }
 
 pub enum SettingsAction {
@@ -167,11 +167,11 @@ impl SettingsUi {
                 ui.add_space(6.0);
                 if self.search.trim().is_empty() {
                     for (tab, label) in [
+                        (Tab::General, "General"),
                         (Tab::Providers, "Providers"),
                         (Tab::Mcp, "MCP servers"),
                         (Tab::Tools, "Built-in tools"),
                         (Tab::Subagents, "Subagents"),
-                        (Tab::General, "General"),
                     ] {
                         if ui
                             .add(
@@ -1382,6 +1382,27 @@ impl SettingsUi {
 
 /// Settings the search box can find: (tab, section, label).
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
+    (Tab::General, "General", "System prompt"),
+    (Tab::General, "General", "Theme (light / dark)"),
+    (Tab::General, "General", "UI scale / zoom"),
+    (Tab::General, "General", "Send with Enter"),
+    (Tab::General, "General", "Keychain / secrets"),
+    (Tab::General, "General", "Show speed stats"),
+    (Tab::General, "General", "Load web images in replies"),
+    (
+        Tab::General,
+        "General",
+        "Reasoning / thinking display (collapsed by default)",
+    ),
+    (Tab::General, "General", "Auto-approve tool calls"),
+    (Tab::General, "General", "Max tool rounds"),
+    (Tab::General, "General", "Tool timeout"),
+    (Tab::General, "General", "Export settings"),
+    (Tab::General, "General", "Export conversations"),
+    (Tab::General, "General", "Import settings"),
+    (Tab::General, "General", "Import conversations"),
+    (Tab::General, "General", "Check for updates"),
+    (Tab::General, "General", "Update from (release source)"),
     (Tab::Providers, "Providers", "Base URL / endpoint"),
     (Tab::Providers, "Providers", "API key"),
     (Tab::Providers, "Providers", "Model"),
@@ -1427,26 +1448,6 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Parallel subagents, rounds and time limit",
     ),
     (Tab::Subagents, "Subagents", "Subagent system prompt"),
-    (Tab::General, "General", "System prompt"),
-    (Tab::General, "General", "Theme (light / dark)"),
-    (Tab::General, "General", "UI scale / zoom"),
-    (Tab::General, "General", "Send with Enter"),
-    (Tab::General, "General", "Keychain / secrets"),
-    (Tab::General, "General", "Show speed stats"),
-    (Tab::General, "General", "Load web images in replies"),
-    (
-        Tab::General,
-        "General",
-        "Reasoning / thinking display (collapsed by default)",
-    ),
-    (Tab::General, "General", "Auto-approve tool calls"),
-    (Tab::General, "General", "Max tool rounds"),
-    (Tab::General, "General", "Tool timeout"),
-    (Tab::General, "General", "Export settings"),
-    (Tab::General, "General", "Export conversations"),
-    (Tab::General, "General", "Import settings"),
-    (Tab::General, "General", "Import conversations"),
-    (Tab::General, "General", "Check for updates"),
 ];
 
 fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
