@@ -118,9 +118,11 @@ pub async fn llama_cpp_slot_usage(
     let busy = slots
         .iter()
         .filter(|s| {
-            s.get("state")
-                .and_then(Value::as_str)
-                .is_some_and(|st| st != "idle")
+            // Current servers report `is_processing`; older ones a numeric `state` (0 = idle).
+            s.get("is_processing")
+                .and_then(Value::as_bool)
+                .or_else(|| s.get("state").and_then(Value::as_u64).map(|st| st != 0))
+                .unwrap_or(false)
         })
         .count() as u64;
     Some(crate::stats::SlotUsage { busy, total })
@@ -639,9 +641,10 @@ mod server_tests {
     async fn llama_cpp_slot_usage_report() {
         let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
             ("GET", "/slots") => Response::json(json!([
-                {"id": 0, "state": "busy", "n_ctx": 4096, "n_ctx_seq": 2048},
-                {"id": 1, "state": "loaded", "n_ctx": 4096, "n_ctx_seq": 2048},
-                {"id": 2, "state": "idle"},
+                {"id": 0, "is_processing": true, "n_ctx": 4096},
+                {"id": 1, "is_processing": false, "n_ctx": 4096},
+                {"id": 2, "state": 1},
+                {"id": 3, "state": 0},
             ])),
             _ => Response::status(404),
         })
@@ -650,7 +653,7 @@ mod server_tests {
         let p = provider(&base, ProviderKind::LlamaCpp);
         assert_eq!(
             llama_cpp_slot_usage(&http, &p).await,
-            Some(crate::stats::SlotUsage { busy: 2, total: 3 })
+            Some(crate::stats::SlotUsage { busy: 2, total: 4 })
         );
         assert!(log.lock().unwrap().iter().any(|r| r.path == "/slots"));
         // A 404 (not a llama.cpp slot endpoint) yields nothing rather than panicking.

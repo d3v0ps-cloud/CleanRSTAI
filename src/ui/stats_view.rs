@@ -52,7 +52,7 @@ pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
 /// Live readout of the request currently streaming in, shown above the input box. No hover:
 /// the full breakdown appears in the finished response instead.
 pub fn live_line(ui: &mut egui::Ui, s: &RequestStats) {
-    ui.horizontal_centered(|ui| {
+    ui.horizontal(|ui| {
         ui.spinner();
         ui.add_space(4.0);
         ui.label(egui::RichText::new(parts(s).join(" · ")).small().weak());
