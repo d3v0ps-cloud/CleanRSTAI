@@ -1197,7 +1197,7 @@ impl ChatApp {
             self.new_chat();
         }
         if settings {
-            self.open_settings(Tab::Providers);
+            self.open_settings(Tab::General);
         }
         if palette {
             self.palette.toggle();
@@ -1243,6 +1243,12 @@ impl ChatApp {
                 Command::SetTheme(Theme::Dark),
             ),
             Entry::new(
+                icon::GEAR,
+                "General",
+                "Settings",
+                Command::OpenSettings(Tab::General),
+            ),
+            Entry::new(
                 icon::SERVER,
                 "Providers",
                 "Settings",
@@ -1265,12 +1271,6 @@ impl ChatApp {
                 "Subagents",
                 "Settings",
                 Command::OpenSettings(Tab::Subagents),
-            ),
-            Entry::new(
-                icon::GEAR,
-                "General",
-                "Settings",
-                Command::OpenSettings(Tab::General),
             ),
             Entry::new(
                 icon::EXPORT,
@@ -1412,7 +1412,7 @@ impl ChatApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_button(ui, icon::GEAR, "Settings (⌘,)").clicked() {
-                    self.open_settings(Tab::Providers);
+                    self.open_settings(Tab::General);
                 }
                 if icon_button(ui, icon::COMMAND, "Command palette (⌘K)").clicked() {
                     self.palette.toggle();

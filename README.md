@@ -236,15 +236,15 @@ console window.
 
 ## Configuration
 
-Open **Settings** (gear icon) (or press ⌘/Ctrl + ,).
+Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates (and their source), export |
 | Providers | Name, base URL (with presets), API key, model, temperature, max tokens, server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates, export |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
 connection settings changed are reconnected.
