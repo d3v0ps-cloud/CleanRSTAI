@@ -32,7 +32,8 @@ step puts `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older 
   GitHub Release with the files and `SHA256SUMS.txt`.
 - `scripts/release-local.sh [--publish] [--skip-tests]` does the same from a local machine.
 - The repository name is hard-coded in `src/update.rs` (the `repo!` macro, used for
-  `LATEST_RELEASE_URL` and the fetch tool's user agent) and `scripts/release-local.sh`.
+  `LATEST_RELEASE_URL`, the default of the "Update from" setting `general.update_url`, and the
+  fetch tool's user agent) and `scripts/release-local.sh`.
 - The in-app updater (`update::platform_package`) downloads release files by name:
   `CleanRSTAI-macos-universal.zip` (a `ditto` zip of the `.app`),
   `CleanRSTAI-linux-<arch>.tar.gz` (the bare `cleanrstai` binary) and `SHA256SUMS.txt`. Keep

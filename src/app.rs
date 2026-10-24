@@ -209,7 +209,7 @@ impl ChatApp {
             update_install: None,
         };
         if app.settings.general.check_for_updates {
-            app.spawn_update_check(false);
+            app.spawn_update_check(false, app.settings.general.update_url.clone());
         }
         if loaded.needs_migration {
             // Move plain-text secrets from settings.json into the keychain.
@@ -1112,12 +1112,12 @@ impl ChatApp {
         }
     }
 
-    fn spawn_update_check(&self, explicit: bool) {
+    fn spawn_update_check(&self, explicit: bool, setting: String) {
         let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), self.repaint_ctx.clone());
         self.rt.spawn(async move {
             let result = crate::update::check(
                 &http,
-                crate::update::LATEST_RELEASE_URL,
+                &crate::update::release_api_url(&setting),
                 env!("CARGO_PKG_VERSION"),
             )
             .await
@@ -1392,7 +1392,7 @@ impl ChatApp {
                     sui.checking_update = true;
                     sui.update_status = None;
                 }
-                self.spawn_update_check(true);
+                self.spawn_update_check(true, self.settings.general.update_url.clone());
             }
         }
     }
@@ -2245,7 +2245,7 @@ impl eframe::App for ChatApp {
                         sui.draft.active_provider = self.settings.active_provider;
                     }
                     SettingsAction::Close => keep = false,
-                    SettingsAction::CheckForUpdates => self.spawn_update_check(true),
+                    SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,
                     SettingsAction::ExportSettings { include_secrets } => {
                         let doc = export::settings_document(&self.settings, include_secrets);

@@ -54,6 +54,26 @@ struct ApiRelease {
     assets: Vec<Asset>,
 }
 
+/// The releases API URL for the "Update from" setting: `owner/repo` and `github.com/owner/repo`
+/// links become GitHub's `releases/latest` endpoint; any other URL is used as given (it must
+/// answer with a GitHub-style release, as Gitea and Forgejo do).
+pub fn release_api_url(setting: &str) -> String {
+    let s = setting.trim().trim_end_matches('/');
+    let repo = s
+        .strip_prefix("https://github.com/")
+        .or_else(|| s.strip_prefix("http://github.com/"))
+        .or_else(|| s.strip_prefix("github.com/"))
+        .or_else(|| (!s.contains("://")).then_some(s));
+    if let Some(path) = repo {
+        let mut parts = path.split('/').filter(|p| !p.is_empty());
+        if let (Some(owner), Some(name)) = (parts.next(), parts.next()) {
+            let name = name.trim_end_matches(".git");
+            return format!("https://api.github.com/repos/{owner}/{name}/releases/latest");
+        }
+    }
+    s.to_owned()
+}
+
 /// Parse `v1.2.3` / `1.2.3-beta.1` into comparable numbers. Pre-releases sort before the
 /// release they precede.
 fn parse_version(v: &str) -> Option<(u64, u64, u64, bool)> {
@@ -87,11 +107,7 @@ pub async fn check(http: &reqwest::Client, url: &str, current: &str) -> Result<U
         .context("couldn't reach GitHub")?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         // Also what a private repository answers without a sign-in, so not "up to date".
-        bail!(concat!(
-            "GitHub has no public release of ",
-            repo!(),
-            " (is the repository private?)"
-        ));
+        bail!("no public release at {url} (is the repository private?)");
     }
     if !resp.status().is_success() {
         bail!("GitHub answered HTTP {}", resp.status());
@@ -383,6 +399,24 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn release_api_urls() {
+        let api = "https://api.github.com/repos/me/fork/releases/latest";
+        for s in [
+            "me/fork",
+            "https://github.com/me/fork",
+            "github.com/me/fork/",
+            "https://github.com/me/fork.git",
+            "https://github.com/me/fork/releases",
+            api,
+        ] {
+            assert_eq!(release_api_url(s), api, "{s}");
+        }
+        assert_eq!(release_api_url(LATEST_RELEASE_URL), LATEST_RELEASE_URL);
+        let gitea = "https://git.example.com/api/v1/repos/me/fork/releases/latest";
+        assert_eq!(release_api_url(gitea), gitea);
     }
 
     #[test]

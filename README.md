@@ -108,8 +108,11 @@ source; the release workflow skips it until there is a Windows runner.
 - **Updates**: at startup (optional) and from **Settings → General**, CleanRSTAI looks for a
   newer release on GitHub. On macOS and Linux, **Update to …** in the top bar downloads it,
   checks it against the release's `SHA256SUMS.txt`, replaces the installed app and offers a
-  restart; elsewhere it links to the release page. The release must be public: GitHub
-  answers a private repository's release check with a 404.
+  restart; elsewhere it links to the release page. **Update from** sets where releases come
+  from: an `owner/repo`, a `github.com` link or any URL that answers like GitHub's
+  `releases/latest` API (Gitea and Forgejo do). It defaults to this repository and is saved
+  to `settings.json` only once changed, so a custom source carries over to later installs.
+  The release must be public: GitHub answers a private repository's release check with a 404.
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
   (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
 

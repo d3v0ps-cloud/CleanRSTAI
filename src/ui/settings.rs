@@ -28,11 +28,14 @@ pub enum SettingsAction {
     RefreshTools(String),
     SignIn(String),
     SignOut(String),
-    ExportSettings { include_secrets: bool },
+    ExportSettings {
+        include_secrets: bool,
+    },
     ExportConversations,
     ImportSettings,
     ImportConversations,
-    CheckForUpdates,
+    /// Check the given "Update from" setting (the draft's, so it works before saving).
+    CheckForUpdates(String),
     InstallUpdate,
 }
 
@@ -1162,6 +1165,23 @@ impl SettingsUi {
                                 "Check GitHub for a new release at startup",
                             );
                             ui.horizontal(|ui| {
+                                ui.label("Update from");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut g.update_url)
+                                        .hint_text("owner/repo or a releases API URL")
+                                        .desired_width(380.0),
+                                )
+                                .on_hover_text(
+                                    "A GitHub owner/repo, a github.com link, or a URL that \
+                                     answers like GitHub's releases/latest API",
+                                );
+                                if g.update_url != crate::update::LATEST_RELEASE_URL
+                                    && ui.button("Reset").clicked()
+                                {
+                                    g.update_url = crate::update::LATEST_RELEASE_URL.into();
+                                }
+                            });
+                            ui.horizontal(|ui| {
                                 if ui
                                     .add_enabled(
                                         !self.checking_update,
@@ -1171,7 +1191,9 @@ impl SettingsUi {
                                 {
                                     self.checking_update = true;
                                     self.update_status = None;
-                                    actions.push(SettingsAction::CheckForUpdates);
+                                    actions.push(SettingsAction::CheckForUpdates(
+                                        g.update_url.clone(),
+                                    ));
                                 }
                                 if self.checking_update {
                                     ui.spinner();

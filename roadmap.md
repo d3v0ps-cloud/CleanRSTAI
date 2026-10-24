@@ -71,6 +71,7 @@ streams in and llama.cpp slot usage in **v0.7.4**. Unticked items are still open
 - [x] In-app update check against GitHub Releases
 - [x] Install updates in the app on macOS and Linux (download, verify against
   `SHA256SUMS.txt`, replace the app, restart)
+- [x] Configurable update source ("Update from"), kept in the settings once changed
 - [ ] A proper app icon (replacing the placeholder), used for the window, taskbar/dock, `.dmg`
   and `.msi`
 
