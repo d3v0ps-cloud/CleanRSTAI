@@ -21,6 +21,9 @@ cargo test -- --ignored                      # e2e: mock LLM + `npx -y @modelcon
 CI (`.github/workflows/ci.yml`) runs fmt, clippy, `cargo test` and the ignored e2e tests on
 self-hosted runners (Gentoo Linux x64, Mac mini ARM64); Windows is intentionally disabled. A
 step puts `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust.
+The repository is public, so CI skips pull requests from forks (they would run on those
+machines); keep "Require approval for all external contributors" on in Settings → Actions, since
+a fork's PR could edit that check.
 
 ## Releases
 
