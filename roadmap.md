@@ -2,8 +2,9 @@
 
 Ticked items have shipped: items 1–8 in **v0.3.0**, items 9–12 in **v0.4.0**, and rich
 markdown and SVGs in chat, "Always allow" on the approval prompt and the web fetch tool in
-**v0.5.0**, workspace folders with file, search and shell tools in **v0.6.0**, and PDF and
-Office document attachments in **v0.7.0**. Unticked items are still open.
+**v0.5.0**, workspace folders with file, search and shell tools in **v0.6.0**, PDF and
+Office document attachments in **v0.7.0**, and the live stats readout while a response
+streams in and llama.cpp slot usage in **v0.7.4**. Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
 
