@@ -17,6 +17,8 @@ Office document attachments in **v0.7.0**. Unticked items are still open.
 - [x] Estimate completion tokens when the server doesn't send `usage`
 - [x] In a turn with tool calls, show each model request separately, plus a combined total
 - [x] Label each figure as *measured* or *reported by server*
+- [x] Live readout above the message box while a response is streaming in, which disappears
+  once the request finishes
 
 ## 2. UI redesign
 
