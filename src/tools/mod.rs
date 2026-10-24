@@ -164,6 +164,8 @@ pub struct Toolbox {
     mcp: ToolRouter,
     /// For the fetch tool.
     http: Option<reqwest::Client>,
+    /// Fetch may reach loopback, private and link-local addresses.
+    fetch_private: bool,
     /// The chat's workspace, for the workspace tools.
     workspace: Option<workspace::Workspace>,
 }
@@ -192,6 +194,7 @@ impl Toolbox {
             specs,
             mcp,
             http: None,
+            fetch_private: selection.builtins.fetch_private_networks,
             workspace: None,
         }
     }
@@ -264,7 +267,7 @@ impl Toolbox {
                 Ok(args) => args,
                 Err(e) => return error_output(format!("Error: {e:#}")),
             };
-            return match fetch::run(http, &args, timeout).await {
+            return match fetch::run(http, &args, timeout, self.fetch_private).await {
                 Ok(out) => out,
                 Err(e) => error_output(format!("Error: {e:#}")),
             };
@@ -612,9 +615,20 @@ mod tests {
             crate::testutil::Response::with_type(200, "text/plain", "hello from the web")
         })
         .await;
-        let sel = ToolSelection::new(&Settings::default(), &ToolOverrides::default());
         let args = json!({"url": format!("{base}/x")}).to_string();
         let t = Duration::from_secs(5);
+        // By default the local mock server is out of reach.
+        let sel = ToolSelection::new(&Settings::default(), &ToolOverrides::default());
+        let tb = Toolbox::new(ToolRouter::default(), &sel, None).with_http(reqwest::Client::new());
+        let out = tb.call(FETCH, &args, t).await;
+        assert!(
+            out.is_error && out.text.contains("public internet"),
+            "{}",
+            out.text
+        );
+        let mut settings = Settings::default();
+        settings.general.builtin_tools.fetch_private_networks = true;
+        let sel = ToolSelection::new(&settings, &ToolOverrides::default());
         // Without an HTTP client (never the case in the app) it fails cleanly.
         let tb = Toolbox::new(ToolRouter::default(), &sel, None);
         assert!(tb.call(FETCH, &args, t).await.is_error);

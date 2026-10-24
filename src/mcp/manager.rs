@@ -1,6 +1,7 @@
 //! Owns the live MCP connections and keeps them in sync with the settings.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -74,6 +75,8 @@ pub struct McpManager {
     rt: Handle,
     http: reqwest::Client,
     on_change: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Bumped on every change, so the UI can re-read [`McpManager::snapshot`] only then.
+    version: AtomicU64,
     /// Where OAuth tokens are kept (keychain, or a private file without one).
     tokens: super::oauth::Store,
     open_url: Mutex<UrlOpener>,
@@ -187,6 +190,7 @@ impl McpManager {
             rt,
             http,
             on_change: Mutex::new(None),
+            version: AtomicU64::new(0),
             tokens,
             open_url: Mutex::new(Arc::new(|url: &str| {
                 if let Err(e) = open::that_detached(url) {
@@ -274,7 +278,13 @@ impl McpManager {
         *self.on_change.lock().unwrap() = Some(Box::new(f));
     }
 
+    /// Counts changes to the servers' state (stderr output aside).
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
     fn changed(&self) {
+        self.version.fetch_add(1, Ordering::AcqRel);
         if let Some(f) = self.on_change.lock().unwrap().as_ref() {
             f();
         }
@@ -327,12 +337,17 @@ impl McpManager {
             }
         }
         for id in to_connect {
-            self.connect(&id);
+            self.start_connecting(&id);
         }
         self.changed();
     }
 
     pub fn connect(self: &Arc<Self>, id: &str) {
+        self.start_connecting(id);
+        self.changed();
+    }
+
+    fn start_connecting(self: &Arc<Self>, id: &str) {
         let mut entries = self.entries.lock().unwrap();
         let Some(e) = entries.iter_mut().find(|e| e.config.id == id) else {
             return;

@@ -258,72 +258,36 @@ mod tests {
     //! default: `cargo test -- --ignored`.
     use super::*;
     use crate::config::{McpServerConfig, McpTransportConfig};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use crate::testutil::{Request, Response, serve};
 
-    async fn mock_llm() -> (String, Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
-        let seen = bodies.clone();
-        tokio::spawn(async move {
-            loop {
-                let (mut sock, _) = listener.accept().await.unwrap();
-                let mut buf = Vec::new();
-                let mut tmp = [0u8; 4096];
-                let body = loop {
-                    let n = sock.read(&mut tmp).await.unwrap();
-                    buf.extend_from_slice(&tmp[..n]);
-                    let text = String::from_utf8_lossy(&buf).to_string();
-                    if let Some(h) = text.find("\r\n\r\n") {
-                        let len: usize = text[..h]
-                            .lines()
-                            .find_map(|l| {
-                                l.to_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|v| v.trim().parse().unwrap())
-                            })
-                            .unwrap_or(0);
-                        if buf.len() >= h + 4 + len {
-                            break serde_json::from_slice::<serde_json::Value>(
-                                &buf[h + 4..h + 4 + len],
-                            )
-                            .unwrap();
-                        }
-                    }
-                };
-                let has_tool_result = body["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|m| m["role"] == "tool");
-                seen.lock().unwrap().push(body);
-                let chunks: Vec<String> = if has_tool_result {
-                    vec![
-                        r#"{"choices":[{"delta":{"reasoning_content":"thinking"}}]}"#.into(),
-                        r#"{"choices":[{"delta":{"content":"The tool "}}]}"#.into(),
-                        r#"{"choices":[{"delta":{"content":"said hi."},"finish_reason":"stop"}]}"#
-                            .into(),
-                    ]
-                } else {
-                    vec![
-                        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"everything__echo","arguments":""}}]}}]}"#.into(),
-                        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"message\":"}}]}}]}"#.into(),
-                        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"hi\"}"}}]},"finish_reason":"tool_calls"}]}"#.into(),
-                    ]
-                };
-                let mut sse = String::new();
-                for c in chunks {
-                    sse.push_str(&format!("data: {c}\n\n"));
-                }
-                sse.push_str("data: [DONE]\n\n");
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
-                    sse.len()
-                );
-                sock.write_all(resp.as_bytes()).await.unwrap();
-            }
-        });
-        (format!("http://{addr}/v1"), bodies)
+    async fn mock_llm() -> (String, Arc<std::sync::Mutex<Vec<Request>>>) {
+        let (base, log) = serve(|r| {
+            let has_tool_result = r.json()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["role"] == "tool");
+            let chunks: Vec<&str> = if has_tool_result {
+                vec![
+                    r#"{"choices":[{"delta":{"reasoning_content":"thinking"}}]}"#,
+                    r#"{"choices":[{"delta":{"content":"The tool "}}]}"#,
+                    r#"{"choices":[{"delta":{"content":"said hi."},"finish_reason":"stop"}]}"#,
+                ]
+            } else {
+                vec![
+                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"everything__echo","arguments":""}}]}}]}"#,
+                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"message\":"}}]}}]}"#,
+                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"hi\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+                ]
+            };
+            let chunks: Vec<serde_json::Value> = chunks
+                .iter()
+                .map(|c| serde_json::from_str(c).unwrap())
+                .collect();
+            Response::sse(&chunks)
+        })
+        .await;
+        (format!("{base}/v1"), log)
     }
 
     async fn wait_connected(mcp: &McpManager) {
@@ -395,7 +359,8 @@ mod tests {
         );
         assert_eq!(content, "The tool said hi.");
 
-        let bodies = bodies.lock().unwrap();
+        let bodies: Vec<serde_json::Value> =
+            bodies.lock().unwrap().iter().map(Request::json).collect();
         assert_eq!(bodies.len(), 2);
         assert!(bodies[0]["tools"].as_array().unwrap().len() > 3);
         let second = bodies[1]["messages"].as_array().unwrap();

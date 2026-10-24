@@ -55,6 +55,20 @@ pub struct ChatMessage {
     pub cancelled: bool,
 }
 
+/// The tool results answering the calls of the assistant message at `idx`: the tool
+/// messages right after it. (Matching by id across the whole chat would mix up turns from
+/// servers that reuse ids like `call_0`.)
+pub fn results_after(
+    messages: &[ChatMessage],
+    idx: usize,
+) -> std::collections::HashMap<&str, &ChatMessage> {
+    messages[idx + 1..]
+        .iter()
+        .take_while(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m)))
+        .collect()
+}
+
 impl ChatMessage {
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {

@@ -33,7 +33,9 @@ source; the release workflow skips it until there is a Windows runner.
     shows them as a checklist in the chat and ticks them off as it goes.
   - **Web fetch**: reads an http(s) URL. Web pages come back as readable text with their
     links listed, plain text and JSON as they are, and images as images; long pages are read
-    in parts. Downloads stop at 5 MB.
+    in parts. Downloads stop at 5 MB. It only reaches public internet addresses (not
+    localhost, private networks or cloud metadata endpoints, also after a redirect) unless
+    *Let web fetch reach this computer and private networks* is on.
 
   Time, calculator and task list run locally without asking. Web fetch reaches the internet,
   so it asks for approval like MCP tools do ("Always allow this tool" skips that for the rest

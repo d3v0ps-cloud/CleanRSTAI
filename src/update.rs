@@ -3,8 +3,17 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
+/// The GitHub repository (`owner/name`), as a literal for `concat!`. Also named in
+/// `scripts/release-local.sh`.
+macro_rules! repo {
+    () => {
+        "d3v0ps-cloud/CleanRSTAI"
+    };
+}
+pub(crate) use repo;
+
 pub const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/d3v0ps-cloud/CleanRSTAI/releases/latest";
+    concat!("https://api.github.com/repos/", repo!(), "/releases/latest");
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {

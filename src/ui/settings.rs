@@ -890,6 +890,21 @@ impl SettingsUi {
                     });
                     ui.add_space(8.0);
                 }
+                ui.add_enabled_ui(b.fetch, |ui| {
+                    ui.checkbox(
+                        &mut b.fetch_private_networks,
+                        "Let web fetch reach this computer and private networks",
+                    );
+                    ui.indent("fetch-private", |ui| {
+                        ui.weak(
+                            "Off: localhost, private (10.x, 192.168.x, …) and link-local addresses, \
+                             such as cloud metadata endpoints, are refused, also after a redirect. \
+                             Subagents and auto-approved calls fetch without asking, so leave \
+                             this off unless you need it.",
+                        );
+                    });
+                });
+                ui.add_space(8.0);
                 ui.weak(format!(
                     "{}  The subagent tool has its own page: Subagents.",
                     icon::ROBOT

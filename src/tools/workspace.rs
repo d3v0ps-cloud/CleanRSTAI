@@ -489,11 +489,24 @@ impl Workspace {
         };
         cmd.current_dir(&self.root)
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let output = match tokio::time::timeout(Duration::from_secs(secs), cmd.output()).await {
-            Ok(r) => r.context("couldn't start the shell")?,
-            Err(_) => bail!("the command didn't finish within {secs} s and was stopped"),
-        };
+        // Its own process group, so a timeout can stop everything the command started.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let child = cmd.spawn().context("couldn't start the shell")?;
+        let pid = child.id();
+        let output =
+            match tokio::time::timeout(Duration::from_secs(secs), child.wait_with_output()).await {
+                Ok(r) => r.context("the shell failed")?,
+                Err(_) => {
+                    if let Some(pid) = pid {
+                        kill_command(pid);
+                    }
+                    bail!("the command didn't finish within {secs} s and was stopped")
+                }
+            };
         let code = output
             .status
             .code()
@@ -511,6 +524,18 @@ impl Workspace {
             images: Vec::new(),
         })
     }
+}
+
+/// Stop a timed-out shell command and every process it started.
+fn kill_command(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(pid) {
+        // SAFETY: a plain syscall. The shell leads its own process group (`process_group(0)`),
+        // and that group id can't be reused while any of its processes is still alive.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    crate::mcp::stdio::kill_process_tree(pid);
 }
 
 /// Glob matching on a relative path. A pattern without `/` matches file names at any depth
@@ -940,6 +965,17 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_stops_the_whole_pipeline() {
+        let (_d, ws) = temp_workspace();
+        let cmd = "(sleep 2; touch late) | cat";
+        let out = call(&ws, SHELL, json!({"command": cmd, "timeout_secs": 1})).await;
+        assert!(out.is_error, "{}", out.text);
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(!ws.root().join("late").exists());
     }
 
     #[test]

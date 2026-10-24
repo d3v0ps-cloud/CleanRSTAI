@@ -72,6 +72,8 @@ pub struct ChatApp {
     /// Files still being read for `pending_attachments`.
     reading_files: usize,
     images: ImageCache,
+    /// MCP server state for the composer and top bar, re-read when the manager changes.
+    mcp_views: (u64, Arc<Vec<crate::mcp::manager::ServerView>>),
     viewing: Option<(String, egui::load::Bytes, String)>,
     prompt_form: Option<PromptForm>,
     /// For background tasks to request a repaint when their results arrive.
@@ -180,7 +182,8 @@ impl ChatApp {
             keychain_warned: false,
             pending_attachments: Vec::new(),
             reading_files: 0,
-            images: ImageCache::new(),
+            images: ImageCache::default(),
+            mcp_views: (u64::MAX, Arc::default()),
             viewing: None,
             prompt_form: None,
             repaint_ctx: cc.egui_ctx.clone(),
@@ -274,7 +277,7 @@ impl ChatApp {
 
         let overrides = self.tool_overrides().clone();
         let sel = ToolSelection::new(&self.settings, &overrides);
-        let views = self.mcp.snapshot();
+        let views = self.mcp_views();
         let servers: Vec<(String, String)> = self
             .settings
             .mcp_servers
@@ -770,7 +773,7 @@ impl ChatApp {
 
     /// Menu of MCP resources (attach) and prompts (insert) from connected servers.
     fn mcp_menu(&mut self, ui: &mut egui::Ui) {
-        let views = self.mcp.snapshot();
+        let views = self.mcp_views();
         let usable: Vec<_> = views
             .iter()
             .filter(|v| !v.resources.is_empty() || !v.prompts.is_empty())
@@ -900,7 +903,24 @@ impl ChatApp {
 
     /// Put a prompt's messages into the chat: earlier messages are added to the
     /// conversation; a final user message goes into the input box for review.
+    /// The MCP servers' state, snapshotted again only after the manager reports a change
+    /// (the composer menus and top bar need it every frame).
+    fn mcp_views(&mut self) -> Arc<Vec<crate::mcp::manager::ServerView>> {
+        let version = self.mcp.version();
+        if self.mcp_views.0 != version {
+            self.mcp_views = (version, Arc::new(self.mcp.snapshot()));
+        }
+        self.mcp_views.1.clone()
+    }
+
     fn insert_prompt(&mut self, mut messages: Vec<crate::mcp::PromptMessage>) {
+        // Messages before the last go straight into the chat, which can't change mid-run.
+        let adds_history =
+            messages.len() > 1 || messages.last().is_some_and(|m| m.role != Role::User);
+        if adds_history && self.current.is_some_and(|id| self.runs.contains_key(&id)) {
+            self.notice = Some("Wait for the current response to finish.".into());
+            return;
+        }
         let last_user = messages
             .last()
             .is_some_and(|m| m.role == Role::User)
@@ -911,10 +931,6 @@ impl ChatApp {
                 self.new_chat();
             }
             let id = self.current.unwrap();
-            if self.runs.contains_key(&id) {
-                self.notice = Some("Wait for the current response to finish.".into());
-                return;
-            }
             let conv = self.conv_mut(id).unwrap();
             for m in messages {
                 let mut msg = ChatMessage::new(m.role, m.text);
@@ -1333,8 +1349,7 @@ impl ChatApp {
                     .count();
                 if configured > 0 {
                     let needs_sign_in = self
-                        .mcp
-                        .snapshot()
+                        .mcp_views()
                         .iter()
                         .any(|v| v.status == crate::mcp::manager::ServerStatus::NeedsSignIn);
                     let (dot, hover) = if needs_sign_in {

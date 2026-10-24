@@ -80,12 +80,23 @@ fn origin(p: &ProviderConfig) -> String {
     base.strip_suffix("/v1").unwrap_or(base).to_owned()
 }
 
-/// llama.cpp's `/props`: returns the context size if this is a llama.cpp server.
+/// llama.cpp's `/props`: returns the context size if this is a llama.cpp server. Asked
+/// once per server and model, not on every generation; failures are asked again.
 pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) -> Option<u64> {
+    static CACHE: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let key = (origin(p), p.model.clone());
+    if let Some(n) = CACHE.lock().unwrap().get(&key) {
+        return Some(*n);
+    }
     let v = llama_cpp_props(http, p).await?;
-    v.pointer("/default_generation_settings/n_ctx")
+    let n = v
+        .pointer("/default_generation_settings/n_ctx")
         .or_else(|| v.get("n_ctx"))
-        .and_then(Value::as_u64)
+        .and_then(Value::as_u64)?;
+    CACHE.lock().unwrap().insert(key, n);
+    Some(n)
 }
 
 async fn llama_cpp_props(http: &reqwest::Client, p: &ProviderConfig) -> Option<Value> {
@@ -564,6 +575,17 @@ mod server_tests {
         let p = provider(&base, ProviderKind::Generic);
         assert_eq!(detect_kind(&http, &p).await, ProviderKind::LlamaCpp);
         assert_eq!(llama_cpp_context_size(&http, &p).await, Some(8192));
+        // Asked once: the second call is answered from the cache.
+        let props = |log: &std::sync::Mutex<Vec<crate::testutil::Request>>| {
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path == "/props")
+                .count()
+        };
+        let before = props(&log);
+        assert_eq!(llama_cpp_context_size(&http, &p).await, Some(8192));
+        assert_eq!(props(&log), before);
 
         let turn = chat_completion(&http, &p, vec![], &[], |_| {})
             .await

@@ -217,11 +217,25 @@ fn zip_entry<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) 
     let f = zip
         .by_name(name)
         .with_context(|| format!("{name} is missing"))?;
-    let mut s = String::new();
-    f.take(MAX_ENTRY_BYTES)
-        .read_to_string(&mut s)
-        .with_context(|| format!("couldn't read {name}"))?;
-    Ok(s)
+    let size = f.size();
+    let bytes =
+        read_capped(f, size, MAX_ENTRY_BYTES).with_context(|| format!("couldn't read {name}"))?;
+    String::from_utf8(bytes).with_context(|| format!("couldn't read {name}"))
+}
+
+/// Read an archive entry that claims to be `declared` bytes, failing (rather than
+/// truncating) when it is or turns out to be larger than `cap`.
+fn read_capped(r: impl Read, declared: u64, cap: u64) -> Result<Vec<u8>> {
+    let too_big = || anyhow!("it expands to more than {} MB", cap / (1024 * 1024));
+    if declared > cap {
+        return Err(too_big());
+    }
+    let mut data = Vec::new();
+    r.take(cap + 1).read_to_end(&mut data)?;
+    if data.len() as u64 > cap {
+        return Err(too_big());
+    }
+    Ok(data)
 }
 
 fn docx(bytes: &[u8]) -> Result<String> {
@@ -574,12 +588,11 @@ fn csv_field(s: &str) -> Cow<'_, str> {
 }
 
 fn cfb_stream(cfb: &mut cfb::CompoundFile<Cursor<&[u8]>>, path: &str) -> Result<Vec<u8>> {
-    let mut data = Vec::new();
-    cfb.open_stream(path)
-        .with_context(|| format!("{path} is missing"))?
-        .take(MAX_ENTRY_BYTES)
-        .read_to_end(&mut data)?;
-    Ok(data)
+    let stream = cfb
+        .open_stream(path)
+        .with_context(|| format!("{path} is missing"))?;
+    let size = stream.len();
+    read_capped(stream, size, MAX_ENTRY_BYTES).with_context(|| format!("couldn't read {path}"))
 }
 
 fn u16_at(b: &[u8], at: usize) -> Result<u16> {
@@ -991,6 +1004,20 @@ fn rtf(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_entries_fail_instead_of_truncating() {
+        const MB: u64 = 1024 * 1024;
+        let data = vec![b'x'; (MB + 1) as usize];
+        assert_eq!(
+            read_capped(&data[..MB as usize], MB, MB).unwrap().len(),
+            MB as usize
+        );
+        // Too big by its declared size, or by what it actually holds (a lying header).
+        assert!(read_capped(&data[..10], 2 * MB, MB).is_err());
+        let err = read_capped(&data[..], 10, MB).unwrap_err();
+        assert!(err.to_string().contains("more than 1 MB"), "{err}");
+    }
 
     fn fixture(name: &str) -> Vec<u8> {
         let path = format!(
