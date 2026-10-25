@@ -94,14 +94,58 @@ its attachments, but you can't add files from the browser.
   for 60 seconds. Each wrong password also takes about half a second to answer.
 - **What never leaves the computer.** API keys, MCP secrets and settings are not sent to the
   browser. Model requests, tools and approvals stay on this computer.
-- **Network.** Use remote access on a network you trust. Do not forward the port from your
+- **Network.** Use remote access on a network you trust. To reach it from outside, use the
+  [Cloudflare Tunnel](#reaching-it-from-outside-your-network). Do not forward the port from your
   router to the internet.
 
-### Reaching it from outside your network
+## Reaching it from outside your network
 
-Remote access is meant for your own network. A tunnel integration to reach CleanRSTAI from
-outside is planned (see the [roadmap](https://github.com/d3v0ps-cloud/CleanRSTAI/blob/main/roadmap.md)).
-Until it is available, do not open the port to the internet.
+A [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+makes the server reachable from anywhere at an address such as `https://chat.example.com`,
+without opening a port on your router. CleanRSTAI runs Cloudflare's `cloudflared` program for
+you while remote access is on. You need a Cloudflare account and a domain on Cloudflare.
+
+### Setting it up
+
+1. Install `cloudflared` from
+   [Cloudflare's downloads page](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+   (on macOS, `brew install cloudflared`). You don't need to log in with it.
+2. In the Cloudflare dashboard, go to **Zero Trust → Networks → Tunnels** and create a
+   tunnel of type **Cloudflared**. Copy its token: it is the long string after `--token` in
+   the install command the dashboard shows. You don't need to run that command.
+3. Add a **public hostname** to the tunnel, for example `chat` on `example.com`, and point
+   its service at this server:
+   - with the self-signed certificate (the default): type **HTTPS**, URL `localhost:8484`,
+     and under **Additional application settings → TLS** turn on **No TLS Verify**;
+   - with **Off (plain HTTP)**: type **HTTP**, URL `localhost:8484`.
+
+   Use your port if you changed it. The status in Settings shows the exact address to use.
+4. In **Settings → General → Remote access**, tick **Cloudflare Tunnel**, paste the
+   **Tunnel token**, and enter the **Public hostname** (`chat.example.com`). Click **Apply**.
+5. When **Tunnel status** says *Online at https://chat.example.com/*, open that address on
+   any device and log in.
+
+**Listen on** can stay at **This computer only**: the tunnel reaches the server from this
+computer. The tunnel needs a password of at least 12 characters, since anyone on the internet
+can reach the login page.
+
+### What changes with a tunnel
+
+- **Cloudflare carries the traffic.** Cloudflare ends the HTTPS connection to the browser, so
+  your chats pass through Cloudflare's network, in the clear inside it, on the way to this
+  computer.
+- **Logins are limited per visitor.** The lockout uses the visitor's address that Cloudflare
+  reports. In addition, after 20 wrong passwords through the tunnel within 10 minutes, from
+  any addresses, logins through the tunnel pause for 5 minutes. Logins on your own network
+  aren't affected.
+- **The tunnel's hostname is accepted** alongside the local addresses, only while the tunnel
+  runs.
+- **cloudflared restarts on its own** if it stops, after a few seconds and then less often,
+  unless Cloudflare refuses the token.
+
+Turning the tunnel off, turning remote access off or quitting the app stops `cloudflared`.
+Changing the tunnel settings restarts only the tunnel, so browsers on your network stay
+logged in.
 
 ## Limits
 

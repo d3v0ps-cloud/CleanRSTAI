@@ -67,9 +67,22 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
 - **Status**: *Running at* the address, one line per address with a copy button, or *Stopped*,
   or the error. With the self-signed certificate, a note says browsers warn about it the first
   time.
+- **Cloudflare Tunnel**: the checkbox *Reach this computer from outside the network through a
+  Cloudflare Tunnel* (off by default). When it is on:
+  - **Tunnel token**: the tunnel's token from the Cloudflare dashboard, with a **Show** toggle.
+    It is kept in the keychain like your API keys.
+  - **Public hostname**: the hostname you gave the tunnel, such as `chat.example.com`.
+    Optional: the app also learns it from `cloudflared` once the tunnel connects.
+  - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
+    with **Browse…**.
+  - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy
+    button and the number of connections, or the error (*Trying again shortly* when it will).
+    A warning appears while the password is shorter than 12 characters, which the tunnel
+    needs, and a note gives the address to point the tunnel's public hostname at.
 
 Changes take effect when you click **Apply** or **Save & Close**. The server restarts, which
-logs browsers out.
+logs browsers out; a change to the tunnel settings alone restarts only the tunnel. See
+[Reaching it from outside your network](../using/remote-access.html#reaching-it-from-outside-your-network).
 
 ## Updates
 

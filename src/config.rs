@@ -369,6 +369,23 @@ pub struct RemoteSettings {
     pub cert_path: String,
     /// PEM private key file, used when `tls` is `Files`.
     pub key_path: String,
+    /// A Cloudflare Tunnel that makes the server reachable from outside the network.
+    pub tunnel: TunnelSettings,
+}
+
+/// A named Cloudflare Tunnel run with `cloudflared`. The tunnel's public hostname and the
+/// local service it points at are set up in the Cloudflare dashboard.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TunnelSettings {
+    pub enabled: bool,
+    /// The tunnel's token from the Cloudflare dashboard. Kept in the keychain.
+    pub token: String,
+    /// The tunnel's public hostname, e.g. `chat.example.com`. Optional: cloudflared also
+    /// reports the hostnames once it is connected.
+    pub hostname: String,
+    /// Path to `cloudflared`; empty finds it on `PATH`.
+    pub cloudflared: String,
 }
 
 impl Default for RemoteSettings {
@@ -381,6 +398,7 @@ impl Default for RemoteSettings {
             tls: RemoteTls::default(),
             cert_path: String::new(),
             key_path: String::new(),
+            tunnel: TunnelSettings::default(),
         }
     }
 }

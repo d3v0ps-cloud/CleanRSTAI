@@ -10,7 +10,7 @@ use crate::config::{
     Settings, Theme, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
-use crate::remote::RemoteStatus;
+use crate::remote::{RemoteStatus, TunnelStatus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -22,7 +22,7 @@ pub enum Tab {
 }
 
 pub enum SettingsAction {
-    Apply(Settings),
+    Apply(Box<Settings>),
     Close,
     FetchModels(ProviderConfig),
     DetectKind(ProviderConfig),
@@ -71,15 +71,15 @@ pub struct SettingsUi {
 
 pub const FIELD_WIDTH: f32 = 420.0;
 
-/// The "Remote access" rows of the General grid (below Secrets). `remote` is the applied
-/// server state; `remote_dirty` says the draft differs from it.
+/// The "Remote access" rows of the General grid (below Secrets), with the Cloudflare Tunnel
+/// rows under them.
 fn remote_rows(
     ui: &mut egui::Ui,
     r: &mut RemoteSettings,
     show_password: &mut bool,
-    remote: &RemoteStatus,
-    remote_dirty: bool,
+    status: &RemoteUiStatus,
 ) {
+    let remote = status.server;
     ui.label("Remote access");
     ui.checkbox(
         &mut r.enabled,
@@ -181,7 +181,7 @@ fn remote_rows(
                 ui.label("Stopped");
             }
         }
-        if remote_dirty {
+        if status.server_dirty {
             ui.weak("Apply to restart the server with these settings.");
         }
         match r.tls {
@@ -196,6 +196,144 @@ fn remote_rows(
             }
             RemoteTls::Files => {}
         }
+    });
+    ui.end_row();
+
+    tunnel_rows(ui, r, show_password, status);
+}
+
+/// What the Remote access rows show besides the draft: the applied server and tunnel state,
+/// and whether the draft differs from what is applied.
+pub struct RemoteUiStatus<'a> {
+    pub server: &'a RemoteStatus,
+    pub tunnel: &'a TunnelStatus,
+    pub server_dirty: bool,
+    pub tunnel_dirty: bool,
+}
+
+/// The "Cloudflare Tunnel" rows, under the Remote access status.
+fn tunnel_rows(
+    ui: &mut egui::Ui,
+    r: &mut RemoteSettings,
+    show_password: &mut bool,
+    status: &RemoteUiStatus,
+) {
+    ui.label("Cloudflare Tunnel");
+    ui.checkbox(
+        &mut r.tunnel.enabled,
+        "Reach this computer from outside the network through a Cloudflare Tunnel",
+    );
+    ui.end_row();
+    if !r.tunnel.enabled {
+        return;
+    }
+    let t = &mut r.tunnel;
+
+    ui.label("Tunnel token");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut t.token)
+                .password(!*show_password)
+                .hint_text("from the tunnel's page in the Cloudflare dashboard")
+                .desired_width(FIELD_WIDTH - 100.0),
+        );
+        ui.checkbox(show_password, "Show");
+    });
+    ui.end_row();
+
+    ui.label("Public hostname");
+    ui.add(
+        egui::TextEdit::singleline(&mut t.hostname)
+            .hint_text("chat.example.com")
+            .desired_width(FIELD_WIDTH - 100.0),
+    )
+    .on_hover_text(
+        "The hostname you gave the tunnel in the Cloudflare dashboard. Optional: the app also \
+         learns it from cloudflared once the tunnel connects.",
+    );
+    ui.end_row();
+
+    ui.label("cloudflared");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut t.cloudflared)
+                .hint_text("found on PATH")
+                .desired_width(FIELD_WIDTH - 100.0),
+        );
+        if ui.button("Browse…").clicked()
+            && let Some(file) = rfd::FileDialog::new()
+                .set_title("Choose cloudflared")
+                .pick_file()
+        {
+            t.cloudflared = file.display().to_string();
+        }
+    });
+    ui.end_row();
+
+    ui.label("Tunnel status");
+    ui.vertical(|ui| {
+        let warn = ui.visuals().warn_fg_color;
+        let error = ui.visuals().error_fg_color;
+        match status.tunnel {
+            TunnelStatus::Off => {
+                ui.label("Stopped");
+            }
+            TunnelStatus::Connecting(last_error) => {
+                ui.label("Connecting to Cloudflare…");
+                if let Some(e) = last_error {
+                    ui.colored_label(warn, e);
+                }
+            }
+            TunnelStatus::Connected { connections, hosts } => {
+                for host in hosts {
+                    let url = format!("https://{host}/");
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Online at {url}"));
+                        if super::widgets::icon_button(ui, icon::COPY, "Copy address").clicked() {
+                            ui.ctx().copy_text(url.clone());
+                        }
+                    });
+                }
+                if hosts.is_empty() {
+                    ui.colored_label(
+                        warn,
+                        "Connected, but the tunnel has no public hostname yet: add one in the \
+                         Cloudflare dashboard.",
+                    );
+                }
+                let plural = if *connections == 1 { "" } else { "s" };
+                ui.weak(format!("{connections} connection{plural} to Cloudflare"));
+            }
+            TunnelStatus::Failed { error: e, retrying } => {
+                ui.colored_label(error, e);
+                if *retrying {
+                    ui.weak("Trying again shortly.");
+                }
+            }
+        }
+        if status.tunnel_dirty {
+            ui.weak("Apply to start the tunnel with these settings.");
+        }
+        if r.password.trim().chars().count() < crate::remote::MIN_TUNNEL_PASSWORD_CHARS {
+            ui.colored_label(
+                warn,
+                format!(
+                    "Use a password of at least {} characters: the tunnel puts the server on \
+                     the internet.",
+                    crate::remote::MIN_TUNNEL_PASSWORD_CHARS
+                ),
+            );
+        }
+        let (scheme, tls_note) = match r.tls {
+            RemoteTls::Off => ("http", ""),
+            RemoteTls::SelfSigned => ("https", ", with No TLS Verify on"),
+            RemoteTls::Files => ("https", ""),
+        };
+        ui.weak(format!(
+            "In the Cloudflare dashboard, point the tunnel's public hostname at \
+             {scheme}://localhost:{}{tls_note}.",
+            r.port
+        ));
     });
     ui.end_row();
 }
@@ -273,6 +411,7 @@ impl SettingsUi {
         live: &Settings,
         servers: &[ServerView],
         remote: &RemoteStatus,
+        tunnel: &TunnelStatus,
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
@@ -347,11 +486,11 @@ impl SettingsUi {
                         .add_enabled(dirty, super::theme::primary_button("Save & Close", dark))
                         .clicked()
                     {
-                        actions.push(SettingsAction::Apply(self.draft.clone()));
+                        actions.push(SettingsAction::Apply(Box::new(self.draft.clone())));
                         actions.push(SettingsAction::Close);
                     }
                     if ui.add_enabled(dirty, egui::Button::new("Apply")).clicked() {
-                        actions.push(SettingsAction::Apply(self.draft.clone()));
+                        actions.push(SettingsAction::Apply(Box::new(self.draft.clone())));
                     }
                     if ui
                         .button(if dirty { "Discard changes" } else { "Close" })
@@ -390,7 +529,7 @@ impl SettingsUi {
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
                 Tab::Subagents => self.subagents_tab(ui),
-                Tab::General => self.general_tab(ui, live, remote, &mut actions),
+                Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
             }
         });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
@@ -1221,10 +1360,18 @@ impl SettingsUi {
         ui: &mut egui::Ui,
         live: &Settings,
         remote: &RemoteStatus,
+        tunnel: &TunnelStatus,
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
-        let remote_dirty = self.draft.general.remote != live.general.remote;
+        let (draft_remote, live_remote) = (&self.draft.general.remote, &live.general.remote);
+        let remote_status = RemoteUiStatus {
+            server: remote,
+            tunnel,
+            server_dirty: crate::remote::server_settings(draft_remote)
+                != crate::remote::server_settings(live_remote),
+            tunnel_dirty: draft_remote.tunnel != live_remote.tunnel,
+        };
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
         let g = &mut self.draft.general;
@@ -1294,7 +1441,7 @@ impl SettingsUi {
                         });
                         ui.end_row();
 
-                        remote_rows(ui, &mut g.remote, &mut self.show_remote_password, remote, remote_dirty);
+                        remote_rows(ui, &mut g.remote, &mut self.show_remote_password, &remote_status);
 
                         ui.label("Updates");
                         ui.vertical(|ui| {
@@ -1540,6 +1687,10 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "Remote access password"),
     (Tab::General, "General", "Remote access port"),
     (Tab::General, "General", "Remote access HTTPS certificate"),
+    (Tab::General, "General", "Cloudflare Tunnel"),
+    (Tab::General, "General", "Cloudflare Tunnel token"),
+    (Tab::General, "General", "Cloudflare Tunnel public hostname"),
+    (Tab::General, "General", "cloudflared path"),
     (Tab::General, "General", "Show speed stats"),
     (Tab::General, "General", "Load web images in replies"),
     (

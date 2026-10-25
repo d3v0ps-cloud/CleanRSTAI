@@ -208,7 +208,7 @@ Run CleanRSTAI as a server so the same interface can be used from another device
 
 Later, beyond the first version:
 
-- [ ] Cloudflare Tunnel integration: start and stop a tunnel from Settings, using `cloudflared`
+- [x] Cloudflare Tunnel integration: start and stop a tunnel from Settings, using `cloudflared`
   with a token for a named tunnel, so the server is reachable from outside the network without
   opening a port on the router; show the public address, and keep the login required
 - [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
