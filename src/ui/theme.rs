@@ -57,7 +57,8 @@ pub mod icon {
     pub const TERMINAL: &str = "\u{EAE8}";
 }
 
-/// The colours of one mode.
+/// The colours of one mode. Every text colour (ink to error) reads at WCAG AA contrast,
+/// 4.5:1, on `paper`, `shelf` and `raised`; the tests check it.
 #[derive(Clone, Copy)]
 pub struct Palette {
     /// Main background.
@@ -107,7 +108,7 @@ pub fn palette(dark: bool) -> Palette {
             selected: Color32::from_rgb(0x35, 0x35, 0x35),
             ink: Color32::from_rgb(0xF0, 0xEF, 0xED),
             ink2: Color32::from_rgb(0xB9, 0xB9, 0xAF),
-            pencil: Color32::from_rgb(0x82, 0x81, 0x7C),
+            pencil: Color32::from_rgb(0x8A, 0x89, 0x84),
             rule: Color32::from_rgb(0x29, 0x29, 0x29),
             outline: Color32::from_rgb(0x4D, 0x4D, 0x4C),
             signal: Color32::from_rgb(0xBC, 0x81, 0x5F),
@@ -123,12 +124,12 @@ pub fn palette(dark: bool) -> Palette {
             selected: Color32::from_rgb(0xE6, 0xE3, 0xD9),
             ink: Color32::from_rgb(0x1F, 0x1E, 0x1D),
             ink2: Color32::from_rgb(0x3D, 0x3C, 0x38),
-            pencil: Color32::from_rgb(0x7A, 0x77, 0x6E),
+            pencil: Color32::from_rgb(0x6F, 0x6C, 0x64),
             rule: Color32::from_rgb(0xE3, 0xE0, 0xD7),
             outline: Color32::from_rgb(0xD3, 0xCF, 0xC4),
-            signal: Color32::from_rgb(0xB0, 0x64, 0x3E),
-            ok: Color32::from_rgb(0x4E, 0x7A, 0x34),
-            warn: Color32::from_rgb(0x9A, 0x66, 0x10),
+            signal: Color32::from_rgb(0x9E, 0x5A, 0x38),
+            ok: Color32::from_rgb(0x4C, 0x76, 0x32),
+            warn: Color32::from_rgb(0x94, 0x62, 0x0F),
             error: Color32::from_rgb(0xB0, 0x3A, 0x2E),
         }
     }
@@ -233,6 +234,9 @@ pub fn apply(ctx: &egui::Context) {
             v.selection.bg_fill = p.selected;
             v.selection.stroke = Stroke::new(1.0, p.ink);
             v.override_text_color = None;
+            // `ui.weak(…)` text: the muted text colour, which meets AA contrast, rather than
+            // egui's 60% of the main colour (4.4:1 on the light paper).
+            v.weak_text_color = Some(p.pencil);
             v.collapsing_header_frame = false;
             v.indent_has_left_vline = false;
             v.striped = false;
@@ -286,11 +290,62 @@ pub fn labelled(icon: &str, text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use eframe::egui;
     #[test]
     fn window_icons_decode() {
         for dark in [false, true] {
             let icon = super::window_icon(dark);
             assert_eq!((icon.width, icon.height), (256, 256));
+        }
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(c: egui::Color32) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// Text in either theme reads at WCAG AA (4.5:1) on every surface it is drawn on.
+    #[test]
+    fn text_colours_meet_wcag_aa() {
+        assert!((contrast(egui::Color32::BLACK, egui::Color32::WHITE) - 21.0).abs() < 1e-9);
+        for dark in [false, true] {
+            let p = super::palette(dark);
+            for (text_name, text) in [
+                ("ink", p.ink),
+                ("ink2", p.ink2),
+                ("pencil", p.pencil),
+                ("signal", p.signal),
+                ("ok", p.ok),
+                ("warn", p.warn),
+                ("error", p.error),
+            ] {
+                for (bg_name, bg) in [("paper", p.paper), ("shelf", p.shelf), ("raised", p.raised)]
+                {
+                    let ratio = contrast(text, bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{text_name} on {bg_name} ({}) is {ratio:.2}:1",
+                        if dark { "dark" } else { "light" }
+                    );
+                }
+            }
+            // The selected chat row's own text.
+            for text in [p.ink, p.ink2] {
+                assert!(contrast(text, p.selected) >= 4.5);
+            }
         }
     }
 }

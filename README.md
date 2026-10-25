@@ -349,6 +349,7 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |
 | ⌘/Ctrl + , | Settings (Esc closes it when there are no unsaved changes) |
+| Tab / Shift+Tab | Move between controls, with a visible focus outline; Space or Enter presses the focused button |
 
 ## Development
 
