@@ -75,8 +75,9 @@ source):
   (`x-litellm-key-remaining-requests-*`, `x-ratelimit-*`)
 - [ ] **LiteLLM proxy**: cost breakdown (input, output, cache read and write, reasoning) from
   the `x-litellm-response-cost-*` headers, on non-streamed responses
-- [ ] **LiteLLM proxy**: check the cost of streamed replies: the `x-litellm-response-cost`
-  header can be missing when streaming, so fall back to `usage.cost` or another source
+- [x] **LiteLLM proxy**: cost of streamed replies: LiteLLM sends no cost header for them, so
+  the cost is estimated from the prices it lists in `/model/info` (marked "~"), after
+  `usage.cost` and the `x-litellm-response-cost-original` header
 - [ ] **LiteLLM proxy**: context size and capabilities from `/model/info`
   (`max_input_tokens`, `supports_vision`, `supports_function_calling`, …), for context use and
   the model picker

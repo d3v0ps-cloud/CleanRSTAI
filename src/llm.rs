@@ -149,6 +149,49 @@ async fn llama_cpp_props(http: &reqwest::Client, p: &ProviderConfig) -> Option<V
     (v.get("default_generation_settings").is_some() || v.get("build_info").is_some()).then_some(v)
 }
 
+/// The per-token prices a LiteLLM proxy lists for the provider's model in `/model/info`,
+/// to estimate the cost of streamed replies (LiteLLM sends the cost of non-streamed ones
+/// only). Asked once per proxy and model; failures are asked again.
+pub async fn litellm_model_prices(
+    http: &reqwest::Client,
+    p: &ProviderConfig,
+) -> Option<crate::stats::ModelPrices> {
+    static CACHE: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), crate::stats::ModelPrices>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let model = p.model.trim();
+    let key = (origin(p), model.to_owned());
+    if let Some(prices) = CACHE.lock().unwrap().get(&key) {
+        return Some(*prices);
+    }
+    let resp = authorize(http.get(format!("{}/model/info", origin(p))), p)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    // One entry per deployment; take the first of this model that lists prices.
+    let prices = v
+        .get("data")?
+        .as_array()?
+        .iter()
+        .filter(|d| d.get("model_name").and_then(Value::as_str) == Some(model))
+        .find_map(|d| {
+            let info = d.get("model_info")?;
+            let price = |k: &str| info.get(k).and_then(Value::as_f64);
+            Some(crate::stats::ModelPrices {
+                input: price("input_cost_per_token")?,
+                output: price("output_cost_per_token")?,
+                cache_read: price("cache_read_input_token_cost"),
+            })
+        })?;
+    CACHE.lock().unwrap().insert(key, prices);
+    Some(prices)
+}
+
 /// Work out which kind of server a provider points at.
 pub async fn detect_kind(http: &reqwest::Client, p: &ProviderConfig) -> ProviderKind {
     if llama_cpp_props(http, p).await.is_some() {
@@ -409,11 +452,19 @@ pub async fn chat_completion(
     if !resp.status().is_success() {
         return Err(error_from_response(resp).await);
     }
-    stats.header_cost_usd = resp
-        .headers()
-        .get("x-litellm-response-cost")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<f64>().ok());
+    // LiteLLM's cost. Some versions leave the header out when it equals the cost before
+    // discounts, which they send as `-original`.
+    stats.header_cost_usd = [
+        "x-litellm-response-cost",
+        "x-litellm-response-cost-original",
+    ]
+    .iter()
+    .find_map(|h| {
+        resp.headers()
+            .get(*h)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+    });
 
     let mut turn = AssistantTurn::default();
     let mut builder = ToolCallBuilder::default();
@@ -797,6 +848,62 @@ mod server_tests {
         let log = log.lock().unwrap();
         let chat = log.iter().find(|r| r.method == "POST").unwrap();
         assert_eq!(chat.header("authorization"), Some("Bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn litellm_cost_without_the_main_header() {
+        // Some LiteLLM versions send only the cost before discounts.
+        let (base, _) = serve(|_| {
+            Response::sse(&[json!({"choices": [{"delta": {"content": "a"}}]})])
+                .header("x-litellm-response-cost-original", "0.0021")
+        })
+        .await;
+        let http = build_http_client();
+        let s = chat_completion(
+            &http,
+            &provider(&base, ProviderKind::LiteLlm),
+            vec![],
+            &[],
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap()
+        .stats;
+        assert_eq!(s.cost_usd, Some(0.0021));
+    }
+
+    #[tokio::test]
+    async fn litellm_model_prices_from_model_info() {
+        let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/model/info") => Response::json(json!({"data": [
+                {"model_name": "other", "model_info": {
+                    "input_cost_per_token": 1.0, "output_cost_per_token": 1.0}},
+                // A deployment without prices is skipped for the next one of the model.
+                {"model_name": "m", "model_info": {"id": "a"}},
+                {"model_name": "m", "model_info": {
+                    "input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015,
+                    "cache_read_input_token_cost": 0.0000003}},
+            ]})),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = build_http_client();
+        let p = provider(&base, ProviderKind::LiteLlm);
+        let want = crate::stats::ModelPrices {
+            input: 0.000003,
+            output: 0.000015,
+            cache_read: Some(0.0000003),
+        };
+        assert_eq!(litellm_model_prices(&http, &p).await, Some(want));
+        // Asked once: the second call is answered from the cache.
+        assert_eq!(litellm_model_prices(&http, &p).await, Some(want));
+        assert_eq!(log.lock().unwrap().len(), 1);
+
+        // A proxy without /model/info (or a model it doesn't list) gives nothing.
+        let (base, _) = serve(|_| Response::status(404)).await;
+        let p = provider(&base, ProviderKind::LiteLlm);
+        assert_eq!(litellm_model_prices(&http, &p).await, None);
     }
 
     #[tokio::test]
