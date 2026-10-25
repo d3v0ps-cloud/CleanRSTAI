@@ -789,6 +789,8 @@ impl ChatApp {
                         state.fetched = None;
                     }
                 }
+                // Handled once the app side of remote access is wired up.
+                AppEvent::Remote(_) => {}
                 AppEvent::KindDetected {
                     provider_id,
                     kind,
