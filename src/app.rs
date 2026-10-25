@@ -93,6 +93,11 @@ pub struct ChatApp {
     window_icon_dark: Option<bool>,
     /// What the active provider's llama.cpp server reports about its model.
     server_info: Option<ServerInfoState>,
+    /// The message box has had focus once (it takes it as the app opens).
+    input_focused_once: bool,
+    /// Focus is being moved with the keyboard, so the focused widget gets a visible ring
+    /// (until the next pointer press).
+    keyboard_nav: bool,
 }
 
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
@@ -255,6 +260,8 @@ impl ChatApp {
             update_install: None,
             window_icon_dark: None,
             server_info: None,
+            input_focused_once: false,
+            keyboard_nav: false,
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false, app.settings.general.update_url.clone());
@@ -2117,10 +2124,11 @@ impl ChatApp {
             .current
             .and_then(|c| self.conversations.iter().find(|x| x.id == c))
             .is_none_or(|c| c.messages.is_empty());
-        // A new chat is ready to type into.
-        if fresh && ui.memory(|m| m.focused().is_none()) {
+        // A new chat, and the app as it opens, are ready to type into.
+        if (fresh || !self.input_focused_once) && ui.memory(|m| m.focused().is_none()) {
             ui.memory_mut(|m| m.request_focus(id));
         }
+        self.input_focused_once = true;
         let has_focus = ui.memory(|m| m.has_focus(id));
         let mut send = false;
         if has_focus && !running {
@@ -2202,7 +2210,9 @@ impl ChatApp {
                                     .hint_text(RichText::new(hint).color(p.pencil))
                                     .frame(egui::Frame::NONE)
                                     .desired_rows(2)
-                                    .lock_focus(true)
+                                    // Tab moves on to the buttons below, so keyboard users
+                                    // aren't trapped in the box (Shift+Enter makes newlines).
+                                    .lock_focus(false)
                                     .desired_width(f32::INFINITY),
                             );
                         });
@@ -2592,6 +2602,43 @@ impl eframe::App for ChatApp {
         if let Some(cmd) = self.palette.show(&ctx, &entries) {
             self.run_command(cmd, &ctx);
         }
+        self.focus_ring(&ctx);
+    }
+}
+
+impl ChatApp {
+    /// Outline the focused widget in the accent colour while focus moves with the keyboard:
+    /// most of the app's buttons have no frame, so focus would otherwise be invisible. A
+    /// pointer press hides it again.
+    fn focus_ring(&mut self, ctx: &egui::Context) {
+        let (tabbed, pointer) =
+            ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.pointer.any_pressed()));
+        if pointer {
+            self.keyboard_nav = false;
+        } else if tabbed {
+            self.keyboard_nav = true;
+        }
+        if !self.keyboard_nav {
+            return;
+        }
+        let Some(rect) = ctx
+            .memory(|m| m.focused())
+            .and_then(|id| ctx.read_response(id))
+            .map(|r| r.rect)
+        else {
+            return;
+        };
+        let accent = theme::palette(ctx.global_style().visuals.dark_mode).signal;
+        ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::unique("focus-ring"),
+        ))
+        .rect_stroke(
+            rect.expand(2.0),
+            6,
+            egui::Stroke::new(2.0, accent),
+            egui::StrokeKind::Outside,
+        );
     }
 }
 

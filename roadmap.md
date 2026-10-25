@@ -35,7 +35,10 @@ Unticked items are still open.
 - [x] Settings as a full page with a search box
 - [x] Command palette (⌘K) and keyboard shortcuts
 - [x] Screen-reader labels on icon-only buttons
-- [ ] Accessibility pass: focus order and a high-contrast check
+- [x] Accessibility pass: focus order and a high-contrast check. A visible focus ring while
+  moving with Tab, Tab leaves the message box (no keyboard trap), the message box has focus
+  at launch, and every text colour meets WCAG AA (4.5:1) in both themes (a test checks it;
+  muted text, links and status colours were darkened in the light theme)
 
 ## 3. Provider types that report stats based on what's provided
 
