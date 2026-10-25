@@ -6,7 +6,10 @@ markdown and SVGs in chat, "Always allow" on the approval prompt and the web fet
 Office document attachments in **v0.7.0**, the live stats readout while a response
 streams in and llama.cpp slot usage in **v0.7.4**, and in-app updates from a configurable
 source in **v0.7.5**, and llama.cpp context use and prompt progress, llama.cpp router mode
-support and Windows builds again (on the self-hosted DARKBASE runner) in **v0.7.8**.
+support and Windows builds again (on the self-hosted DARKBASE runner) in **v0.7.8**, and
+llama.cpp server details and model loading, LiteLLM model, key and proxy details, Ollama,
+LM Studio, vLLM and OpenRouter provider types, the Windows icon and in-app updates, and the
+accessibility pass in **v0.7.9**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
