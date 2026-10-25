@@ -292,6 +292,12 @@ impl Delegation {
     ) -> Result<String> {
         let mut history = vec![ChatMessage::new(Role::User, task.trim())];
         let max_rounds = self.settings.max_rounds.max(1);
+        // As in the main chat: LiteLLM reports no cost for streamed replies.
+        let prices = if provider.kind == crate::config::ProviderKind::LiteLlm {
+            llm::litellm_model_prices(http, provider).await
+        } else {
+            None
+        };
         for round in 0.. {
             let toolbox = if round < max_rounds {
                 let router = if self.settings.mcp_tools {
@@ -305,9 +311,12 @@ impl Delegation {
             };
             publish(&|r| r[i].activity = "Thinking…".into());
             let messages = llm::to_api_messages(&self.settings.system_prompt, &history);
-            let turn =
+            let mut turn =
                 llm::chat_completion(http, provider, messages, &toolbox.specs, |_| {}, |_| {})
                     .await?;
+            if let Some(pr) = prices {
+                pr.fill_in(&mut turn.stats);
+            }
             publish(&|r| r[i].stats.push(turn.stats.clone()));
 
             let mut msg = ChatMessage::new(Role::Assistant, turn.content.clone());
