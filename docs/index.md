@@ -9,8 +9,8 @@ A fast, native desktop AI chat client written in Rust. It talks to any **OpenAI-
 endpoint and gives the model tools through **MCP servers**, built-in tools, subagents and a
 per-chat workspace folder.
 
-macOS is the primary platform and Linux is fully supported. Windows works when built from
-source.
+macOS is the primary platform and Linux is fully supported. Windows builds are released
+too, as an installer and a portable `.exe`.
 
 ![A chat working in a project folder: the model searches the code, reads a file and suggests a fix]({{ '/screenshot.png' | relative_url }})
 

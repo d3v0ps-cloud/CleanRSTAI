@@ -18,8 +18,8 @@
 A fast, native desktop AI chat client written in Rust. It talks to any **OpenAI-compatible**
 endpoint and gives the model tools through **MCP servers** (stdio and Streamable HTTP).
 
-macOS is the primary platform and Linux is fully supported. Windows works when built from
-source; the release workflow skips it until there is a Windows runner.
+macOS is the primary platform and Linux is fully supported. Windows builds are released
+too, as an installer and a portable `.exe`.
 
 ![A chat working in a project folder: the model searches the code, reads a file and suggests a fix](docs/screenshot.png)
 
@@ -161,9 +161,9 @@ open target/release/bundle/osx/CleanRSTAI.app
 ## Releases
 
 > **CI and releases run on self-hosted runners**, so they use no GitHub Actions minutes:
-> a Linux x64 machine labelled `gentoo` (CI, both Linux release builds, the GitHub Release) and a
-> macOS ARM64 machine (CI, the macOS release build). Windows builds are disabled until there
-> is a Windows runner; `scripts/release-local.sh` (below) can still build the Windows files.
+> a Linux x64 machine labelled `gentoo` (CI, both Linux release builds, the GitHub Release), a
+> macOS ARM64 machine (CI, the macOS release build) and a Windows x64 machine, DARKBASE (CI,
+> the Windows `.zip` and `.msi`).
 >
 > The runners need `git`, `curl`, a C compiler and `python3` (the Linux release build uses
 > it to fetch Zig for cross-linking); the workflows install Rust (rustup) and Node
@@ -208,8 +208,8 @@ It builds:
 | `CleanRSTAI-macos-universal.zip` | the same `.app`, zipped |
 | `CleanRSTAI-linux-x86_64.tar.gz` | Linux x86_64 |
 | `CleanRSTAI-linux-aarch64.tar.gz` | Linux ARM64 |
-| `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer (Start menu shortcut, upgrades in place); *not built while Windows is disabled* |
-| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe`; *not built while Windows is disabled* |
+| `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer (Start menu shortcut, upgrades in place) |
+| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe` |
 
 plus `SHA256SUMS.txt`, and attaches them to a GitHub Release for the tag (tags containing `-`,
 such as `v1.0.0-beta.1`, are marked as pre-releases).
