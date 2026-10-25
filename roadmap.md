@@ -5,7 +5,9 @@ markdown and SVGs in chat, "Always allow" on the approval prompt and the web fet
 **v0.5.0**, workspace folders with file, search and shell tools in **v0.6.0**, PDF and
 Office document attachments in **v0.7.0**, the live stats readout while a response
 streams in and llama.cpp slot usage in **v0.7.4**, and in-app updates from a configurable
-source in **v0.7.5**. Unticked items are still open.
+source in **v0.7.5**, and llama.cpp context use and prompt progress, llama.cpp router mode
+support and Windows builds again (on the self-hosted DARKBASE runner) in **v0.7.8**.
+Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
 
