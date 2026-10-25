@@ -105,6 +105,9 @@ struct ServerInfoState {
     info: Option<crate::llm::LlamaServerInfo>,
     /// A router's models and their load state.
     router: Option<Vec<crate::llm::RouterModel>>,
+    /// For a LiteLLM provider: the model as the proxy lists it, and the key's spend.
+    litellm: Option<crate::llm::LiteLlmModel>,
+    litellm_key: Option<crate::llm::LiteLlmKey>,
 }
 
 impl ServerInfoState {
@@ -714,10 +717,19 @@ impl ChatApp {
                     Ok(messages) => self.insert_prompt(messages),
                     Err(e) => self.notice = Some(format!("Prompt {name} failed: {e}")),
                 },
-                AppEvent::ServerInfo { key, info, router } => {
+                AppEvent::ServerInfo(report) => {
+                    let crate::agent::ServerReport {
+                        key,
+                        info,
+                        router,
+                        litellm,
+                        litellm_key,
+                    } = *report;
                     if let Some(state) = self.server_info.as_mut().filter(|s| s.key == key) {
                         state.info = info;
                         state.router = router;
+                        state.litellm = litellm;
+                        state.litellm_key = litellm_key;
                         state.pending = false;
                         state.fetched = Some(std::time::Instant::now());
                     }
@@ -792,7 +804,7 @@ impl ChatApp {
                 return;
             }
             ChatEvent::StatsLive(s) => {
-                self.runs.get_mut(&id).unwrap().live_stats = Some(s);
+                self.runs.get_mut(&id).unwrap().live_stats = Some(*s);
                 return;
             }
             ChatEvent::SubagentProgress { call_id, reports } => {
@@ -1764,11 +1776,15 @@ impl ChatApp {
 
     /// Beside the model picker, for a llama.cpp provider: "Loading model…" or "Asleep" when
     /// the server says so, and an icon whose hover lists what it reports about the model.
-    /// Refreshed every 15 s while shown (every 3 s while the model loads).
+    /// Refreshed every 15 s while shown (every 3 s while the model loads). For a LiteLLM
+    /// provider, the icon's hover shows the model as the proxy lists it and the key's spend,
+    /// refreshed every minute.
     fn server_status(&mut self, ui: &mut egui::Ui) {
+        use crate::config::ProviderKind;
         use crate::llm::LlamaStatus;
         let provider = self.settings.provider().clone();
-        if provider.kind != crate::config::ProviderKind::LlamaCpp
+        let kind = provider.kind;
+        if !matches!(kind, ProviderKind::LlamaCpp | ProviderKind::LiteLlm)
             || provider.model.trim().is_empty()
         {
             return;
@@ -1787,6 +1803,8 @@ impl ChatApp {
                 pending: false,
                 info: None,
                 router,
+                litellm: None,
+                litellm_key: None,
             });
         }
         let Some(state) = self.server_info.as_mut() else {
@@ -1801,22 +1819,58 @@ impl ChatApp {
                 .iter()
                 .flatten()
                 .any(|m| matches!(m.status.as_str(), "loading" | "downloading"));
-        let every = std::time::Duration::from_secs(if loading { 3 } else { 15 });
+        let every = std::time::Duration::from_secs(match (kind, loading) {
+            (ProviderKind::LiteLlm, _) => 60,
+            (_, true) => 3,
+            _ => 15,
+        });
         if !state.pending && state.fetched.is_none_or(|t| t.elapsed() >= every) {
             state.pending = true;
             let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ui.ctx().clone());
             self.rt.spawn(async move {
-                let (info, router) = tokio::join!(
-                    crate::llm::llama_cpp_server_info(&http, &provider),
-                    crate::llm::llama_cpp_router_models(&http, &provider),
-                );
-                let _ = tx.send(AppEvent::ServerInfo { key, info, router });
+                let report = if kind == ProviderKind::LiteLlm {
+                    let (litellm, litellm_key) = tokio::join!(
+                        crate::llm::litellm_model_info(&http, &provider),
+                        crate::llm::litellm_key_info(&http, &provider),
+                    );
+                    crate::agent::ServerReport {
+                        key,
+                        info: None,
+                        router: None,
+                        litellm,
+                        litellm_key,
+                    }
+                } else {
+                    let (info, router) = tokio::join!(
+                        crate::llm::llama_cpp_server_info(&http, &provider),
+                        crate::llm::llama_cpp_router_models(&http, &provider),
+                    );
+                    crate::agent::ServerReport {
+                        key,
+                        info,
+                        router,
+                        litellm: None,
+                        litellm_key: None,
+                    }
+                };
+                let _ = tx.send(AppEvent::ServerInfo(Box::new(report)));
                 ctx.request_repaint();
             });
         }
         ui.ctx().request_repaint_after(every);
 
         let p = theme::palette(ui.visuals().dark_mode);
+        if kind == ProviderKind::LiteLlm {
+            if state.litellm.is_some() || state.litellm_key.is_some() {
+                let (model, key) = (state.litellm.as_ref(), state.litellm_key.as_ref());
+                ui.add(
+                    egui::Label::new(RichText::new(icon::INFO).size(13.0).color(p.pencil))
+                        .sense(egui::Sense::hover()),
+                )
+                .on_hover_ui(|ui| super::ui::stats_view::litellm_details(ui, model, key));
+            }
+            return;
+        }
         // A router that hasn't loaded the selected model: say so (it loads on the next
         // message, or from the model picker).
         if let Some(m) = state.current().filter(|m| m.status != "loaded") {

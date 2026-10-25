@@ -17,6 +17,28 @@ pub enum StatsSource {
     Server,
 }
 
+/// What a LiteLLM proxy reported about one request in its response headers.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProxyDetails {
+    /// The deployment's model, e.g. `azure/gpt-4o` behind a `gpt-4o` alias.
+    pub deployment: Option<String>,
+    pub api_base: Option<String>,
+    pub retries: Option<u64>,
+    pub fallbacks: Option<u64>,
+    /// The key's spend so far, including this request, and its budget.
+    pub key_spend: Option<f64>,
+    pub key_budget: Option<f64>,
+    pub remaining_requests: Option<u64>,
+    pub remaining_tokens: Option<u64>,
+    /// Parts of the cost (input, output, cache read, …), on non-streamed replies.
+    pub cost_breakdown: Vec<(String, f64)>,
+    /// The request went through LiteLLM's response cache.
+    pub cache_used: bool,
+    /// Time LiteLLM itself added.
+    pub overhead_ms: Option<f64>,
+}
+
 /// Occupancy of a llama.cpp server's parallel slots (in use / total).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SlotUsage {
@@ -97,6 +119,9 @@ pub struct RequestStats {
     pub context_used: Option<u64>,
     /// Slot occupancy, when the server exposes it (llama.cpp).
     pub slot_usage: Option<SlotUsage>,
+    /// What a LiteLLM proxy reported about the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyDetails>,
     /// While the prompt is being read, how far the server has got. Live readout only; not
     /// kept with the message.
     #[serde(skip)]
@@ -251,6 +276,7 @@ pub struct Collector {
     pub header_cost_usd: Option<f64>,
     pub context_size: Option<u64>,
     pub prompt_progress: Option<PromptProgress>,
+    pub proxy: Option<ProxyDetails>,
 }
 
 impl Collector {
@@ -300,10 +326,15 @@ impl Collector {
             context_size: self.context_size,
             // Only until the reply starts: after that the prompt has been read.
             prompt_progress: self.prompt_progress.filter(|_| t.first_token.is_none()),
+            // LiteLLM names the deployment that served it in a header; the body's `model`
+            // is usually just the alias that was asked for.
             served_model: self
-                .served_model
-                .clone()
+                .proxy
+                .as_ref()
+                .and_then(|p| p.deployment.clone())
+                .or_else(|| self.served_model.clone())
                 .filter(|m| !m.eq_ignore_ascii_case(requested_model.trim())),
+            proxy: self.proxy.clone(),
             ..Default::default()
         };
 

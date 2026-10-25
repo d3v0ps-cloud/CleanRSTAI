@@ -68,21 +68,21 @@ source):
   (`/models` `status`), with load and unload (`/models/load`, `/models/unload`)
 - [x] **llama.cpp server**: optional `/metrics` readout (queued requests, speculative
   decoding acceptance) when the server runs with `--metrics`
-- [ ] **LiteLLM proxy**: the deployment that served the request (`x-litellm-model-name`,
+- [x] **LiteLLM proxy**: the deployment that served the request (`x-litellm-model-name`,
   `-model-id`, `-model-api-base`), and retries or fallbacks
   (`x-litellm-attempted-retries`, `-attempted-fallbacks`)
-- [ ] **LiteLLM proxy**: key spend against its budget (`x-litellm-key-spend`,
+- [x] **LiteLLM proxy**: key spend against its budget (`x-litellm-key-spend`,
   `-key-max-budget`, or `/key/info` before the first request) and remaining rate limits
   (`x-litellm-key-remaining-requests-*`, `x-ratelimit-*`)
-- [ ] **LiteLLM proxy**: cost breakdown (input, output, cache read and write, reasoning) from
+- [x] **LiteLLM proxy**: cost breakdown (input, output, cache read and write, reasoning) from
   the `x-litellm-response-cost-*` headers, on non-streamed responses
 - [x] **LiteLLM proxy**: cost of streamed replies: LiteLLM sends no cost header for them, so
   the cost is estimated from the prices it lists in `/model/info` (marked "~"), after
   `usage.cost` and the `x-litellm-response-cost-original` header
-- [ ] **LiteLLM proxy**: context size and capabilities from `/model/info`
+- [x] **LiteLLM proxy**: context size and capabilities from `/model/info`
   (`max_input_tokens`, `supports_vision`, `supports_function_calling`, …), for context use and
   the model picker
-- [ ] **LiteLLM proxy**: cache hits (`x-litellm-cache-key`) and LiteLLM's own overhead
+- [x] **LiteLLM proxy**: response cache use (`x-litellm-cache-key`) and LiteLLM's own overhead
   (`x-litellm-overhead-duration-ms`)
 
 ## 4. Import settings and conversations

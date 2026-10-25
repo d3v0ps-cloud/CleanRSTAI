@@ -294,7 +294,9 @@ impl Delegation {
         let max_rounds = self.settings.max_rounds.max(1);
         // As in the main chat: LiteLLM reports no cost for streamed replies.
         let prices = if provider.kind == crate::config::ProviderKind::LiteLlm {
-            llm::litellm_model_prices(http, provider).await
+            llm::litellm_model_info(http, provider)
+                .await
+                .and_then(|m| m.prices)
         } else {
             None
         };

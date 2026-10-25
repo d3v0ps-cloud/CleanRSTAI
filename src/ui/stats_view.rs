@@ -164,12 +164,54 @@ fn details(ui: &mut egui::Ui, s: &RequestStats) {
             if let Some(m) = &s.served_model {
                 row("Served by", m.clone());
             }
+            if let Some(px) = &s.proxy {
+                if let Some(base) = &px.api_base {
+                    row("Endpoint", base.clone());
+                }
+                let attempts: Vec<String> = [
+                    px.retries.map(|n| format!("retried {n}×")),
+                    px.fallbacks.map(|n| format!("fell back {n}×")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !attempts.is_empty() {
+                    row("Attempts", attempts.join(" · "));
+                }
+                if px.cache_used {
+                    row("LiteLLM cache", "used".to_owned());
+                }
+                if let Some(ms) = px.overhead_ms {
+                    row("Proxy overhead", fmt_ms(ms));
+                }
+                if let Some(spend) = px.key_spend {
+                    let budget = px
+                        .key_budget
+                        .map(|b| format!(" of {}", fmt_cost(b)))
+                        .unwrap_or_default();
+                    row("Key spend", format!("{}{budget}", fmt_cost(spend)));
+                }
+                let left: Vec<String> = [
+                    px.remaining_requests.map(|n| format!("{n} requests")),
+                    px.remaining_tokens
+                        .map(|n| format!("{} tokens", fmt_tokens(n))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !left.is_empty() {
+                    row("Rate limit left", left.join(" · "));
+                }
+            }
             if let Some(c) = s.cost_usd {
                 if s.cost_estimated {
                     row("Cost (estimated)", fmt_cost_estimated(c, true));
                 } else {
                     row("Cost", fmt_cost(c));
                 }
+            }
+            for (part, c) in s.proxy.iter().flat_map(|p| &p.cost_breakdown) {
+                row(&format!("  {part}"), fmt_cost(*c));
             }
         });
     if s.cost_estimated {
@@ -226,6 +268,71 @@ pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals, context: Option<(u64, u64)
             );
         }
     });
+}
+
+/// What a LiteLLM proxy lists for the model and the key's spend, for the hover beside the
+/// model picker. Rows the proxy doesn't list are left out.
+pub fn litellm_details(
+    ui: &mut egui::Ui,
+    model: Option<&crate::llm::LiteLlmModel>,
+    key: Option<&crate::llm::LiteLlmKey>,
+) {
+    ui.strong("LiteLLM proxy");
+    egui::Grid::new("litellm-details")
+        .num_columns(2)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            let mut row = |k: &str, v: String| {
+                ui.label(k);
+                ui.monospace(v);
+                ui.end_row();
+            };
+            if let Some(m) = model {
+                if let Some(p) = &m.provider {
+                    row("Provider", p.clone());
+                }
+                if let Some(n) = m.max_input_tokens {
+                    row("Context", fmt_tokens(n));
+                }
+                if let Some(n) = m.max_output_tokens {
+                    row("Max reply", fmt_tokens(n));
+                }
+                if let Some(pr) = &m.prices {
+                    // Per million tokens, as providers list them.
+                    let per_m = |c: f64| fmt_cost(c * 1e6);
+                    row(
+                        "Price per 1M",
+                        format!("{} in · {} out", per_m(pr.input), per_m(pr.output)),
+                    );
+                    if let Some(c) = pr.cache_read {
+                        row("  cached input", per_m(c));
+                    }
+                }
+                let yes_no = |v: bool| if v { "Yes" } else { "No" }.to_owned();
+                if let Some(v) = m.vision {
+                    row("Images", yes_no(v));
+                }
+                if let Some(v) = m.pdf {
+                    row("PDF input", yes_no(v));
+                }
+                if let Some(v) = m.tools {
+                    row("Tool calls", yes_no(v));
+                }
+                if let Some(v) = m.reasoning {
+                    row("Reasoning", yes_no(v));
+                }
+            }
+            if let Some(k) = key {
+                match (k.spend, k.max_budget) {
+                    (Some(s), Some(b)) => {
+                        row("Key spend", format!("{} of {}", fmt_cost(s), fmt_cost(b)))
+                    }
+                    (Some(s), None) => row("Key spend", fmt_cost(s)),
+                    (None, Some(b)) => row("Key budget", fmt_cost(b)),
+                    (None, None) => {}
+                }
+            }
+        });
 }
 
 /// What a llama.cpp server reports about the model it runs, for the hover beside the model
