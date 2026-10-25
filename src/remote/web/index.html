@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>CleanRSTAI</title>
+<link rel="icon" href="/favicon.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- Login screen. Shown until app.js hides it after a successful login. -->
+<section id="login" class="login" aria-labelledby="login-title">
+  <div class="login-card">
+    <h1 id="login-title" class="login-title">CleanRSTAI</h1>
+    <p class="login-hint">Enter the password to open your chats.</p>
+    <p id="plain-http-warning" class="banner warning" hidden>
+      Plain HTTP: the password and chats cross the network unencrypted.
+    </p>
+    <form id="login-form" class="login-form">
+      <label for="login-password">Password</label>
+      <input id="login-password" type="password" autocomplete="current-password" required>
+      <button id="login-submit" class="btn-primary login-submit" type="submit">Log in</button>
+      <p id="login-error" class="form-error" role="alert"></p>
+    </form>
+  </div>
+</section>
+
+<!-- Main layout. Hidden until logged in. -->
+<div id="app" class="app" hidden>
+
+  <aside id="sidebar" class="sidebar" aria-label="Chats">
+    <div class="sidebar-top">
+      <button id="new-chat" class="new-chat" type="button">
+        <span class="icon" aria-hidden="true">&#xE3D4;</span>
+        <span>New chat</span>
+      </button>
+      <input id="chat-search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off">
+    </div>
+    <nav id="chat-list" class="chat-list" aria-label="Chat list"></nav>
+    <div class="sidebar-foot">
+      <button id="logout" class="sidebar-link" type="button">Log out</button>
+    </div>
+  </aside>
+
+  <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+
+  <main id="chat" class="chat">
+
+    <header id="topbar" class="topbar">
+      <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="true">
+        <span class="icon" aria-hidden="true">&#xEC24;</span>
+      </button>
+      <h1 id="chat-title" class="chat-title">New chat</h1>
+    </header>
+
+    <div id="banner" class="banner" role="alert" hidden></div>
+
+    <div id="messages" class="messages" aria-live="polite">
+      <div id="greeting" class="greeting">How can I help you today?</div>
+    </div>
+
+    <footer id="composer" class="composer">
+      <form id="composer-form" class="composer-form">
+        <textarea id="input" rows="1" placeholder="Message CleanRSTAI" aria-label="Message" autocomplete="off"></textarea>
+        <div class="composer-row">
+          <button id="stop" class="round-btn stop-btn" type="button" aria-label="Stop" hidden>
+            <span class="icon" aria-hidden="true">&#xE46C;</span>
+          </button>
+          <button id="send" class="round-btn send-btn" type="submit" aria-label="Send message">
+            <span class="icon" aria-hidden="true">&#xE08E;</span>
+          </button>
+        </div>
+      </form>
+      <div id="model-picker" class="model-picker">
+        <select id="provider-select" aria-label="Provider"></select>
+        <select id="model-select" aria-label="Model"></select>
+      </div>
+    </footer>
+
+  </main>
+</div>
+
+<!-- Command palette. Hidden until opened. -->
+<div id="palette" class="palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+  <input id="palette-input" type="text" placeholder="Type a command or chat name" aria-label="Command or chat name" autocomplete="off">
+  <ul id="palette-list" class="palette-list" role="listbox"></ul>
+</div>
+
+<script src="/markdown.js" defer></script>
+<script src="/app.js" defer></script>
+</body>
+</html>

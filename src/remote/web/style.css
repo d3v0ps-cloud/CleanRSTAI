@@ -1,0 +1,1552 @@
+/*
+ * CleanRSTAI browser client. Mirrors the desktop app (src/ui/theme.rs).
+ *
+ * Phosphor icon codepoints (font: /fonts/Phosphor.ttf, from theme::icon). Write them as
+ * <span class="icon">&#xE3D4;</span>:
+ *   PLUS         E3D4   new chat
+ *   SIDEBAR      EC24   sidebar toggle
+ *   SEARCH       E30C
+ *   ARROW_UP     E08E   send
+ *   STOP         E46C   stop
+ *   CARET_DOWN   E136
+ *   CARET_RIGHT  E13A   disclosure marker (used by ::before below)
+ *   CLOSE        E4F6   close / dismiss
+ *   PIN          E3E2
+ *   UNPIN        E3E4
+ *   TRASH        E4A6   delete
+ *   EDIT         E3B4   rename
+ *   REGENERATE   E036   regenerate
+ *   COPY         E1CA   copy code
+ *   TOOL         E5D4   tool call
+ *   WARNING      E4E0
+ *   INFO         E2CE
+ *   OK           E184
+ *   FAILED       E4F8
+ *   HOURGLASS    E2B2
+ *   GEAR         E272   settings
+ *   SLIDERS      E434
+ *   PAPERCLIP    E39A   attachment
+ *   FILE         E23A
+ *   CHECK_SQUARE E186   approvals
+ *   SPARKLE      E6A2
+ *   COMMAND      E1C4   command palette
+ *   ROBOT        E762   subagent
+ *   FOLDER       E24A   workspace
+ *   CODE         E1BC
+ *   SERVER       E47E
+ * The three-dot chat menu (dots-three) is not in theme.rs; app.js writes a plain "…" there.
+ */
+
+/* ---------------------------------------------------------------------------
+ * 1. Fonts
+ * ------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("/fonts/InstrumentSans.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/IBMPlexMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Phosphor";
+  src: url("/fonts/Phosphor.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. Colour tokens. Light is the default; dark applies when the page says so
+ *    (app.js sets data-theme) or, before app.js runs, when the system is dark.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+  --paper: #faf9f5;      /* main background */
+  --shelf: #f3f1ea;      /* sidebar */
+  --raised: #ffffff;     /* composer, user messages, code, menus */
+  --selected: #e6e3d9;   /* selected chat, "New chat" row */
+  --ink: #1f1e1d;        /* primary text */
+  --ink2: #3d3c38;       /* chat titles, secondary text */
+  --pencil: #6f6c64;     /* muted text, labels, metadata */
+  --rule: #e3e0d7;       /* dividers */
+  --outline: #d3cfc4;    /* input and card outlines */
+  --signal: #9e5a38;     /* accent: links, focus ring, running dot */
+  --ok: #4c7632;
+  --warn: #94620f;
+  --error: #b03a2e;
+  --scrim: rgba(31, 30, 29, 0.35);
+  --hover: color-mix(in srgb, var(--selected) 55%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #151515;
+    --shelf: #111111;
+    --raised: #20201f;
+    --selected: #353535;
+    --ink: #f0efed;
+    --ink2: #b9b9af;
+    --pencil: #8a8984;
+    --rule: #292929;
+    --outline: #4d4d4c;
+    --signal: #bc815f;
+    --ok: #8fb078;
+    --warn: #d9a85b;
+    --error: #e07a6a;
+    --scrim: rgba(0, 0, 0, 0.55);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #151515;
+  --shelf: #111111;
+  --raised: #20201f;
+  --selected: #353535;
+  --ink: #f0efed;
+  --ink2: #b9b9af;
+  --pencil: #8a8984;
+  --rule: #292929;
+  --outline: #4d4d4c;
+  --signal: #bc815f;
+  --ok: #8fb078;
+  --warn: #d9a85b;
+  --error: #e07a6a;
+  --scrim: rgba(0, 0, 0, 0.55);
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. Base
+ * ------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Keeps the hidden attribute authoritative even where a class sets display. */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Instrument Sans", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* The composer shows its own focus state (the textarea itself has no outline). */
+#input:focus-visible {
+  outline: none;
+}
+
+.icon {
+  display: inline-block;
+  font-family: "Phosphor", sans-serif;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1;
+  font-feature-settings: normal;
+  -webkit-font-smoothing: antialiased;
+}
+
+.muted {
+  color: var(--pencil);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. Shared controls: buttons, banners, banner variants
+ * ------------------------------------------------------------------------- */
+
+.btn,
+.btn-primary,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--selected);
+}
+
+.btn-primary {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.btn-danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink2);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.icon-btn .icon {
+  font-size: 18px;
+}
+
+.banner {
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--error) 10%, var(--paper));
+  color: var(--error);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.banner.warning {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--paper));
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. Login screen
+ * ------------------------------------------------------------------------- */
+
+.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 16px;
+  background: var(--paper);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  padding: 32px 28px;
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: var(--raised);
+}
+
+.login-title {
+  font-size: 23px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.login-hint {
+  margin: 0 0 16px;
+  color: var(--pencil);
+  font-size: 14px;
+}
+
+.login-card .banner {
+  margin: 0 0 14px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-form label {
+  font-size: 13px;
+  color: var(--ink2);
+}
+
+.login-form input {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: var(--paper);
+  font-size: 16px;
+}
+
+.login-form input:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 0;
+}
+
+.login-submit {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 6px;
+}
+
+.form-error {
+  margin: 0;
+  min-height: 0;
+  color: var(--error);
+  font-size: 13px;
+}
+
+.form-error:empty {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * 6. App layout: sidebar + chat column
+ * ------------------------------------------------------------------------- */
+
+.app {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+/* ---- Sidebar ---- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 260px;
+  min-height: 0;
+  padding: 12px 10px 10px;
+  background: var(--shelf);
+  border-right: 1px solid var(--rule);
+}
+
+.sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.new-chat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--selected);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.new-chat .icon {
+  font-size: 16px;
+}
+
+#chat-search {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 14px;
+}
+
+#chat-search::placeholder {
+  color: var(--pencil);
+}
+
+#chat-search:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 0;
+}
+
+.chat-list {
+  flex: 1;
+  min-height: 0;
+  margin-top: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-group {
+  padding: 10px 10px 4px;
+  color: var(--pencil);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.chat-row:hover {
+  background: var(--hover);
+}
+
+.chat-row.active {
+  background: var(--selected);
+}
+
+.chat-open {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 14px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-row.active .chat-open {
+  color: var(--ink);
+}
+
+/* Unread or pending-approval count (text) and the running dot (empty badge). */
+.chat-badge {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--warn);
+  color: var(--paper);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+.chat-badge:empty {
+  display: none;
+}
+
+.chat-row.running .chat-badge:empty {
+  display: block;
+  width: 8px;
+  height: 8px;
+  min-width: 0;
+  margin-right: 8px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--signal);
+  animation: chat-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chat-menu {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pencil);
+  font-family: "Instrument Sans", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 1px;
+  opacity: 0;
+}
+
+.chat-row:hover .chat-menu,
+.chat-row:focus-within .chat-menu,
+.chat-row.active .chat-menu {
+  opacity: 1;
+}
+
+.chat-menu:hover {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.sidebar-foot {
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+}
+
+.sidebar-link {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--pencil);
+  font-size: 14px;
+  text-align: left;
+}
+
+.sidebar-link:hover {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+/* ---- Chat column ---- */
+
+.chat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 24px;
+  min-width: 0;
+}
+
+.chat-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Scroll area. Children form one centred column of at most 760 px. */
+.messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  padding: 24px 24px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.messages > * {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 760px;
+  min-width: 0;
+  margin-left: auto;
+  margin-right: auto;
+  overflow-wrap: anywhere;
+}
+
+/* Empty chat: greeting centred in the scroll area. Hide it once messages exist. */
+.greeting {
+  margin: auto;
+  padding: 24px 0;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------------------
+ * 7. Messages
+ * ------------------------------------------------------------------------- */
+
+.msg {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+/* Your message: a right-aligned bubble. */
+.msg.user {
+  width: fit-content;
+  max-width: min(80%, 560px);
+  margin-left: auto;
+  /* Align the right edge with the 760 px column, however wide the window is. */
+  margin-right: max(0px, calc((100% - 760px) / 2));
+  padding: 10px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--raised);
+  font-size: 16px;
+  white-space: pre-wrap;
+}
+
+/* The model's reply: plain prose, full column width. */
+.msg.assistant {
+  padding: 0 2px;
+}
+
+.msg.cancelled {
+  color: var(--pencil);
+  opacity: 0.75;
+}
+
+.msg .attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.msg .attachments .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  border: 1px solid var(--outline);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--ink2);
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg .attachments .chip::before {
+  content: "\E39A";           /* PAPERCLIP */
+  font-family: "Phosphor", sans-serif;
+  font-size: 13px;
+  color: var(--pencil);
+}
+
+.msg-stats {
+  margin-top: 6px;
+  color: var(--pencil);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.msg-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pencil);
+  font-size: 12.5px;
+}
+
+.msg-actions button:hover:not(:disabled) {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+/* ---- Prose (Markdown output) ---- */
+
+.msg p,
+.msg ul,
+.msg ol,
+.msg blockquote,
+.msg table,
+.msg pre,
+.msg .code-block {
+  margin: 0 0 0.9em;
+}
+
+.msg > :last-child {
+  margin-bottom: 0;
+}
+
+.msg h1,
+.msg h2,
+.msg h3,
+.msg h4,
+.msg h5,
+.msg h6 {
+  margin: 1.1em 0 0.4em;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.msg h1 { font-size: 1.4em; }
+.msg h2 { font-size: 1.22em; }
+.msg h3 { font-size: 1.08em; }
+.msg h4,
+.msg h5,
+.msg h6 { font-size: 1em; }
+
+.msg ul,
+.msg ol {
+  padding-left: 1.4em;
+}
+
+.msg li {
+  margin: 0.25em 0;
+}
+
+.msg li > p {
+  margin-bottom: 0.4em;
+}
+
+.msg blockquote {
+  margin-left: 0;
+  padding: 0 0 0 14px;
+  border-left: 3px solid var(--outline);
+  color: var(--ink2);
+}
+
+.msg hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.msg a {
+  color: var(--signal);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.msg a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Inline code. */
+.msg code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--raised);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+/* Tables scroll inside themselves. */
+.msg table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.94em;
+}
+
+.msg th,
+.msg td {
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  text-align: left;
+  vertical-align: top;
+}
+
+.msg th {
+  background: var(--raised);
+  font-weight: 600;
+}
+
+/* Code blocks: a header (language and copy button) over a scrolling pre. */
+.code-block {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 2px 6px 2px 12px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--pencil);
+  font-size: 12px;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pencil);
+  font-size: 12px;
+}
+
+.copy-btn::before {
+  content: "\E1CA";           /* COPY */
+  font-family: "Phosphor", sans-serif;
+  font-size: 14px;
+}
+
+.copy-btn:hover {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.msg .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Code: mono, scrolling horizontally inside its own box. */
+.msg pre {
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--raised);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.msg pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+  overflow-wrap: normal;
+}
+
+/* ---- Reasoning (collapsed by default) ---- */
+
+details {
+  min-width: 0;
+}
+
+details > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::before {
+  content: "\E13A";           /* CARET_RIGHT */
+  flex-shrink: 0;
+  font-family: "Phosphor", sans-serif;
+  font-size: 12px;
+  color: var(--pencil);
+  transition: transform 0.15s ease;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.reasoning {
+  margin: 0 0 8px;
+  color: var(--pencil);
+  font-size: 14px;
+}
+
+details.reasoning > :not(summary) {
+  margin: 4px 0 0 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--rule);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Tool calls: compact cards ---- */
+
+.tool-card {
+  margin: 8px 0;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 13px;
+  color: var(--ink2);
+}
+
+.tool-card > summary {
+  padding: 6px 10px;
+  min-height: 36px;
+}
+
+.tool-card > summary > .tool-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.tool-status {
+  flex-shrink: 0;
+  color: var(--pencil);
+  font-size: 12px;
+}
+
+.tool-card.error {
+  border-color: var(--error);
+}
+
+.tool-card.error .tool-status {
+  color: var(--error);
+}
+
+.tool-card pre.tool-args,
+.tool-card pre.tool-result {
+  margin: 0 10px 10px;
+  max-height: 30vh;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tool-card pre.tool-result {
+  margin-top: 0;
+}
+
+/* ---- Approval card ---- */
+
+.approval {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: 12px;
+  background: var(--raised);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.approval-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.approval-title::before {
+  content: "\E4E0";           /* WARNING */
+  font-family: "Phosphor", sans-serif;
+  color: var(--warn);
+}
+
+.approval pre {
+  margin: 0 0 10px;
+  max-height: 30vh;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.approval-actions .btn,
+.approval-actions .btn-primary,
+.approval-actions .btn-danger {
+  min-height: 32px;
+}
+
+/* ---- Errors inside the chat (a failed tool, for example) ---- */
+
+.msg.error,
+.msg .error-text {
+  color: var(--error);
+  font-size: 14px;
+}
+
+/* ---- Typing indicator while streaming ----
+ * Write <span class="typing"><i></i><i></i><i></i></span>. An empty .typing shows one dot. */
+
+.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 1.6em;
+  padding: 0 2px;
+}
+
+.typing > i,
+.typing:empty::before {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pencil);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing:empty::before {
+  content: "";
+}
+
+.typing > i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing > i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. Composer and model picker
+ * ------------------------------------------------------------------------- */
+
+.composer {
+  flex-shrink: 0;
+  padding: 8px 24px max(16px, env(safe-area-inset-bottom));
+  background: var(--paper);
+}
+
+.composer-form,
+.model-picker {
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.composer-form {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--outline);
+  border-radius: 16px;
+  background: var(--raised);
+}
+
+.composer-form:focus-within {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 1px var(--signal);
+}
+
+#input {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  max-height: 40vh;
+  margin: 0;
+  padding: 12px 14px 4px;
+  border: 0;
+  border-radius: 16px 16px 0 0;
+  background: transparent;
+  resize: none;
+  overflow-y: auto;
+  font-size: 16px;
+  line-height: 1.5;
+  outline: none;
+}
+
+#input::placeholder {
+  color: var(--pencil);
+  opacity: 1;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 4px 8px 8px;
+}
+
+.round-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid transparent;
+}
+
+.round-btn .icon {
+  font-size: 16px;
+}
+
+.send-btn {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.stop-btn {
+  border-color: var(--outline);
+  background: transparent;
+  color: var(--ink);
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: var(--selected);
+}
+
+.model-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.model-picker select {
+  max-width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink2);
+  font-size: 13px;
+}
+
+#provider-select {
+  flex: 0 1 auto;
+  min-width: 120px;
+}
+
+#model-select {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * 9. Popups: chat row menu, command palette
+ * ------------------------------------------------------------------------- */
+
+/* Absolutely positioned inside .chat-row (app.js positions it with CSSOM, not style=""). */
+.menu {
+  position: absolute;
+  top: 100%;
+  right: 4px;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 170px;
+  padding: 6px;
+  border: 1px solid var(--outline);
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.menu button:hover:not(:disabled),
+.menu button:focus-visible {
+  background: var(--selected);
+}
+
+.menu button.danger {
+  color: var(--error);
+}
+
+.palette {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 60vh;
+  max-height: 60dvh;
+  transform: translateX(-50%);
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+#palette-input {
+  min-height: 48px;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  font-size: 16px;
+  outline: none;
+}
+
+#palette-input::placeholder {
+  color: var(--pencil);
+  opacity: 1;
+}
+
+.palette-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.palette-list li {
+  margin: 0;
+}
+
+.palette-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 14px;
+  text-align: left;
+}
+
+.palette-list button:hover,
+.palette-list button[aria-selected="true"],
+.palette-list button.active {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.palette-list .palette-hint {
+  margin-left: auto;
+  color: var(--pencil);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 10. Phone and narrow windows (760 px and below): off-canvas sidebar,
+ *     16 px gutters, 40 px touch targets, 16 px text in inputs (no iOS zoom).
+ * ------------------------------------------------------------------------- */
+
+@media (max-width: 760px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(288px, 84vw);
+    padding-top: max(12px, env(safe-area-inset-top));
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    visibility: hidden;
+  }
+
+  .app.sidebar-open .sidebar {
+    transform: none;
+    visibility: visible;
+  }
+
+  .app.sidebar-open .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    background: var(--scrim);
+  }
+
+  .topbar {
+    padding: max(8px, env(safe-area-inset-top)) 16px 0;
+    min-height: 56px;
+  }
+
+  .messages {
+    padding: 16px 16px 12px;
+  }
+
+  .composer {
+    padding: 8px 16px max(12px, env(safe-area-inset-bottom));
+  }
+
+  .banner {
+    margin: 8px 16px 0;
+  }
+
+  .chat-title {
+    font-size: 16px;
+  }
+
+  .msg {
+    font-size: 16px;
+  }
+
+  .greeting {
+    font-size: 22px;
+  }
+
+  .icon-btn,
+  .new-chat,
+  .sidebar-link,
+  .chat-open,
+  .chat-row,
+  .btn,
+  .btn-primary,
+  .btn-danger,
+  .msg-actions button,
+  .copy-btn,
+  .menu button,
+  .palette-list button {
+    min-height: 40px;
+  }
+
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .chat-menu {
+    width: 40px;
+    height: 40px;
+    opacity: 1;
+  }
+
+  .round-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .model-picker select {
+    height: 40px;
+    font-size: 16px;
+  }
+
+  #chat-search,
+  #palette-input,
+  .login-form input {
+    min-height: 40px;
+    font-size: 16px;
+  }
+
+  .msg-actions button {
+    padding: 6px 10px;
+  }
+
+  .msg-actions button,
+  .copy-btn {
+    min-height: 40px;
+  }
+
+  .msg.user {
+    max-width: 85%;
+  }
+
+  #input {
+    font-size: 16px;
+  }
+
+  .palette {
+    top: 8vh;
+  }
+}
+
+/* Desktop: the sidebar can be collapsed with the toggle. */
+@media (min-width: 761px) {
+  .app.sidebar-collapsed .sidebar {
+    display: none;
+  }
+}
+
+/* Hover-only affordances are always visible where there is no hover. */
+@media (hover: none) {
+  .chat-menu {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .typing > i,
+  .typing:empty::before,
+  .chat-row.running .chat-badge:empty,
+  details > summary::before {
+    transition: none;
+    animation: none;
+  }
+}
