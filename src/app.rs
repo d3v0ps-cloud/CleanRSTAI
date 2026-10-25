@@ -3073,7 +3073,9 @@ impl eframe::App for ChatApp {
             actions.extend(
                 egui::CentralPanel::no_frame()
                     .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
-                    .show(ui, |ui| sui.show(ui, &self.settings, &views))
+                    .show(ui, |ui| {
+                        sui.show(ui, &self.settings, &views, &self.remote_status)
+                    })
                     .inner,
             );
             let mut install_update = false;
