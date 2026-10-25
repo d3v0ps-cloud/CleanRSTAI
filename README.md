@@ -141,6 +141,10 @@ too, as an installer and a portable `.exe`.
   `releases/latest` API (Gitea and Forgejo do). It defaults to this repository and is saved
   to `settings.json` only once changed, so a custom source carries over to later installs.
   The release must be public: GitHub answers a private repository's release check with a 404.
+- **Remote access in the browser** (off by default): a built-in web server serves the same chats
+  to a browser on a phone or another computer on your network, over HTTPS with a password. API
+  keys and MCP secrets stay on this computer, and the app must stay open. See
+  [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html).
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
   (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
 

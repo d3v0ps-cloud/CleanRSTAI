@@ -14,3 +14,5 @@ How to work with CleanRSTAI day to day.
   and prompts.
 - [Subagents](subagents.html): letting the model delegate tasks to parallel agents.
 - [Updates](updates.html): checking for and installing new versions.
+- [Remote access](remote-access.html): using your chats from a browser on a phone or another
+  computer, and its security.
