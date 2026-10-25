@@ -28,6 +28,7 @@ fn main() -> eframe::Result {
     // Must run before any threads exist (it mutates the process environment).
     env_path::fix_path();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    update::remove_leftovers();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

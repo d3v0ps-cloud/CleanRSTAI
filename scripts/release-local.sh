@@ -109,7 +109,7 @@ if have x86_64-w64-mingw32-gcc; then
   (cd "$(dirname "$exe")" && zip -q -9 "$OLDPWD/$dist/CleanRSTAI-windows-x86_64.zip" cleanrstai.exe)
   built+=(windows-x86_64.zip)
   if have wixl; then
-    wixl -a x64 -D "Version=$version" -D "Exe=$exe" \
+    wixl -a x64 -D "Version=$version" -D "Exe=$exe" -D "Icon=assets/icon/icon.ico" \
       -o "$dist/CleanRSTAI-windows-x86_64.msi" packaging/windows/wixl.wxs
     built+=(windows-x86_64.msi)
   else

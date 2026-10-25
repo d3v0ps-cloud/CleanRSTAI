@@ -137,17 +137,31 @@ pub enum Package {
     Tarball,
     /// `.zip` holding `CleanRSTAI.app`, made by `ditto` (macOS).
     AppZip,
+    /// `.zip` holding the bare `cleanrstai.exe` (Windows, portable).
+    ExeZip,
+    /// The Windows installer, run by Windows Installer, which upgrades the installed app in
+    /// place (installs in Program Files, which the app can't write to itself).
+    Msi,
 }
 
 /// The release file this build updates itself from, or `None` where it can't.
 pub fn platform_package() -> Option<(String, Package)> {
+    let arch = std::env::consts::ARCH;
     if cfg!(target_os = "macos") {
         Some(("CleanRSTAI-macos-universal.zip".into(), Package::AppZip))
     } else if cfg!(target_os = "linux") {
-        Some((
-            format!("CleanRSTAI-linux-{}.tar.gz", std::env::consts::ARCH),
-            Package::Tarball,
-        ))
+        Some((format!("CleanRSTAI-linux-{arch}.tar.gz"), Package::Tarball))
+    } else if cfg!(target_os = "windows") {
+        // A copy in a folder we can write to is the portable one; otherwise it was installed.
+        let portable = install_target()
+            .ok()
+            .and_then(|t| t.parent().map(dir_writable))
+            .unwrap_or(false);
+        Some(if portable {
+            (format!("CleanRSTAI-windows-{arch}.zip"), Package::ExeZip)
+        } else {
+            (format!("CleanRSTAI-windows-{arch}.msi"), Package::Msi)
+        })
     } else {
         None
     }
@@ -156,9 +170,42 @@ pub fn platform_package() -> Option<(String, Package)> {
 /// Whether this build can install `r` itself, rather than sending the user to the
 /// release page.
 pub fn can_install(r: &Release) -> bool {
-    platform_package().is_some_and(|(name, _)| {
-        r.assets.iter().any(|a| a.name == name) && r.assets.iter().any(|a| a.name == SUMS_NAME)
-    }) && install_target().is_ok()
+    let Some((name, package)) = platform_package() else {
+        return false;
+    };
+    let listed =
+        r.assets.iter().any(|a| a.name == name) && r.assets.iter().any(|a| a.name == SUMS_NAME);
+    // Swapping files in needs a folder we can write to; Windows Installer does its own.
+    let writable = package == Package::Msi
+        || install_target()
+            .ok()
+            .and_then(|t| t.parent().map(dir_writable))
+            .unwrap_or(false);
+    listed && writable
+}
+
+/// Whether we can create files in `dir` (tried, not guessed from permissions).
+fn dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".cleanrstai-write-test-{}", uuid::Uuid::new_v4()));
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
+/// Remove what an earlier update left behind: on Windows the replaced executable, which
+/// can only be deleted once it no longer runs. Call at startup.
+pub fn remove_leftovers() {
+    if let Ok(exe) = install_target() {
+        let _ = std::fs::remove_file(old_exe_path(&exe));
+    }
+}
+
+/// Where a Windows update moves the running executable aside (it can be renamed, not
+/// replaced, while it runs).
+fn old_exe_path(exe: &Path) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(".old");
+    exe.with_file_name(name)
 }
 
 /// What an update replaces: the `.app` bundle on macOS, the executable elsewhere.
@@ -178,14 +225,16 @@ pub fn install_target() -> Result<PathBuf> {
 
 /// Download `r`'s file for this platform, check it against the release's SHA256SUMS.txt
 /// and put it in place of `target`. The running app keeps working; the new version starts
-/// with [`relaunch`]. `progress` gets the bytes downloaded so far and the total, if known.
+/// with [`relaunch`] of the returned path: `target`, or for [`Package::Msi`] the downloaded
+/// installer, which replaces the app itself. `progress` gets the bytes downloaded so far and
+/// the total, if known.
 pub async fn install(
     http: &reqwest::Client,
     r: &Release,
     (name, package): (&str, Package),
     target: &Path,
     progress: impl Fn(u64, Option<u64>),
-) -> Result<()> {
+) -> Result<PathBuf> {
     let find = |n: &str| {
         r.assets
             .iter()
@@ -216,10 +265,23 @@ pub async fn install(
         bail!("{name} doesn't match its checksum; nothing was changed");
     }
 
+    if package == Package::Msi {
+        let msi = std::env::temp_dir().join(name);
+        tokio::fs::write(&msi, &data)
+            .await
+            .context("couldn't save the installer")?;
+        return Ok(msi);
+    }
     let target = target.to_path_buf();
-    tokio::task::spawn_blocking(move || unpack_into_place(&data, package, &target))
+    tokio::task::spawn_blocking(move || unpack_into_place(&data, package, &target).map(|()| target))
         .await
         .context("the install task failed")?
+}
+
+/// Whether [`relaunch`] of `path` runs an installer rather than the new app.
+pub fn is_installer(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("msi"))
 }
 
 async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
@@ -290,10 +352,48 @@ fn unpack_into_place(data: &[u8], package: Package, target: &Path) -> Result<()>
                     .context("the download doesn't contain an .app")?;
                 replace_dir(&new, target, &staging.join("previous.app"))
             }
+            Package::ExeZip => {
+                let new = unpacked.join("cleanrstai.exe");
+                extract_exe(data, &new)?;
+                // A running executable can't be replaced on Windows, but it can be renamed:
+                // move it aside (deleted at the next start) and put the new one in its place.
+                let old = old_exe_path(target);
+                let _ = std::fs::remove_file(&old);
+                std::fs::rename(target, &old)
+                    .with_context(|| format!("couldn't move {} aside", target.display()))?;
+                if let Err(e) = std::fs::rename(&new, target) {
+                    let _ = std::fs::rename(&old, target);
+                    return Err(e).context("couldn't put the new version in place");
+                }
+                Ok(())
+            }
+            Package::Msi => bail!("the installer is run by Windows Installer, not unpacked"),
         }
     })();
     let _ = std::fs::remove_dir_all(&staging);
     result
+}
+
+/// Write the `cleanrstai.exe` in the zip `data` to `dest`.
+fn extract_exe(data: &[u8], dest: &Path) -> Result<()> {
+    let mut zip =
+        zip::ZipArchive::new(std::io::Cursor::new(data)).context("the download isn't a zip")?;
+    let index = (0..zip.len())
+        .find(|&i| {
+            zip.by_index(i).is_ok_and(|f| {
+                f.is_file()
+                    && f.name().is_ok_and(|n| {
+                        n.rsplit(['/', '\\'])
+                            .next()
+                            .is_some_and(|n| n.eq_ignore_ascii_case("cleanrstai.exe"))
+                    })
+            })
+        })
+        .context("the download doesn't contain cleanrstai.exe")?;
+    let mut file = zip.by_index(index)?;
+    let mut out = std::fs::File::create(dest).context("couldn't unpack the download")?;
+    std::io::copy(&mut file, &mut out).context("couldn't unpack the download")?;
+    Ok(())
 }
 
 /// Swap the folder `new` in for `target`, moving the old one to `backup` (and back again
@@ -325,7 +425,12 @@ fn run(cmd: &mut std::process::Command) -> Result<()> {
 /// Start the installed `target` (from [`install_target`]) as a new process. The caller
 /// then closes this one.
 pub fn relaunch(target: &Path) -> Result<()> {
-    let mut cmd = if cfg!(target_os = "macos") {
+    let mut cmd = if is_installer(target) {
+        // Windows Installer upgrades the installed app in place once this one has closed.
+        let mut c = std::process::Command::new("msiexec");
+        c.arg("/i").arg(target);
+        c
+    } else if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg("-n").arg(target);
         c
@@ -399,6 +504,51 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    /// A zip like the release workflow's Windows one (`Compress-Archive` of the exe).
+    fn exe_zip(name: &str, contents: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(contents).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn windows_portable_update_swaps_the_exe() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-update-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(dir_writable(&dir));
+        let target = dir.join("cleanrstai.exe");
+        std::fs::write(&target, b"old").unwrap();
+
+        unpack_into_place(&exe_zip("CleanRSTAI.EXE", b"new"), Package::ExeZip, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        // The running one is moved aside, to be deleted at the next start.
+        let old = old_exe_path(&target);
+        assert_eq!(old.file_name().unwrap(), "cleanrstai.exe.old");
+        assert_eq!(std::fs::read(&old).unwrap(), b"old");
+        // No staging folders left behind.
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(left.len(), 2);
+
+        // A zip without the exe changes nothing.
+        let err = unpack_into_place(&exe_zip("readme.txt", b"x"), Package::ExeZip, &target);
+        assert!(err.is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn installers_are_relaunched_with_windows_installer() {
+        assert!(is_installer(Path::new(
+            "C:/Temp/CleanRSTAI-windows-x86_64.msi"
+        )));
+        assert!(is_installer(Path::new("x.MSI")));
+        assert!(!is_installer(Path::new("/usr/bin/cleanrstai")));
+        assert!(!is_installer(Path::new("C:/Apps/cleanrstai.exe")));
     }
 
     #[test]

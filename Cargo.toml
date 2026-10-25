@@ -50,6 +50,10 @@ libc = "0.2"
 lto = "thin"
 strip = true
 
+[build-dependencies]
+# The Windows .exe icon (build.rs); does nothing for other targets.
+winresource = "0.1"
+
 [package.metadata.bundle]
 name = "CleanRSTAI"
 identifier = "net.bukn.cleanrstai"

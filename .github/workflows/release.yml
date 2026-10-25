@@ -233,7 +233,7 @@ jobs:
           }
           $msi = "dist/CleanRSTAI-${{ matrix.name }}.msi"
           & $wix build packaging/windows/main.wxs -arch x64 -d "Version=$version" `
-            -d "Exe=target\release\cleanrstai.exe" -o $msi
+            -d "Exe=target\release\cleanrstai.exe" -d "Icon=assets\icon\icon.ico" -o $msi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item dist/*.wixpdb -ErrorAction SilentlyContinue
 
