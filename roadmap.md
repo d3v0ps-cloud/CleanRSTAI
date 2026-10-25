@@ -213,6 +213,23 @@ Later, beyond the first version:
   opening a port on the router; show the public address, and keep the login required
 - [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
 
+## 14. Docker sandbox for tools
+
+Run the commands and code the model triggers inside a local Docker container, not on the host.
+
+- [ ] **Settings → Docker**: turn the sandbox on or off, and choose the container image to run in
+  (for example `python:3.13-slim` or a custom image name and tag)
+- [ ] Choose how the image is obtained: pull it when missing, pull on every start, or use only
+  an image already on the machine
+- [ ] Run the workspace shell tool (`exec_shell_command`) in a container with the chat's working
+  folder mounted, and nothing else from the host
+- [ ] Choose network access for the container (none by default), and resource limits (CPU,
+  memory, time)
+- [ ] Refuse to run tools in the sandbox, with a clear message, when Docker isn't running or the
+  image is missing, rather than falling back to the host
+- [ ] Show in the chat which container ran a command, with its exit code and output
+- [ ] Document the Docker settings and what the sandbox does and doesn't protect against
+
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
