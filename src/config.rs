@@ -406,7 +406,7 @@ impl Settings {
 
     /// Load settings, filling secrets back in from the OS keychain.
     pub fn load() -> LoadedSettings {
-        Self::load_from(&Self::path(), &crate::secrets::OsKeychain)
+        Self::load_from(&Self::path(), &*crate::secrets::keychain())
     }
 
     pub fn load_from(path: &std::path::Path, store: &dyn SecretStore) -> LoadedSettings {
@@ -464,7 +464,7 @@ impl Settings {
 
     /// Save settings. Returns a warning if secrets had to stay in the file.
     pub fn save(&self) -> Result<Option<String>> {
-        self.save_to(&Self::path(), &crate::secrets::OsKeychain)
+        self.save_to(&Self::path(), &*crate::secrets::keychain())
     }
 
     pub fn save_to(
