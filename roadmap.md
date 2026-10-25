@@ -64,7 +64,7 @@ source):
 - [x] **llama.cpp server**: "Model loading" from `/health` (503) and "Model asleep" from
   `/props` `is_sleeping`
 - [x] **llama.cpp server**: live speeds while streaming (`timings_per_token`)
-- [ ] **llama.cpp server**: router mode: load state of each model in the model picker
+- [x] **llama.cpp server**: router mode: load state of each model in the model picker
   (`/models` `status`), with load and unload (`/models/load`, `/models/unload`)
 - [x] **llama.cpp server**: optional `/metrics` readout (queued requests, speculative
   decoding acceptance) when the server runs with `--metrics`

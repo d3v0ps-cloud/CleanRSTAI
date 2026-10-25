@@ -83,6 +83,15 @@ the model loads.
 While a reply streams in, the live readout above the message box shows the server's own
 prefill and decode speeds.
 
+#### Several models on one llama.cpp server
+
+A llama.cpp server started in router mode (without `-m`) serves several models and loads
+them as they are asked for. The model picker then lists the router's models with their
+state (*loaded*, *loading…*, *asleep*, *not loaded*, *failed to load*) and a **Load** or
+**Unload** link, so you can load a model before you need it or free the memory one uses.
+When the selected model isn't loaded, *Not loaded* shows beside the picker; your next
+message loads it.
+
 #### Context use
 
 With a llama.cpp server, including one running several models in router mode, the stats

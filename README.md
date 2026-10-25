@@ -37,7 +37,9 @@ too, as an installer and a portable `.exe`.
   (for LiteLLM's streamed replies, estimated from its listed prices); otherwise speeds are measured from the stream. With llama.cpp the stats also show how full
   the context is, turning to a warning colour from 80%, and a progress bar while the server
   reads a long prompt; an info icon beside the model picker shows the model file, size,
-  parameters, trained context and whether the server is loading it or asleep. Set **Server type** on a provider (or
+  parameters, trained context and whether the server is loading it or asleep. With a
+  llama.cpp router (several models on one server), the model picker shows which models are
+  loaded and loads or unloads them. Set **Server type** on a provider (or
   click **Detect**) to get the llama.cpp or LiteLLM extras.
 - **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thought
   process* section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or

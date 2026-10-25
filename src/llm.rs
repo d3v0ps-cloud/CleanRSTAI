@@ -169,6 +169,67 @@ impl LlamaMetrics {
     }
 }
 
+/// One model a llama.cpp router (one server, several models) can serve, from `/models`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RouterModel {
+    pub id: String,
+    /// `loaded`, `unloaded`, `loading`, `sleeping`, `downloading` or `incomplete`.
+    pub status: String,
+    /// The last load failed.
+    pub failed: bool,
+}
+
+/// The models of a llama.cpp router and their load state. None for a single-model server,
+/// whose `/models` entries carry no `status`, and for anything else.
+pub async fn llama_cpp_router_models(
+    http: &reqwest::Client,
+    p: &ProviderConfig,
+) -> Option<Vec<RouterModel>> {
+    let resp = authorize(http.get(format!("{}/models", origin(p))), p)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    let models: Vec<RouterModel> = v
+        .get("data")?
+        .as_array()?
+        .iter()
+        .filter_map(|m| {
+            let status = m.get("status")?;
+            Some(RouterModel {
+                id: m.get("id")?.as_str()?.to_owned(),
+                status: status.get("value")?.as_str()?.to_owned(),
+                failed: status.get("failed").and_then(Value::as_bool) == Some(true),
+            })
+        })
+        .collect();
+    (!models.is_empty()).then_some(models)
+}
+
+/// Ask a llama.cpp router to load (or unload) one of its models.
+pub async fn llama_cpp_set_loaded(
+    http: &reqwest::Client,
+    p: &ProviderConfig,
+    model: &str,
+    load: bool,
+) -> Result<()> {
+    let path = if load { "models/load" } else { "models/unload" };
+    let resp = authorize(http.post(format!("{}/{path}", origin(p))), p)
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&json!({"model": model}))
+        .send()
+        .await
+        .context("couldn't reach the server")?;
+    if !resp.status().is_success() {
+        return Err(error_from_response(resp).await);
+    }
+    Ok(())
+}
+
 /// Ask a llama.cpp server about the provider's model: `/health`, `/props`, `/v1/models`
 /// and, when on, `/metrics`, together. None when it doesn't answer like llama.cpp.
 pub async fn llama_cpp_server_info(
@@ -1000,6 +1061,66 @@ mod server_tests {
         let (base, _) = serve(|_| Response::status(404)).await;
         assert_eq!(
             llama_cpp_server_info(&http, &provider(&base, ProviderKind::LlamaCpp)).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_router_models_and_loading() {
+        let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/models") => Response::json(json!({"data": [
+                {"id": "qwen", "status": {"value": "loaded", "args": ["llama-server"]}},
+                {"id": "gemma", "status": {"value": "unloaded", "failed": true}},
+                {"id": "tiny", "status": {"value": "sleeping"}},
+            ]})),
+            ("POST", "/models/load") => Response::json(json!({"success": true})),
+            ("POST", "/models/unload") => Response::with_type(
+                400,
+                "application/json",
+                json!({"error": {"message": "model is not loaded"}}).to_string(),
+            ),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = build_http_client();
+        let p = provider(&base, ProviderKind::LlamaCpp);
+        let models = llama_cpp_router_models(&http, &p).await.unwrap();
+        let summary: Vec<(&str, &str, bool)> = models
+            .iter()
+            .map(|m| (m.id.as_str(), m.status.as_str(), m.failed))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("qwen", "loaded", false),
+                ("gemma", "unloaded", true),
+                ("tiny", "sleeping", false)
+            ]
+        );
+
+        llama_cpp_set_loaded(&http, &p, "gemma", true)
+            .await
+            .unwrap();
+        let err = llama_cpp_set_loaded(&http, &p, "gemma", false)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("model is not loaded"),
+            "{err:#}"
+        );
+        let load = log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.path == "/models/load")
+            .unwrap()
+            .json();
+        assert_eq!(load, json!({"model": "gemma"}));
+
+        // A single-model server's /models entries have no status: not a router.
+        let (base, _) = serve(|_| Response::json(json!({"data": [{"id": "m"}]}))).await;
+        assert_eq!(
+            llama_cpp_router_models(&http, &provider(&base, ProviderKind::LlamaCpp)).await,
             None
         );
     }
