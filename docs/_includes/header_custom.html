@@ -1,0 +1,33 @@
+<nav aria-label="Theme" class="aux-nav">
+  <ul class="aux-nav-list">
+    <li class="aux-nav-list-item">
+      <a href="#" role="button" id="theme-toggle" class="site-button" aria-pressed="false">Dark mode</a>
+    </li>
+  </ul>
+</nav>
+<script>
+  (function () {
+    var button = document.getElementById('theme-toggle');
+    function isDark() { return jtd.getTheme() === 'dark'; }
+    function label() {
+      button.textContent = isDark() ? 'Light mode' : 'Dark mode';
+      button.setAttribute('aria-pressed', isDark() ? 'true' : 'false');
+    }
+    function apply(theme) { jtd.setTheme(theme); label(); }
+    button.addEventListener('click', function (event) {
+      event.preventDefault();
+      var theme = isDark() ? 'light' : 'dark';
+      try { localStorage.setItem('jtd-theme', theme); } catch (e) {}
+      apply(theme);
+    });
+    /* Follow the system setting until the visitor picks a theme here. */
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
+        var saved = null;
+        try { saved = localStorage.getItem('jtd-theme'); } catch (err) {}
+        if (!saved) apply(e.matches ? 'dark' : 'light');
+      });
+    }
+    label();
+  })();
+</script>

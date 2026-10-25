@@ -43,6 +43,27 @@ a fork's PR could edit that check.
   those names and layouts in the release workflow.
 - `roadmap.md` tracks which items shipped in which version.
 
+## Documentation
+
+The user docs live in `docs/` (Just the Docs remote theme, built by GitHub Pages from `main`
+`/docs`, no workflow). When a change adds, removes or renames a feature, setting, default,
+range or shortcut, update the matching page in the same PR:
+
+- settings (labels, defaults and ranges in `ui/settings.rs` / `config.rs`) →
+  `docs/settings/<tab>.md`;
+- chats, attachments, tools and approvals, MCP, subagents, updates → `docs/using/*.md`;
+- shortcuts → `docs/reference/keyboard-shortcuts.md`; storage, secrets or anything that
+  leaves the computer → `docs/reference/data-and-privacy.md`;
+- install steps or release file names → `docs/getting-started/installation.md`.
+
+Keep the README's feature list in step with the docs. A new page needs `title` and
+`nav_order` front matter, and `parent` matching the parent page's `title` exactly when nested.
+Link pages with relative `.html` paths and images with `{{ '/name.png' | relative_url }}`;
+the README's screenshots stay in `docs/`. The light/dark toggle is in `docs/_includes/`
+(`head_custom.html` applies the saved or system theme, `header_custom.html` is the button);
+the theme minifies HTML onto one line, so inline scripts there must use `/* */` comments,
+never `//`. Preview with `cd docs && bundle install && bundle exec jekyll serve`.
+
 ## Architecture
 
 **Threads and events.** egui runs on the main thread (`app::ChatApp`); network and MCP I/O
