@@ -11,7 +11,7 @@ llama.cpp server details and model loading, LiteLLM model, key and proxy details
 LM Studio, vLLM and OpenRouter provider types, the Windows icon and in-app updates, and the
 accessibility pass in **v0.7.9**, and one macOS Keychain item for all secrets (one password
 prompt instead of one per key) in **v0.7.10**, and artifacts (web pages, drawings, documents and
-longer code in a side panel, with a link in the chat) in **v0.7.11**.
+longer code in a side panel, with a link in the chat) in **v0.7.11**, and remote access in the browser in **v0.8.0**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -195,16 +195,16 @@ back.
 
 Run CleanRSTAI as a server so the same interface can be used from another device on the network.
 
-- [ ] A built-in web server, switched on in **Settings → General**, that serves the chat
+- [x] A built-in web server, switched on in **Settings → General**, that serves the chat
   interface to a browser on another device
-- [ ] Log in before the interface is shown, with a password or token set in Settings; off by
+- [x] Log in before the interface is shown, with a password or token set in Settings; off by
   default, and refused until one is set
-- [ ] Serve over HTTPS (own certificate or one from the OS), and warn when it is plain HTTP
-- [ ] Choose the address to listen on (this computer only, or the local network), and the port
-- [ ] Keep API keys and MCP secrets on the host: the browser only ever sees chats and replies
-- [ ] Run tools and approvals on the host, with approval prompts shown in the browser
-- [ ] Work at phone width, and keep the look and keyboard shortcuts of the desktop app
-- [ ] Document setup and security in the docs (settings, data and privacy, and a remote-access page)
+- [x] Serve over HTTPS (own certificate or one from the OS), and warn when it is plain HTTP
+- [x] Choose the address to listen on (this computer only, or the local network), and the port
+- [x] Keep API keys and MCP secrets on the host: the browser only ever sees chats and replies
+- [x] Run tools and approvals on the host, with approval prompts shown in the browser
+- [x] Work at phone width, and keep the look and keyboard shortcuts of the desktop app
+- [x] Document setup and security in the docs (settings, data and privacy, and a remote-access page)
 
 Later, beyond the first version:
 

@@ -35,7 +35,7 @@ Scales the whole interface from 0.5× to 2.5× (default 1.0×).
 ## Secrets
 
 **Store API keys and secrets in the system keychain** (default on) keeps API keys, HTTP header
-values and MCP environment variable values in the macOS Keychain, Windows Credential Manager
+values, MCP environment variable values and the remote access password in the macOS Keychain, Windows Credential Manager
 or the Secret Service (GNOME Keyring, KWallet) on Linux. `settings.json` keeps only blank
 placeholders, and keys saved in plain text by earlier versions move to the keychain on first
 launch.
@@ -46,6 +46,30 @@ next update. Secrets that earlier versions kept as separate items move into it o
 
 If no keychain is available, a warning says so and secrets stay in `settings.json`. On macOS
 and Linux that file is readable only by you.
+
+## Remote access
+
+Serves the chat interface to a browser on another device. Off by default. The rows below
+appear when it is on. See [Remote access](../using/remote-access.html) for setup and security.
+
+- **Remote access**: the checkbox *Serve the chat interface to browsers on other devices*
+  (off by default).
+- **Listen on**: **This computer only** (the default, address 127.0.0.1) or **Local network**
+  (all network addresses, 0.0.0.0).
+- **Port**: a number from 1 to 65535 (default 8484).
+- **Password**: a password field with a **Show** toggle, needed to log in from a browser. While
+  it is empty the server does not start, and the status says *Set a password to start the
+  server*. It is kept in the keychain like your API keys.
+- **HTTPS**: **Self-signed certificate** (the default), **Certificate files** or **Off (plain
+  HTTP)**. With **Certificate files**, enter the **Certificate file** and **Key file** paths
+  (PEM), or pick them with **Browse…**. With **Off (plain HTTP)** a warning says the password
+  and chats cross the network unencrypted.
+- **Status**: *Running at* the address, one line per address with a copy button, or *Stopped*,
+  or the error. With the self-signed certificate, a note says browsers warn about it the first
+  time.
+
+Changes take effect when you click **Apply** or **Save & Close**. The server restarts, which
+logs browsers out.
 
 ## Updates
 

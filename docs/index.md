@@ -28,6 +28,8 @@ too, as an installer and a portable `.exe`.
 - **Subagents**: the model can hand independent tasks to agents that work in parallel.
 - **Attachments**: images for vision models; PDF, Office, OpenDocument, RTF and text files as
   text.
+- **Remote access in the browser**: use your chats from a phone or another computer on your
+  network, with a password and HTTPS; models, tools and approvals stay on this computer.
 - **Private by default**: API keys and secrets live in the system keychain, and conversations
   are plain JSON files on your computer.
 
@@ -40,4 +42,5 @@ too, as an installer and a portable `.exe`.
 | Learn the chat window | [Chats](using/chats.html) |
 | Let the model use tools or a folder | [Tools and approvals](using/tools.html) |
 | Add MCP servers | [MCP servers](using/mcp.html) |
+| Use your chats from a phone or another computer | [Remote access](using/remote-access.html) |
 | Look up a setting | [Settings](settings/) |

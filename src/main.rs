@@ -12,6 +12,7 @@ mod env_path;
 mod export;
 mod llm;
 mod mcp;
+mod remote;
 mod secrets;
 mod servers;
 mod sse;

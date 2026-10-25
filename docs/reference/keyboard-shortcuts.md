@@ -20,6 +20,10 @@ Use **⌘** on macOS and **Ctrl** on Linux and Windows.
 | Tab / Shift+Tab | Move between controls: the message box and its buttons, the conversation, the sidebar and the top bar. The focused control gets an accent-coloured outline |
 | Space or Enter | Press the focused button |
 
+In the browser view of [remote access](../using/remote-access.html), Enter and Shift+Enter follow
+the Sending setting, and Esc stops a reply. The browser supports the shortcuts listed on this
+page where the browser allows them.
+
 The message box has the focus when the app opens and after you send. Tab moves out of it
 (Shift+Enter makes a new line), and clicking anywhere hides the focus outline again.
 

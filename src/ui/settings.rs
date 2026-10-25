@@ -6,9 +6,11 @@ use eframe::egui;
 use super::theme::icon;
 use super::widgets::{code_block, kv_editor, list_editor, optional_value};
 use crate::config::{
-    McpServerConfig, McpTransportConfig, ProviderConfig, Settings, Theme, import_mcp_json,
+    McpServerConfig, McpTransportConfig, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
+    Settings, Theme, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
+use crate::remote::RemoteStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -45,6 +47,7 @@ pub struct SettingsUi {
     selected_provider: usize,
     selected_server: usize,
     show_key: bool,
+    show_remote_password: bool,
     import_open: bool,
     import_text: String,
     import_error: Option<String>,
@@ -67,6 +70,135 @@ pub struct SettingsUi {
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
+
+/// The "Remote access" rows of the General grid (below Secrets). `remote` is the applied
+/// server state; `remote_dirty` says the draft differs from it.
+fn remote_rows(
+    ui: &mut egui::Ui,
+    r: &mut RemoteSettings,
+    show_password: &mut bool,
+    remote: &RemoteStatus,
+    remote_dirty: bool,
+) {
+    ui.label("Remote access");
+    ui.checkbox(
+        &mut r.enabled,
+        "Serve the chat interface to browsers on other devices",
+    );
+    ui.end_row();
+    if !r.enabled {
+        return;
+    }
+
+    ui.label("Listen on");
+    ui.vertical(|ui| {
+        ui.radio_value(&mut r.bind, RemoteBind::Local, "This computer only");
+        ui.radio_value(&mut r.bind, RemoteBind::Network, "Local network");
+    });
+    ui.end_row();
+
+    ui.label("Port");
+    ui.add(egui::DragValue::new(&mut r.port).range(1..=65535));
+    ui.end_row();
+
+    ui.label("Password");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut r.password)
+                .password(!*show_password)
+                .hint_text("needed to log in from a browser")
+                .desired_width(FIELD_WIDTH - 100.0),
+        );
+        ui.checkbox(show_password, "Show");
+    });
+    ui.end_row();
+
+    ui.label("HTTPS");
+    let tls_label = |t: RemoteTls| match t {
+        RemoteTls::SelfSigned => "Self-signed certificate",
+        RemoteTls::Files => "Certificate files",
+        RemoteTls::Off => "Off (plain HTTP)",
+    };
+    egui::ComboBox::from_id_salt("remote-tls")
+        .selected_text(tls_label(r.tls))
+        .width(220.0)
+        .show_ui(ui, |ui| {
+            for tls in [RemoteTls::SelfSigned, RemoteTls::Files, RemoteTls::Off] {
+                ui.selectable_value(&mut r.tls, tls, tls_label(tls));
+            }
+        });
+    ui.end_row();
+
+    if r.tls == RemoteTls::Files {
+        for (label, path, title) in [
+            (
+                "Certificate file",
+                &mut r.cert_path,
+                "Choose the certificate file",
+            ),
+            ("Key file", &mut r.key_path, "Choose the private key file"),
+        ] {
+            ui.label(label);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(path)
+                        .hint_text("PEM file")
+                        .desired_width(FIELD_WIDTH - 100.0),
+                );
+                if ui.button("Browse…").clicked()
+                    && let Some(file) = rfd::FileDialog::new()
+                        .set_title(title)
+                        .add_filter("PEM", &["pem", "crt", "cer", "key"])
+                        .pick_file()
+                {
+                    *path = file.display().to_string();
+                }
+            });
+            ui.end_row();
+        }
+    }
+
+    ui.label("Status");
+    ui.vertical(|ui| {
+        match remote {
+            RemoteStatus::Running { urls, .. } => {
+                for url in urls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Running at {url}"));
+                        if super::widgets::icon_button(ui, icon::COPY, "Copy address").clicked() {
+                            ui.ctx().copy_text(url.clone());
+                        }
+                    });
+                }
+            }
+            RemoteStatus::Failed(e) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            RemoteStatus::Off if r.password.is_empty() => {
+                ui.label("Set a password to start the server");
+            }
+            RemoteStatus::Off => {
+                ui.label("Stopped");
+            }
+        }
+        if remote_dirty {
+            ui.weak("Apply to restart the server with these settings.");
+        }
+        match r.tls {
+            RemoteTls::Off => {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Plain HTTP: the password and chats cross the network unencrypted. Use it only on a network you trust.",
+                );
+            }
+            RemoteTls::SelfSigned => {
+                ui.weak("Browsers warn about a self-signed certificate the first time; check the address and continue.");
+            }
+            RemoteTls::Files => {}
+        }
+    });
+    ui.end_row();
+}
 
 const PRESETS: &[(&str, &str)] = &[
     ("OpenAI", "https://api.openai.com/v1"),
@@ -101,6 +233,7 @@ impl SettingsUi {
             tab,
             selected_server: 0,
             show_key: false,
+            show_remote_password: false,
             import_open: false,
             import_text: String::new(),
             import_error: None,
@@ -139,6 +272,7 @@ impl SettingsUi {
         ui: &mut egui::Ui,
         live: &Settings,
         servers: &[ServerView],
+        remote: &RemoteStatus,
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
@@ -256,7 +390,7 @@ impl SettingsUi {
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
                 Tab::Subagents => self.subagents_tab(ui),
-                Tab::General => self.general_tab(ui, live, &mut actions),
+                Tab::General => self.general_tab(ui, live, remote, &mut actions),
             }
         });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
@@ -1086,9 +1220,11 @@ impl SettingsUi {
         &mut self,
         ui: &mut egui::Ui,
         live: &Settings,
+        remote: &RemoteStatus,
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
+        let remote_dirty = self.draft.general.remote != live.general.remote;
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
         let g = &mut self.draft.general;
@@ -1157,6 +1293,8 @@ impl SettingsUi {
                             }
                         });
                         ui.end_row();
+
+                        remote_rows(ui, &mut g.remote, &mut self.show_remote_password, remote, remote_dirty);
 
                         ui.label("Updates");
                         ui.vertical(|ui| {
@@ -1398,6 +1536,10 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "UI scale / zoom"),
     (Tab::General, "General", "Send with Enter"),
     (Tab::General, "General", "Keychain / secrets"),
+    (Tab::General, "General", "Remote access (browser)"),
+    (Tab::General, "General", "Remote access password"),
+    (Tab::General, "General", "Remote access port"),
+    (Tab::General, "General", "Remote access HTTPS certificate"),
     (Tab::General, "General", "Show speed stats"),
     (Tab::General, "General", "Load web images in replies"),
     (
