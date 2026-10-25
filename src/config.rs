@@ -323,6 +323,68 @@ impl Default for SubagentSettings {
     }
 }
 
+/// Which network interfaces the browser remote-access server listens on.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteBind {
+    /// 127.0.0.1 only.
+    #[default]
+    Local,
+    /// 0.0.0.0, reachable from the local network.
+    Network,
+}
+
+/// How the browser remote-access server serves HTTPS.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteTls {
+    /// A self-signed certificate generated once and cached in the config folder.
+    #[default]
+    SelfSigned,
+    /// PEM certificate and key files chosen by the user.
+    Files,
+    /// Plain HTTP. Passwords and chats travel unencrypted.
+    Off,
+}
+
+/// Port used when the remote-access port is unset (0).
+pub const REMOTE_DEFAULT_PORT: u16 = 8484;
+
+/// Browser remote access, served by the app itself.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RemoteSettings {
+    /// Start the browser remote-access server with the app.
+    pub enabled: bool,
+    /// Listen on this computer only, or on the local network too.
+    pub bind: RemoteBind,
+    /// TCP port the server listens on.
+    pub port: u16,
+    /// Password for logging in from a browser. Kept in the keychain; the server won't start
+    /// while it is empty.
+    pub password: String,
+    /// HTTPS mode.
+    pub tls: RemoteTls,
+    /// PEM certificate file, used when `tls` is `Files`.
+    pub cert_path: String,
+    /// PEM private key file, used when `tls` is `Files`.
+    pub key_path: String,
+}
+
+impl Default for RemoteSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: RemoteBind::default(),
+            port: REMOTE_DEFAULT_PORT,
+            password: String::new(),
+            tls: RemoteTls::default(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GeneralSettings {
@@ -352,6 +414,8 @@ pub struct GeneralSettings {
     /// Open the artifact panel when a reply makes a web page, drawing, document or long code.
     pub open_artifacts: bool,
     pub builtin_tools: BuiltinToolSettings,
+    /// Browser remote access (see `remote`).
+    pub remote: RemoteSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -376,6 +440,7 @@ impl Default for GeneralSettings {
             load_remote_images: false,
             open_artifacts: true,
             builtin_tools: BuiltinToolSettings::default(),
+            remote: RemoteSettings::default(),
         }
     }
 }
@@ -512,6 +577,9 @@ impl Settings {
             self.active_provider = 0;
         }
         self.general.zoom = self.general.zoom.clamp(0.5, 3.0);
+        if self.general.remote.port == 0 {
+            self.general.remote.port = REMOTE_DEFAULT_PORT;
+        }
         let url = self.general.update_url.trim();
         self.general.update_url = if url.is_empty() {
             crate::update::LATEST_RELEASE_URL.into()
@@ -759,6 +827,22 @@ mod tests {
         assert!(s.general.send_with_enter);
         assert_eq!(s.providers.len(), 1);
         assert_eq!(s.general.update_url, crate::update::LATEST_RELEASE_URL);
+    }
+
+    #[test]
+    fn settings_without_remote_load_defaults() {
+        let s: Settings = serde_json::from_str(r#"{"general": {"zoom": 1.5}}"#).unwrap();
+        assert_eq!(s.general.remote, RemoteSettings::default());
+        assert!(!s.general.remote.enabled);
+        assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn remote_port_zero_normalizes_to_default() {
+        let mut s = Settings::default();
+        s.general.remote.port = 0;
+        s.normalize();
+        assert_eq!(s.general.remote.port, 8484);
     }
 
     #[test]

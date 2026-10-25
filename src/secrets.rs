@@ -243,6 +243,10 @@ fn slots(settings: &mut Settings) -> Vec<(String, &mut String)> {
             &mut out,
         );
     }
+    out.push((
+        "remote:password".into(),
+        &mut settings.general.remote.password,
+    ));
     for s in &mut settings.mcp_servers {
         match &mut s.transport {
             McpTransportConfig::Stdio { env, .. } => {
@@ -485,5 +489,27 @@ pub mod tests {
             "never overwrites what it can't read"
         );
         assert_eq!(unreadable.inner.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn remote_password_goes_to_keychain() {
+        let store = MemoryStore::default();
+        let mut settings = sample();
+        settings.general.remote.password = "pw".into();
+        let accounts = externalize(&mut settings, &store).unwrap();
+        assert!(accounts.contains(&"remote:password".to_string()));
+        assert!(settings.general.remote.password.is_empty());
+        assert_eq!(
+            store
+                .items
+                .lock()
+                .unwrap()
+                .get("remote:password")
+                .map(String::as_str),
+            Some("pw")
+        );
+        let mut back = settings.clone();
+        assert!(internalize(&mut back, &store, &accounts).is_empty());
+        assert_eq!(back.general.remote.password, "pw");
     }
 }

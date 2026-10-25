@@ -4,12 +4,14 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use crate::types::ToolCall;
 
 /// The user's answer on an approval prompt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Approval {
     Deny,
     Once,
@@ -157,5 +159,13 @@ mod tests {
         assert_eq!(rx.try_recv(), Ok(true));
         assert!(Approval::AlwaysServer.runs());
         assert!(!Approval::Deny.runs());
+    }
+
+    #[test]
+    fn approval_deserializes_snake_case() {
+        assert_eq!(
+            serde_json::from_str::<Approval>("\"always_server\"").unwrap(),
+            Approval::AlwaysServer
+        );
     }
 }
