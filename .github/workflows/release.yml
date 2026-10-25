@@ -15,10 +15,10 @@ name: Release
 #     WINDOWS_CERTIFICATE_PASSWORD  password of that .pfx
 # Without them, the macOS app is ad-hoc signed and the Windows files are unsigned.
 #
-# Runs on the self-hosted runners: the Mac mini builds the macOS app, and the Gentoo box
-# cross-builds both Linux architectures (with cargo-zigbuild, against glibc 2.28 so the
-# binaries also run on older distributions) and publishes. Windows is disabled for now;
-# see the commented matrix entry below.
+# Runs on the self-hosted runners: the Mac mini builds the macOS app, DARKBASE builds the
+# Windows .zip and .msi, and the Gentoo box cross-builds both Linux architectures (with
+# cargo-zigbuild, against glibc 2.28 so the binaries also run on older distributions) and
+# publishes.
 on:
   push:
     tags: ["v*"]
@@ -46,18 +46,30 @@ jobs:
           - name: linux
             runner: [self-hosted, Linux, X64, gentoo]
             targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-          # Disabled until there is a Windows runner (GitHub-hosted would use Actions minutes):
-          # - name: windows-x86_64
-          #   runner: windows-latest
-          #   targets: ""
+          - name: windows-x86_64
+            runner: [self-hosted, Windows, X64]
+            targets: ""
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - name: Use Git Bash for bash steps
+        # On Windows, a plain `bash` is System32's WSL launcher, which fails without a Linux
+        # distribution. Put Git for Windows' bash first for the rest of the job.
+        # cmd, not PowerShell: the runner's execution policy may block PowerShell scripts.
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          if not exist "%ProgramFiles%\Git\bin\bash.exe" (
+            echo ::error::Git for Windows is not installed in %ProgramFiles%\Git
+            exit /b 1
+          )
+          echo %ProgramFiles%\Git\bin>>"%GITHUB_PATH%"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.targets }}
       - name: Put the rustup toolchain ahead of any system Rust
         # The Gentoo box also has a system Rust earlier on PATH, which would otherwise win.
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
@@ -173,17 +185,23 @@ jobs:
           done
 
       - name: Build Windows
+        # The PowerShell steps below bypass the machine's script execution policy for their
+        # own process only (Windows PowerShell blocks scripts by default), and check exit
+        # codes themselves.
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: cargo build --release
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows (.zip and .msi)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $signed = [bool]$env:WINDOWS_CERTIFICATE
           if ($signed) {
             $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
@@ -204,9 +222,17 @@ jobs:
           Compress-Archive -Path target/release/cleanrstai.exe -DestinationPath "dist/CleanRSTAI-${{ matrix.name }}.zip"
 
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          dotnet tool install --global wix --version 5.0.2
+          # DARKBASE keeps its tools between runs: install WiX once into the runner's tool
+          # cache (a global install fails when it is already there, and its folder may not be
+          # on the runner's PATH) and call it by its full path.
+          $wixDir = Join-Path $env:RUNNER_TOOL_CACHE "wix-5.0.2"
+          $wix = Join-Path $wixDir "wix.exe"
+          if (-not (Test-Path $wix)) {
+            dotnet tool install wix --version 5.0.2 --tool-path $wixDir
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           $msi = "dist/CleanRSTAI-${{ matrix.name }}.msi"
-          wix build packaging/windows/main.wxs -arch x64 -d "Version=$version" `
+          & $wix build packaging/windows/main.wxs -arch x64 -d "Version=$version" `
             -d "Exe=target\release\cleanrstai.exe" -o $msi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item dist/*.wixpdb -ErrorAction SilentlyContinue
@@ -215,6 +241,13 @@ jobs:
             Sign $msi
             Remove-Item $pfx
           }
+
+      - name: Remove the signing certificate
+        # DARKBASE is a persistent machine: never leave the decoded .pfx behind, even when a
+        # step above failed.
+        if: always() && runner.os == 'Windows'
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: Remove-Item (Join-Path $env:RUNNER_TEMP "cert.pfx") -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v7
         with:
