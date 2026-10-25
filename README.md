@@ -35,7 +35,8 @@ source; the release workflow skips it until there is a Windows runner.
   tokens in and out, plus a running total for the chat. llama.cpp's own `timings` are used
   when the server reports them, and the cost when OpenRouter or a LiteLLM proxy reports it;
   otherwise speeds are measured from the stream. With llama.cpp the stats also show how full
-  the context is, turning to a warning colour from 80%. Set **Server type** on a provider (or
+  the context is, turning to a warning colour from 80%, and a progress bar while the server
+  reads a long prompt. Set **Server type** on a provider (or
   click **Detect**) to get the llama.cpp or LiteLLM extras.
 - **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thought
   process* section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
