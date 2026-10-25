@@ -1,8 +1,6 @@
 //! TLS for the remote-access server: a cached self-signed certificate, or PEM files chosen
 //! by the user, turned into a `rustls::ServerConfig` with the ring provider.
 
-#![allow(dead_code)] // TODO(remote): remove once server.rs and the app use everything.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

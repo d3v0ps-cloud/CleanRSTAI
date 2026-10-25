@@ -1,7 +1,5 @@
 //! Password check, login sessions and the login throttle for the remote-access server.
 
-#![allow(dead_code)] // TODO(remote): remove once server.rs and the app use everything.
-
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
@@ -145,6 +143,13 @@ impl Auth {
             entry.times.clear();
             entry.blocked_until = Some(now + BLOCK_FOR);
         }
+        // Forget addresses whose window and block have both passed, so the map stays small.
+        failures.retain(|_, f| {
+            f.blocked_until.is_some_and(|until| now < until)
+                || f.times
+                    .iter()
+                    .any(|t| now.saturating_duration_since(*t) < FAILURE_WINDOW)
+        });
     }
 
     fn create_session_at(&self, now: Instant) -> String {
@@ -316,6 +321,26 @@ mod tests {
         assert!(!a.throttled_at(ip(), t0 + Duration::from_secs(900)));
         a.record_failure_at(ip(), t0 + Duration::from_secs(4 * 200 + 2));
         assert!(!a.throttled_at(ip(), t0 + Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn failure_table_forgets_quiet_addresses() {
+        let a = auth(false);
+        let t0 = Instant::now();
+        for i in 0..200u8 {
+            a.record_failure_at(IpAddr::V4(Ipv4Addr::new(10, 0, 0, i)), t0);
+        }
+        for _ in 0..MAX_FAILURES {
+            a.record_failure_at(ip(), t0);
+        }
+        assert_eq!(lock(&a.failures).len(), 201);
+        // A blocked address is kept while its block lasts, with no failures left in its window.
+        let other = IpAddr::V4(Ipv4Addr::new(10, 0, 1, 1));
+        a.record_failure_at(other, t0 + Duration::from_secs(30));
+        assert!(a.throttled_at(ip(), t0 + Duration::from_secs(30)));
+        // Ten minutes on, the quiet addresses and the expired block are gone.
+        a.record_failure_at(other, t0 + FAILURE_WINDOW);
+        assert_eq!(lock(&a.failures).len(), 1);
     }
 
     #[test]

@@ -2,12 +2,14 @@
 //! commands that `ChatApp` handles on the UI thread, exactly like a click. This module holds
 //! the types both sides share; the server itself lives in `server.rs`.
 
-#![allow(dead_code)] // TODO(remote): remove once server.rs and the app use everything.
+#![allow(dead_code)] // TODO(remote): remove once the app uses everything (subscribe, config, status).
 
 mod auth;
+mod server;
 mod tls;
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -15,9 +17,12 @@ use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::agent::EventSender;
 use crate::approval::Approval;
 use crate::config::{REMOTE_DEFAULT_PORT, RemoteBind, RemoteSettings, RemoteTls};
 use crate::types::{Role, ToolCall};
+
+use auth::Auth;
 
 /// A request from a browser, sent to the app as `AppEvent::Remote`. Each carries a oneshot
 /// sender for the answer.
@@ -174,6 +179,7 @@ pub enum RemoteStatus {
 pub struct RemoteHandle {
     config: RemoteSettings,
     urls: Vec<String>,
+    port: u16,
     events: broadcast::Sender<RemoteEvent>,
     task: Option<JoinHandle<()>>,
 }
@@ -182,12 +188,14 @@ impl RemoteHandle {
     pub(crate) fn new(
         config: RemoteSettings,
         urls: Vec<String>,
+        port: u16,
         events: broadcast::Sender<RemoteEvent>,
         task: JoinHandle<()>,
     ) -> Self {
         Self {
             config,
             urls,
+            port,
             events,
             task: Some(task),
         }
@@ -196,6 +204,11 @@ impl RemoteHandle {
     /// The settings the server was started with.
     pub fn config(&self) -> &RemoteSettings {
         &self.config
+    }
+
+    /// The port the server actually listens on (differs from the settings when they say 0).
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// The addresses the server reports, e.g. `https://127.0.0.1:8484/`.
@@ -225,6 +238,50 @@ impl Drop for RemoteHandle {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Starts the server for `cfg` and returns once it is listening, so a busy port or a bad
+/// certificate is reported at once. The server runs as a task on `rt`. `tx` carries browser
+/// requests to the app; `repaint` wakes the UI thread for each one.
+pub fn start(
+    rt: &tokio::runtime::Handle,
+    cfg: &RemoteSettings,
+    tx: EventSender,
+    repaint: Arc<dyn Fn() + Send + Sync>,
+) -> Result<RemoteHandle, String> {
+    if cfg.password.trim().is_empty() {
+        return Err("Set a password to start the server".into());
+    }
+    let tls = tls::server_config(cfg)?;
+    let ip = match cfg.bind {
+        RemoteBind::Local => Ipv4Addr::LOCALHOST,
+        RemoteBind::Network => Ipv4Addr::UNSPECIFIED,
+    };
+    let listen_error = |e: std::io::Error| format!("Can't listen on port {}: {e}", cfg.port);
+    let std_listener = std::net::TcpListener::bind((ip, cfg.port)).map_err(listen_error)?;
+    std_listener.set_nonblocking(true).map_err(listen_error)?;
+    let listener = {
+        let _guard = rt.enter();
+        tokio::net::TcpListener::from_std(std_listener).map_err(listen_error)?
+    };
+    let port = listener.local_addr().map_err(listen_error)?.port();
+
+    let shown = RemoteSettings {
+        port,
+        ..cfg.clone()
+    };
+    let urls = urls(&shown);
+    let (events, _) = broadcast::channel(256);
+    let auth = Auth::new(&cfg.password, tls.is_some());
+    let task = rt.spawn(server::serve(
+        listener,
+        tls,
+        auth,
+        tx,
+        repaint,
+        events.clone(),
+    ));
+    Ok(RemoteHandle::new(cfg.clone(), urls, port, events, task))
 }
 
 /// The addresses to show for these settings: always the loopback address, and for
@@ -334,7 +391,7 @@ mod tests {
             let (tx, _) = broadcast::channel(4);
             let task = tokio::spawn(std::future::pending::<()>());
             let abort = task.abort_handle();
-            let handle = RemoteHandle::new(RemoteSettings::default(), Vec::new(), tx, task);
+            let handle = RemoteHandle::new(RemoteSettings::default(), Vec::new(), 0, tx, task);
             let mut rx = handle.subscribe();
             drop(handle);
             tokio::task::yield_now().await;
