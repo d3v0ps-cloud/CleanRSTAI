@@ -191,6 +191,45 @@ back.
   task, e.g. a fast local model for simple tasks
 - [x] Count subagent usage in the chat's stats and cost totals
 
+## 13. Remote access in the browser
+
+Run CleanRSTAI as a server so the same interface can be used from another device on the network.
+
+- [ ] A built-in web server, switched on in **Settings → General**, that serves the chat
+  interface to a browser on another device
+- [ ] Log in before the interface is shown, with a password or token set in Settings; off by
+  default, and refused until one is set
+- [ ] Serve over HTTPS (own certificate or one from the OS), and warn when it is plain HTTP
+- [ ] Choose the address to listen on (this computer only, or the local network), and the port
+- [ ] Keep API keys and MCP secrets on the host: the browser only ever sees chats and replies
+- [ ] Run tools and approvals on the host, with approval prompts shown in the browser
+- [ ] Work at phone width, and keep the look and keyboard shortcuts of the desktop app
+- [ ] Document setup and security in the docs (settings, data and privacy, and a remote-access page)
+
+Later, beyond the first version:
+
+- [ ] Cloudflare Tunnel integration: start and stop a tunnel from Settings, using `cloudflared`
+  with a token for a named tunnel, so the server is reachable from outside the network without
+  opening a port on the router; show the public address, and keep the login required
+- [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
+
+## 14. Docker sandbox for tools
+
+Run the commands and code the model triggers inside a local Docker container, not on the host.
+
+- [ ] **Settings → Docker**: turn the sandbox on or off, and choose the container image to run in
+  (for example `python:3.13-slim` or a custom image name and tag)
+- [ ] Choose how the image is obtained: pull it when missing, pull on every start, or use only
+  an image already on the machine
+- [ ] Run the workspace shell tool (`exec_shell_command`) in a container with the chat's working
+  folder mounted, and nothing else from the host
+- [ ] Choose network access for the container (none by default), and resource limits (CPU,
+  memory, time)
+- [ ] Refuse to run tools in the sandbox, with a clear message, when Docker isn't running or the
+  image is missing, rather than falling back to the host
+- [ ] Show in the chat which container ran a command, with its exit code and output
+- [ ] Document the Docker settings and what the sandbox does and doesn't protect against
+
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
