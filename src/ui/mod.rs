@@ -1,3 +1,4 @@
+pub mod artifact_panel;
 pub mod attachments;
 pub mod chat_view;
 pub mod markdown;

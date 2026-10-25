@@ -1249,6 +1249,17 @@ impl SettingsUi {
                         );
                         ui.end_row();
 
+                        ui.label("Artifacts");
+                        ui.checkbox(
+                            &mut g.open_artifacts,
+                            "Open web pages, drawings and long code in a side panel",
+                        )
+                        .on_hover_text(
+                            "When a reply makes one, the panel opens beside the chat. Off: \
+                             click the card under the reply to open it.",
+                        );
+                        ui.end_row();
+
                         ui.label("Tool calls");
                         ui.checkbox(
                             &mut g.auto_approve_tools,

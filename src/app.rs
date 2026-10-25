@@ -17,6 +17,7 @@ use crate::mcp::manager::McpManager;
 use crate::subagent::Delegation;
 use crate::tools::{ToolOverrides, ToolSelection};
 use crate::types::{ChatMessage, Conversation, Role};
+use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
 use crate::ui::palette::{Command, Entry, Palette};
@@ -45,6 +46,11 @@ pub(crate) enum Action {
     ViewImage(String, egui::load::Bytes, String),
     /// Save a drawing from a reply as an SVG file.
     SaveSvg(Vec<u8>),
+    /// Show a reply's artifact in the side panel: chat, message index, artifact index.
+    OpenArtifact(Uuid, usize, usize),
+    CloseArtifact,
+    SaveArtifact(crate::artifacts::Artifact),
+    OpenArtifactInBrowser(crate::artifacts::Artifact),
 }
 
 pub struct ChatApp {
@@ -65,6 +71,10 @@ pub struct ChatApp {
     always_allow: HashMap<Uuid, AlwaysAllow>,
     md_cache: CommonMarkCache,
     drawings: crate::ui::markdown::DrawingCache,
+    /// The artifact panel, when open.
+    artifact: Option<ArtifactView>,
+    /// The open chat's artifacts, re-found when its messages change.
+    artifacts: ArtifactList,
     settings_ui: Option<SettingsUi>,
     renaming: Option<(Uuid, String)>,
     search: String,
@@ -102,6 +112,29 @@ pub struct ChatApp {
 
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
 /// it is the active one.
+/// The open chat's artifacts, found again when its messages change: the key is the chat, its
+/// message count and the length of their text, which a streaming reply or an edit changes.
+#[derive(Default)]
+struct ArtifactList {
+    key: Option<(Uuid, usize, usize)>,
+    list: Vec<crate::artifacts::Artifact>,
+}
+
+impl ArtifactList {
+    fn refresh(&mut self, conv: Option<&Conversation>) {
+        let key = conv.map(|c| {
+            let text = c.messages.iter().map(|m| m.content.len()).sum();
+            (c.id, c.messages.len(), text)
+        });
+        if key != self.key {
+            self.key = key;
+            self.list = conv
+                .map(|c| crate::artifacts::in_conversation(&c.messages))
+                .unwrap_or_default();
+        }
+    }
+}
+
 struct ServerInfoState {
     /// Provider id and model.
     key: (String, String),
@@ -243,6 +276,8 @@ impl ChatApp {
             always_allow: HashMap::new(),
             md_cache: CommonMarkCache::default(),
             drawings: Default::default(),
+            artifact: None,
+            artifacts: ArtifactList::default(),
             settings_ui: None,
             renaming: None,
             search: String::new(),
@@ -880,6 +915,7 @@ impl ChatApp {
             _ => {}
         }
         if done {
+            self.open_new_artifact(id);
             self.runs.remove(&id);
             self.conversations
                 .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
@@ -891,6 +927,28 @@ impl ChatApp {
             if is_tool_result && let Some(run) = self.runs.get_mut(&id) {
                 run.running_tool = None;
             }
+        }
+    }
+
+    /// When a reply in the open chat made an artifact, show the newest in the panel.
+    fn open_new_artifact(&mut self, id: Uuid) {
+        if !self.settings.general.open_artifacts
+            || self.current != Some(id)
+            || self.artifact.as_ref().is_some_and(|v| v.conv == id)
+        {
+            return;
+        }
+        let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let asked = conv
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::User)
+            .unwrap_or(0);
+        let list = crate::artifacts::in_conversation(&conv.messages);
+        if let Some(newest) = list.last().filter(|a| a.message > asked) {
+            self.artifact = Some(ArtifactView::new(id, newest, true));
         }
     }
 
@@ -2371,6 +2429,12 @@ impl ChatApp {
                 show_stats: self.settings.general.show_stats,
                 reasoning: self.settings.general.reasoning_display,
                 remote_images: self.settings.general.load_remote_images,
+                artifacts: &self.artifacts.list,
+                open_artifact: self
+                    .artifact
+                    .as_ref()
+                    .filter(|v| v.conv == conv.id)
+                    .map(|v| (v.message, v.index)),
             },
         )
     }
@@ -2408,6 +2472,32 @@ impl ChatApp {
                             Ok(()) => format!("Saved {}", path.display()),
                             Err(e) => format!("Couldn't save {}: {e}", path.display()),
                         });
+                    }
+                }
+                Action::OpenArtifact(conv, message, index) => {
+                    let list = &self.artifacts.list;
+                    if let Some(pos) = list
+                        .iter()
+                        .position(|a| (a.message, a.index) == (message, index))
+                    {
+                        self.artifact =
+                            Some(ArtifactView::new(conv, &list[pos], pos + 1 == list.len()));
+                    }
+                }
+                Action::CloseArtifact => self.artifact = None,
+                Action::SaveArtifact(a) => {
+                    let name = a.file_name();
+                    let ext = name.rsplit_once('.').map_or("txt", |(_, e)| e).to_owned();
+                    if let Some(path) = export::pick_save_path_as(&name, "File", &ext) {
+                        self.notice = Some(match std::fs::write(&path, &a.source) {
+                            Ok(()) => format!("Saved {}", path.display()),
+                            Err(e) => format!("Couldn't save {}: {e}", path.display()),
+                        });
+                    }
+                }
+                Action::OpenArtifactInBrowser(a) => {
+                    if let Err(e) = crate::artifacts::open_in_browser(&a) {
+                        self.notice = Some(format!("Couldn't open it in the browser: {e}"));
                     }
                 }
                 Action::EditFrom(conv, idx) => {
@@ -2492,6 +2582,40 @@ impl eframe::App for ChatApp {
             .show(ui, |ui| self.top_bar(ui));
 
         if !settings_open {
+            let current = self
+                .current
+                .and_then(|id| self.conversations.iter().find(|c| c.id == id));
+            self.artifacts.refresh(current);
+            let remote_images = self.settings.general.load_remote_images;
+            if let Some(view) = self
+                .artifact
+                .as_mut()
+                .filter(|v| Some(v.conv) == self.current)
+            {
+                let mut actions = Vec::new();
+                let width = ui.available_width();
+                egui::Panel::right("artifact")
+                    .resizable(true)
+                    .default_size(width * 0.45)
+                    .size_range(300.0..=(width * 0.7).max(300.0))
+                    .frame(
+                        egui::Frame::new()
+                            .fill(ui.visuals().panel_fill)
+                            .inner_margin(egui::Margin::symmetric(14, 0)),
+                    )
+                    .show(ui, |ui| {
+                        artifact_panel::show(
+                            ui,
+                            &mut self.md_cache,
+                            &mut self.drawings,
+                            view,
+                            &self.artifacts.list,
+                            remote_images,
+                            &mut actions,
+                        )
+                    });
+                self.apply_actions(actions, &ctx);
+            }
             // A fresh chat shows the composer under the greeting instead.
             if !self.is_fresh_chat() {
                 egui::Panel::bottom("composer")

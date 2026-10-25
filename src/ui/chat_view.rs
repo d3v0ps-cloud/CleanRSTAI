@@ -12,6 +12,7 @@ use super::theme::{self, icon};
 use super::widgets::{code_block, quiet_icons};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
+use crate::artifacts::Artifact;
 use crate::config::ReasoningDisplay;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
@@ -55,6 +56,9 @@ pub struct View<'a> {
     pub show_stats: bool,
     pub reasoning: ReasoningDisplay,
     pub remote_images: bool,
+    /// Every artifact in the chat, and the one open in the panel.
+    pub artifacts: &'a [Artifact],
+    pub open_artifact: Option<(usize, usize)>,
 }
 
 pub fn show(
@@ -126,6 +130,8 @@ pub fn show(
                                     show_stats: v.show_stats,
                                     reasoning: v.reasoning,
                                     remote_images: v.remote_images,
+                                    artifacts: v.artifacts,
+                                    open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                 },
                                 msg,
@@ -228,6 +234,8 @@ struct AssistantCtx<'a> {
     show_stats: bool,
     reasoning: ReasoningDisplay,
     remote_images: bool,
+    artifacts: &'a [Artifact],
+    open_artifact: Option<(usize, usize)>,
     /// The final reply: show Regenerate.
     last: bool,
 }
@@ -299,6 +307,15 @@ fn assistant_body(
             id,
             &msg.content,
             cx.remote_images,
+            Some(&markdown::Cards {
+                conv: cx.conv,
+                list: &cx
+                    .artifacts
+                    .iter()
+                    .filter(|a| a.message == cx.idx)
+                    .collect::<Vec<_>>(),
+                open: cx.open_artifact,
+            }),
             actions,
         );
     }

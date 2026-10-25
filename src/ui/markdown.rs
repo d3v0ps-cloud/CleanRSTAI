@@ -7,11 +7,13 @@ use std::ops::Range;
 
 use eframe::egui::{self, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 
 use super::theme::{self, icon};
 use super::widgets::{code_block, quiet_icons};
 use crate::app::Action;
+use crate::artifacts::{Artifact, fence_is_closed, markdown_options};
+use uuid::Uuid;
 
 /// Larger SVGs are shown as code rather than drawn.
 const MAX_SVG_BYTES: usize = 2_000_000;
@@ -34,7 +36,20 @@ pub enum Segment<'a> {
         source: String,
         /// The block as written, shown as code if it can't be drawn.
         raw: &'a str,
+        /// Its position in the artifacts given to [`segments`], if it is one.
+        artifact: Option<usize>,
     },
+    /// An artifact, shown as a card that opens it in the panel: its position in the artifacts
+    /// given to [`segments`].
+    Artifact(usize),
+}
+
+/// The artifacts of the reply being shown, to draw as cards.
+pub struct Cards<'a> {
+    pub conv: Uuid,
+    pub list: &'a [&'a Artifact],
+    /// The artifact open in the panel: message and index.
+    pub open: Option<(usize, usize)>,
 }
 
 /// Rendered drawings, by hash of kind and source, so each is rendered once.
@@ -81,10 +96,14 @@ fn render_mermaid(source: &str) -> Result<String, String> {
         .map_err(|e| format!("{e:#}"))
 }
 
-/// Split `text` into markdown and drawings. Only complete top-level blocks become drawings,
-/// so a diagram still being streamed shows as code until its closing fence arrives. Unless
-/// `remote_images`, web images become plain links.
-pub fn segments(text: &str, remote_images: bool) -> Vec<Segment<'_>> {
+/// Split `text` into markdown, drawings and artifacts (the code blocks at `artifacts`). Only
+/// complete top-level blocks become drawings, so a diagram still being streamed shows as code
+/// until its closing fence arrives. Unless `remote_images`, web images become plain links.
+pub fn segments<'a>(
+    text: &'a str,
+    remote_images: bool,
+    artifacts: &[Range<usize>],
+) -> Vec<Segment<'a>> {
     let mut out = Vec::new();
     // Byte ranges of `text` to drop: the `!` of web images, so they read as links.
     let mut unbang: Vec<usize> = Vec::new();
@@ -92,12 +111,7 @@ pub fn segments(text: &str, remote_images: bool) -> Vec<Segment<'_>> {
     let mut depth = 0usize;
     let mut open: Option<(usize, DrawingKind, String)> = None;
 
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_DEFINITION_LIST;
-    for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
+    for (event, range) in Parser::new_ext(text, markdown_options()).into_offset_iter() {
         match event {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) if depth == 0 => {
                 depth += 1;
@@ -157,12 +171,34 @@ pub fn segments(text: &str, remote_images: bool) -> Vec<Segment<'_>> {
             out.push(Segment::Markdown(md));
         }
     };
-    for (range, kind, source) in drawings {
+    // Drawings and artifact cards in reading order; a drawing can also be an artifact.
+    enum Part {
+        Drawing(DrawingKind, String, Option<usize>),
+        Card(usize),
+    }
+    let mut parts: Vec<(Range<usize>, Part)> = drawings
+        .into_iter()
+        .map(|(range, kind, source)| {
+            let artifact = artifacts.iter().position(|a| *a == range);
+            (range, Part::Drawing(kind, source, artifact))
+        })
+        .collect();
+    for (i, range) in artifacts.iter().enumerate() {
+        if !parts.iter().any(|(r, _)| r == range) {
+            parts.push((range.clone(), Part::Card(i)));
+        }
+    }
+    parts.sort_by_key(|(r, _)| r.start);
+    for (range, part) in parts {
         push_markdown(pos, range.start, &mut out);
-        out.push(Segment::Drawing {
-            kind,
-            source,
-            raw: &text[range.clone()],
+        out.push(match part {
+            Part::Drawing(kind, source, artifact) => Segment::Drawing {
+                kind,
+                source,
+                raw: &text[range.clone()],
+                artifact,
+            },
+            Part::Card(i) => Segment::Artifact(i),
         });
         pos = range.end;
     }
@@ -170,22 +206,8 @@ pub fn segments(text: &str, remote_images: bool) -> Vec<Segment<'_>> {
     out
 }
 
-/// Whether a fenced code block's text ends with its closing fence.
-fn fence_is_closed(block: &str) -> bool {
-    let mut lines = block.trim_end().lines();
-    let Some(first) = lines.next() else {
-        return false;
-    };
-    let opener = first.trim_start();
-    let fence_char = opener.chars().next().unwrap_or('`');
-    let fence_len = opener.chars().take_while(|&c| c == fence_char).count();
-    lines.next_back().is_some_and(|last| {
-        let last = last.trim();
-        last.len() >= fence_len && last.chars().all(|c| c == fence_char)
-    })
-}
-
-/// Show a reply's markdown, drawing its diagrams and SVGs.
+/// Show a reply's markdown, drawing its diagrams and SVGs, with `cards` for its artifacts.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     md_cache: &mut CommonMarkCache,
@@ -193,9 +215,21 @@ pub fn show(
     id: egui::Id,
     text: &str,
     remote_images: bool,
+    cards: Option<&Cards<'_>>,
     actions: &mut Vec<Action>,
 ) {
-    for (i, segment) in segments(text, remote_images).into_iter().enumerate() {
+    let ranges: Vec<Range<usize>> = cards
+        .map(|c| c.list.iter().map(|a| a.range.clone()).collect())
+        .unwrap_or_default();
+    let open_in_panel = |i: usize| {
+        let c = cards.expect("artifacts come from cards");
+        let a = c.list[i];
+        Action::OpenArtifact(c.conv, a.message, a.index)
+    };
+    for (i, segment) in segments(text, remote_images, &ranges)
+        .into_iter()
+        .enumerate()
+    {
         match segment {
             Segment::Markdown(md) => {
                 // Prose in the reading serif; code and headings keep their own styles.
@@ -210,11 +244,81 @@ pub fn show(
                     .show_with_id(id.with(i), ui, md_cache, &md);
                 ui.style_mut().override_text_style = previous;
             }
-            Segment::Drawing { kind, source, raw } => {
-                drawing(ui, drawings, kind, &source, raw, actions)
+            Segment::Drawing {
+                kind,
+                source,
+                raw,
+                artifact,
+            } => drawing(
+                ui,
+                drawings,
+                kind,
+                &source,
+                raw,
+                artifact.map(open_in_panel),
+                actions,
+            ),
+            Segment::Artifact(a) => {
+                let c = cards.expect("artifacts come from cards");
+                let artifact = c.list[a];
+                let open = c.open == Some((artifact.message, artifact.index));
+                ui.add_space(4.0);
+                super::artifact_panel::card(ui, artifact, open, actions, open_in_panel(a));
+                ui.add_space(4.0);
             }
         }
     }
+}
+
+/// A drawing on its own, scaled to fit the width (the artifact panel's preview).
+pub fn drawing_preview(
+    ui: &mut egui::Ui,
+    cache: &mut DrawingCache,
+    kind: DrawingKind,
+    source: &str,
+) {
+    match cache.get(kind, source) {
+        Ok(d) => {
+            let d = d.clone();
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(252, 251, 247))
+                .corner_radius(10)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Image::from_bytes(d.uri, d.svg)
+                            .fit_to_original_size(1.0)
+                            .max_width(ui.available_width()),
+                    );
+                });
+        }
+        Err(e) => {
+            ui.label(
+                RichText::new(format!("Couldn't draw this: {e}"))
+                    .small()
+                    .color(ui.visuals().warn_fg_color),
+            );
+        }
+    }
+}
+
+/// `source` as a highlighted code block in `lang`, with the usual copy button.
+pub fn code_view(
+    ui: &mut egui::Ui,
+    md_cache: &mut CommonMarkCache,
+    id: egui::Id,
+    lang: &str,
+    source: &str,
+) {
+    // A fence longer than any run of backticks inside, so the source can't end it early.
+    let longest = source.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    let newline = if source.ends_with('\n') { "" } else { "\n" };
+    let text = format!("{fence}{lang}\n{source}{newline}{fence}\n");
+    CommonMarkViewer::new()
+        .syntax_theme_dark("base16-eighties.dark")
+        .syntax_theme_light("InspiredGitHub")
+        .show_with_id(id, ui, md_cache, &text);
 }
 
 fn drawing(
@@ -223,6 +327,7 @@ fn drawing(
     kind: DrawingKind,
     source: &str,
     raw: &str,
+    open_in_panel: Option<Action>,
     actions: &mut Vec<Action>,
 ) {
     let what = match kind {
@@ -259,15 +364,17 @@ fn drawing(
                     format!("{what}.svg"),
                 ));
             }
-            match quiet_icons(
-                ui,
-                &[
-                    (icon::COPY, "Copy source"),
-                    (icon::DOWNLOAD, "Save as SVG…"),
-                ],
-            ) {
+            let mut items = vec![
+                (icon::COPY, "Copy source"),
+                (icon::DOWNLOAD, "Save as SVG…"),
+            ];
+            if open_in_panel.is_some() {
+                items.push((icon::SIDEBAR, "Open in the panel"));
+            }
+            match quiet_icons(ui, &items) {
                 Some(0) => actions.push(Action::Copy(source.to_owned())),
                 Some(1) => actions.push(Action::SaveSvg(d.svg.to_vec())),
+                Some(2) => actions.extend(open_in_panel),
                 _ => {}
             }
         }
@@ -295,7 +402,7 @@ mod tests {
         let text = "Intro\n\n```mermaid\nflowchart LR\n  A-->B\n```\n\nMiddle\n\n\
                     <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>\n\n\
                     ```svg\n<svg width=\"1\" height=\"1\"/>\n```\n\nEnd";
-        let s = segments(text, false);
+        let s = segments(text, false, &[]);
         assert_eq!(s.len(), 6, "{s:#?}");
         assert_eq!(s[0], Segment::Markdown("Intro\n\n".into()));
         assert!(drawing(DrawingKind::Mermaid, "flowchart LR\n  A-->B\n")(
@@ -317,12 +424,12 @@ mod tests {
         // Still streaming: no closing fence yet.
         let streaming = "```mermaid\nflowchart LR\n  A-->B\n";
         assert_eq!(
-            segments(streaming, false),
+            segments(streaming, false, &[]),
             [Segment::Markdown(streaming.into())]
         );
         // Other languages, and blocks inside lists, are left to the markdown viewer.
         let text = "```rust\nfn main() {}\n```\n\n- item\n\n  ```mermaid\n  flowchart LR\n  ```\n";
-        assert_eq!(segments(text, false), [Segment::Markdown(text.into())]);
+        assert_eq!(segments(text, false, &[]), [Segment::Markdown(text.into())]);
     }
 
     #[test]
@@ -330,13 +437,13 @@ mod tests {
         let text =
             "See ![chart](https://example.com/c.png) and ![local](data:image/png;base64,AA==)";
         assert_eq!(
-            segments(text, false),
+            segments(text, false, &[]),
             [Segment::Markdown(
                 "See [chart](https://example.com/c.png) and ![local](data:image/png;base64,AA==)"
                     .into()
             )]
         );
-        assert_eq!(segments(text, true), [Segment::Markdown(text.into())]);
+        assert_eq!(segments(text, true, &[]), [Segment::Markdown(text.into())]);
     }
 
     #[test]
@@ -354,5 +461,23 @@ mod tests {
                 .get(DrawingKind::Mermaid, "this is not mermaid")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn artifacts_become_cards_and_drawings_keep_drawing() {
+        let text = "Intro\n\n```html\n<p>x</p>\n```\n\nMiddle\n\n```svg\n<svg/>\n```\n\nEnd\n";
+        let artifacts = crate::artifacts::in_reply(0, text);
+        let ranges: Vec<_> = artifacts.iter().map(|a| a.range.clone()).collect();
+        let s = segments(text, false, &ranges);
+        assert_eq!(s.len(), 5, "{s:?}");
+        assert_eq!(s[1], Segment::Artifact(0));
+        assert!(matches!(&s[2], Segment::Markdown(m) if m.trim() == "Middle"));
+        assert!(matches!(
+            &s[3],
+            Segment::Drawing {
+                artifact: Some(1),
+                ..
+            }
+        ));
     }
 }

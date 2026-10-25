@@ -4,6 +4,7 @@
 mod agent;
 mod app;
 mod approval;
+mod artifacts;
 mod attach;
 mod config;
 mod documents;
