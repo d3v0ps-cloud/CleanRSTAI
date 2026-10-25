@@ -1,4 +1,19 @@
-# CleanRSTAI
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/icon/window-dark.png">
+    <img src="assets/icon/window-light.png" width="128" height="128" alt="CleanRSTAI icon">
+  </picture>
+</p>
+
+<h1 align="center">CleanRSTAI</h1>
+
+<p align="center">
+  <a href="https://d3v0ps-cloud.github.io/CleanRSTAI/"><b>Documentation</b></a> ·
+  <a href="https://d3v0ps-cloud.github.io/CleanRSTAI/getting-started/installation.html">Installation</a> ·
+  <a href="https://d3v0ps-cloud.github.io/CleanRSTAI/getting-started/first-chat.html">Your first chat</a> ·
+  <a href="https://d3v0ps-cloud.github.io/CleanRSTAI/settings/">Settings</a> ·
+  <a href="https://github.com/d3v0ps-cloud/CleanRSTAI/releases/latest">Latest release</a>
+</p>
 
 A fast, native desktop AI chat client written in Rust. It talks to any **OpenAI-compatible**
 endpoint and gives the model tools through **MCP servers** (stdio and Streamable HTTP).
