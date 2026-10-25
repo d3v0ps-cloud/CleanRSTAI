@@ -1878,12 +1878,13 @@ impl ChatApp {
                 });
             }
             // Live stats for the request currently streaming in; the finished response
-            // carries the same figures, so this only shows mid-completion.
-            if self.settings.general.show_stats
-                && let Some(s) = self
-                    .current
-                    .and_then(|c| self.runs.get(&c))
-                    .and_then(|r| r.live_stats.as_ref())
+            // carries the same figures, so this only shows mid-completion. Prompt progress
+            // is a status rather than a stat, so it shows with stats off too.
+            if let Some(s) = self
+                .current
+                .and_then(|c| self.runs.get(&c))
+                .and_then(|r| r.live_stats.as_ref())
+                .filter(|s| self.settings.general.show_stats || s.prompt_progress.is_some())
             {
                 super::ui::stats_view::live_line(ui, s);
                 ui.add_space(6.0);

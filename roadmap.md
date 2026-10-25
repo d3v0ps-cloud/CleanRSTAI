@@ -55,8 +55,9 @@ source):
 - [ ] **llama.cpp server**: model details from `/props` and `/v1/models`: the loaded file
   (`model_path`), size, parameter count, trained context (`n_ctx_train`), vision support
   (`modalities`) and server build (`build_info`)
-- [ ] **llama.cpp server**: prompt processing progress while a long prompt is read
-  (`return_progress` → `prompt_progress`)
+- [x] **llama.cpp server**: prompt processing progress while a long prompt is read
+  (`return_progress` → `prompt_progress`), as a bar above the message box with tokens read,
+  cached tokens, time so far and time left
 - [ ] **llama.cpp server**: "Model loading" from `/health` (503) and "Model asleep" from
   `/props` `is_sleeping`
 - [ ] **llama.cpp server**: live speeds while streaming (`timings_per_token`)

@@ -3,8 +3,8 @@
 use eframe::egui;
 
 use crate::stats::{
-    RequestStats, StatsSource, Totals, context_percent, fmt_context, fmt_cost, fmt_ms, fmt_rate,
-    fmt_tokens,
+    PromptProgress, RequestStats, StatsSource, Totals, context_percent, fmt_context, fmt_cost,
+    fmt_ms, fmt_rate, fmt_tokens,
 };
 
 /// From this share of the context in use, the chat's context figure turns to the warning
@@ -60,12 +60,47 @@ pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
 }
 
 /// Live readout of the request currently streaming in, shown above the input box. No hover:
-/// the full breakdown appears in the finished response instead.
+/// the full breakdown appears in the finished response instead. While llama.cpp is still
+/// reading the prompt, a progress bar takes its place.
 pub fn live_line(ui: &mut egui::Ui, s: &RequestStats) {
+    if let Some(p) = &s.prompt_progress {
+        prompt_progress(ui, p);
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spinner();
         ui.add_space(4.0);
         ui.label(egui::RichText::new(parts(s).join(" · ")).small().weak());
+    });
+}
+
+/// "Reading prompt" with a bar: tokens read, how many came from the cache, time so far and
+/// an estimate of the time left.
+pub fn prompt_progress(ui: &mut egui::Ui, p: &PromptProgress) {
+    let mut parts = vec![format!(
+        "Reading prompt: {} of {} tokens",
+        fmt_tokens(p.processed.min(p.total)),
+        fmt_tokens(p.total)
+    )];
+    if p.cache > 0 {
+        parts.push(format!("{} from cache", fmt_tokens(p.cache)));
+    }
+    if p.time_ms > 0.0 {
+        parts.push(fmt_ms(p.time_ms));
+    }
+    if let Some(left) = p.remaining_ms().filter(|&ms| ms >= 1000.0) {
+        parts.push(format!("about {} left", fmt_ms(left)));
+    }
+    ui.horizontal(|ui| {
+        let accent = super::theme::palette(ui.visuals().dark_mode).signal;
+        ui.add(
+            egui::ProgressBar::new(p.fraction())
+                .desired_width(120.0)
+                .desired_height(6.0)
+                .fill(accent),
+        );
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(parts.join(" · ")).small().weak());
     });
 }
 

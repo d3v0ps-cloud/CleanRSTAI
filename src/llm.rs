@@ -389,6 +389,11 @@ pub async fn chat_completion(
     if let Some(m) = p.max_tokens {
         body["max_tokens"] = json!(m);
     }
+    // llama.cpp reports how far it has got reading the prompt, which can take minutes on
+    // a long one. Other servers may refuse fields they don't know, so only for llama.cpp.
+    if p.stream && p.kind == ProviderKind::LlamaCpp {
+        body["return_progress"] = json!(true);
+    }
     if p.stream && p.request_usage {
         body["stream_options"] = json!({"include_usage": true});
     }
@@ -414,6 +419,8 @@ pub async fn chat_completion(
     let mut builder = ToolCallBuilder::default();
     // Live stats are pushed at most a few times a second, not on every chunk.
     let mut last_live = std::time::Instant::now();
+    // The first prompt progress goes out at once, so the bar shows from the start.
+    let mut progress_shown = false;
 
     let is_sse = resp
         .headers()
@@ -478,6 +485,13 @@ pub async fn chat_completion(
             );
         }
         stats.observe(&v);
+        if v.get("prompt_progress").is_some()
+            && (!progress_shown || last_live.elapsed() >= std::time::Duration::from_millis(100))
+        {
+            progress_shown = true;
+            last_live = std::time::Instant::now();
+            on_stats(stats.snapshot(&p.model));
+        }
         if let Some(choice) = v.pointer("/choices/0") {
             if let Some(delta) = choice.get("delta") {
                 let produced = reasoning_of(delta).is_some_and(|r| !r.is_empty())
@@ -643,6 +657,62 @@ mod server_tests {
         let log = log.lock().unwrap();
         let chat = log.iter().find(|r| r.method == "POST").unwrap();
         assert_eq!(chat.json()["stream_options"]["include_usage"], true);
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_prompt_progress() {
+        let progress = |processed: u64| {
+            json!({"choices": [{"delta": {"role": "assistant", "content": null}}],
+                   "prompt_progress": {"total": 4096, "cache": 0, "processed": processed,
+                                       "time_ms": processed as f64}})
+        };
+        let (base, log) = serve(move |_| {
+            Response::sse(&[
+                progress(0),
+                progress(2048),
+                json!({"choices": [{"delta": {"content": "Hi"}, "finish_reason": "stop"}]}),
+            ])
+        })
+        .await;
+        let http = build_http_client();
+        let mut live = Vec::new();
+        let turn = chat_completion(
+            &http,
+            &provider(&base, ProviderKind::LlamaCpp),
+            vec![],
+            &[],
+            |_| {},
+            |s| live.push(s.prompt_progress),
+        )
+        .await
+        .unwrap();
+        assert_eq!(turn.content, "Hi");
+        assert_eq!(turn.stats.prompt_progress, None);
+        assert_eq!(
+            live[0].map(|p| p.processed),
+            Some(0),
+            "first update goes out at once"
+        );
+        assert_eq!(log.lock().unwrap()[0].json()["return_progress"], true);
+
+        // Not asked of other servers, which may refuse fields they don't know.
+        let (base, log) = serve(|_| Response::sse(&[json!({"choices": [{"delta": {}}]})])).await;
+        chat_completion(
+            &http,
+            &provider(&base, ProviderKind::Generic),
+            vec![],
+            &[],
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(
+            log.lock().unwrap()[0]
+                .json()
+                .get("return_progress")
+                .is_none()
+        );
     }
 
     #[tokio::test]

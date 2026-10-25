@@ -48,6 +48,15 @@ and the cost when OpenRouter or a LiteLLM proxy reports it; otherwise speeds are
 the stream. Hover over the line for the full breakdown. Turn the stats off in
 [General](../settings/general.html#stats).
 
+#### Prompt progress
+
+A long prompt can take a local model a minute or more to read before the reply starts, for
+example with many MCP tools switched on or a large attachment. With a llama.cpp server (set
+**Server type** on the provider to *llama.cpp server*, or click **Detect**), a bar above the
+message box shows how far it has got: tokens read out of the prompt, how many came from the
+server's cache, the time so far and an estimate of the time left. It gives way to the reply
+when the first words arrive, and shows even with stats turned off.
+
 #### Context use
 
 With a llama.cpp server, including one running several models in router mode, the stats

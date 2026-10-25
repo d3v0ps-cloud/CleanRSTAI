@@ -24,6 +24,53 @@ pub struct SlotUsage {
     pub total: u64,
 }
 
+/// How far llama.cpp has got reading the prompt (`prompt_progress`, sent while streaming
+/// when the request asks for `return_progress`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PromptProgress {
+    /// Prompt tokens in all.
+    pub total: u64,
+    /// Tokens reused from the server's cache, which need no processing.
+    pub cache: u64,
+    /// Tokens done so far, cached ones included.
+    pub processed: u64,
+    /// Time since prompt processing started.
+    pub time_ms: f64,
+}
+
+impl PromptProgress {
+    pub fn parse(v: &Value) -> Option<Self> {
+        let p = v.get("prompt_progress").filter(|p| p.is_object())?;
+        let n = |k: &str| p.get(k).and_then(Value::as_u64);
+        Some(Self {
+            total: n("total")?,
+            cache: n("cache").unwrap_or(0),
+            processed: n("processed")?,
+            time_ms: p.get("time_ms").and_then(Value::as_f64).unwrap_or(0.0),
+        })
+    }
+
+    /// Share of the tokens that need processing that are done, from 0 to 1. Cached tokens
+    /// cost nothing, so they count on neither side.
+    pub fn fraction(&self) -> f32 {
+        let todo = self.total.saturating_sub(self.cache);
+        if todo == 0 {
+            return 1.0;
+        }
+        (self.processed.saturating_sub(self.cache) as f32 / todo as f32).clamp(0.0, 1.0)
+    }
+
+    /// Estimated time left, from the speed so far. None until there is a speed to go by.
+    pub fn remaining_ms(&self) -> Option<f64> {
+        let done = self.processed.saturating_sub(self.cache);
+        if done == 0 || self.time_ms <= 0.0 {
+            return None;
+        }
+        let left = self.total.saturating_sub(self.processed);
+        Some(left as f64 * self.time_ms / done as f64)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RequestStats {
@@ -47,6 +94,10 @@ pub struct RequestStats {
     pub context_used: Option<u64>,
     /// Slot occupancy, when the server exposes it (llama.cpp).
     pub slot_usage: Option<SlotUsage>,
+    /// While the prompt is being read, how far the server has got. Live readout only; not
+    /// kept with the message.
+    #[serde(skip)]
+    pub prompt_progress: Option<PromptProgress>,
 }
 
 impl RequestStats {
@@ -162,6 +213,7 @@ pub struct Collector {
     pub served_model: Option<String>,
     pub header_cost_usd: Option<f64>,
     pub context_size: Option<u64>,
+    pub prompt_progress: Option<PromptProgress>,
 }
 
 impl Collector {
@@ -173,6 +225,9 @@ impl Collector {
         if let Some(t) = ServerTimings::parse(v) {
             self.timings = Some(t);
         }
+        if let Some(p) = PromptProgress::parse(v) {
+            self.prompt_progress = Some(p);
+        }
         if let Some(m) = v
             .get("model")
             .and_then(Value::as_str)
@@ -183,7 +238,10 @@ impl Collector {
     }
 
     pub fn finish(self, requested_model: &str) -> RequestStats {
-        self.snapshot(requested_model)
+        RequestStats {
+            prompt_progress: None,
+            ..self.snapshot(requested_model)
+        }
     }
 
     /// A non-destructive view of the stats so far, for a live readout while the response
@@ -203,6 +261,8 @@ impl Collector {
             total_ms,
             cost_usd: self.header_cost_usd.or(usage.cost_usd),
             context_size: self.context_size,
+            // Only until the reply starts: after that the prompt has been read.
+            prompt_progress: self.prompt_progress.filter(|_| t.first_token.is_none()),
             served_model: self
                 .served_model
                 .clone()
@@ -416,6 +476,35 @@ mod tests {
         assert_eq!(s.completion_tokens, Some(64));
         assert_eq!(s.ttft_ms, Some(450.0));
         assert_eq!(s.context_used, Some(1064));
+    }
+
+    #[test]
+    fn prompt_progress() {
+        let v = json!({"choices": [{"delta": {"role": "assistant", "content": null}}],
+            "prompt_progress": {"total": 10_000, "cache": 2_000, "processed": 4_000,
+                                "time_ms": 1_000.0}});
+        let p = PromptProgress::parse(&v).unwrap();
+        assert_eq!(p.fraction(), 0.25, "cached tokens count on neither side");
+        assert_eq!(p.remaining_ms(), Some(3_000.0));
+        assert_eq!(
+            PromptProgress {
+                processed: 2_000,
+                ..p
+            }
+            .remaining_ms(),
+            None,
+            "no speed yet"
+        );
+
+        // Shown live until the reply starts, and never kept with the message.
+        let mut c = Collector::default();
+        c.observe(&v);
+        assert_eq!(c.snapshot("m").prompt_progress, Some(p));
+        c.timer.token();
+        assert_eq!(c.snapshot("m").prompt_progress, None);
+        let mut c = Collector::default();
+        c.observe(&v);
+        assert_eq!(c.finish("m").prompt_progress, None);
     }
 
     #[test]
