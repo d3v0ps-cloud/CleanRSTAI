@@ -1,6 +1,6 @@
 <!--
   Windows installer (WiX v5). Built by .github/workflows/release.yml:
-    wix build packaging/windows/main.wxs -arch x64 -d Version=0.3.0 -d Exe=target\release\cleanrstai.exe -o CleanRSTAI.msi
+    wix build packaging/windows/main.wxs -arch x64 -d Version=0.3.0 -d Exe=target\release\cleanrstai.exe -d Icon=assets\icon\icon.ico -o CleanRSTAI.msi
   The UpgradeCode must never change: it is how newer installers find and replace older ones.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
@@ -11,6 +11,10 @@
            Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of CleanRSTAI is already installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- The app icon for the Start menu shortcut and Settings → Apps. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="CleanRSTAI">
@@ -26,7 +30,8 @@
                   Name="CleanRSTAI"
                   Description="AI chat client"
                   Target="[INSTALLFOLDER]cleanrstai.exe"
-                  WorkingDirectory="INSTALLFOLDER" />
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
         <RegistryValue Root="HKCU" Key="Software\CleanRSTAI" Name="StartMenuShortcut"
                        Type="integer" Value="1" KeyPath="yes" />
       </Component>

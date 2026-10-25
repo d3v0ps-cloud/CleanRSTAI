@@ -1237,7 +1237,6 @@ impl ChatApp {
                 },
             )
             .await
-            .map(|()| target)
             .map_err(|e| format!("{e:#}"));
             let _ = tx.send(AppEvent::UpdateInstalled(result));
             ctx.request_repaint();
@@ -1510,11 +1509,20 @@ impl ChatApp {
                             ui.spinner();
                         }
                         Some(UpdateInstall::Ready(target)) => {
-                            if ui
-                                .add(link("Restart to finish updating".into()))
-                                .on_hover_text(format!("Version {} is installed", r.version))
-                                .clicked()
-                            {
+                            let (label, hover) = if crate::update::is_installer(target) {
+                                (
+                                    format!("Install {}", r.version),
+                                    "Close CleanRSTAI and run the downloaded installer; \
+                                     open CleanRSTAI again when it finishes"
+                                        .to_owned(),
+                                )
+                            } else {
+                                (
+                                    "Restart to finish updating".to_owned(),
+                                    format!("Version {} is installed", r.version),
+                                )
+                            };
+                            if ui.add(link(label)).on_hover_text(hover).clicked() {
                                 match crate::update::relaunch(target) {
                                     Ok(()) => {
                                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)

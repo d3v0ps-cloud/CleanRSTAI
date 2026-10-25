@@ -41,8 +41,13 @@ a fork's PR could edit that check.
   fetch tool's user agent) and `scripts/release-local.sh`.
 - The in-app updater (`update::platform_package`) downloads release files by name:
   `CleanRSTAI-macos-universal.zip` (a `ditto` zip of the `.app`),
-  `CleanRSTAI-linux-<arch>.tar.gz` (the bare `cleanrstai` binary) and `SHA256SUMS.txt`. Keep
-  those names and layouts in the release workflow.
+  `CleanRSTAI-linux-<arch>.tar.gz` (the bare `cleanrstai` binary),
+  `CleanRSTAI-windows-<arch>.zip` (the bare `cleanrstai.exe`, for a portable copy in a
+  writable folder; the running exe is renamed to `.old` and deleted at the next start),
+  `CleanRSTAI-windows-<arch>.msi` (run with `msiexec` for a copy installed in Program Files)
+  and `SHA256SUMS.txt`. Keep those names and layouts in the release workflow.
+- `build.rs` embeds `assets/icon/icon.ico` in the Windows `.exe` (`winresource`); both WiX
+  files take the icon as the `Icon` define.
 - `roadmap.md` tracks which items shipped in which version.
 
 ## Documentation

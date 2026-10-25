@@ -128,9 +128,10 @@ too, as an installer and a portable `.exe`.
 - **Export a chat as Markdown** from its right-click menu in the sidebar, including tool calls,
   results and images.
 - **Updates**: at startup (optional) and from **Settings → General**, CleanRSTAI looks for a
-  newer release on GitHub. On macOS and Linux, **Update to …** in the top bar downloads it,
-  checks it against the release's `SHA256SUMS.txt`, replaces the installed app and offers a
-  restart; elsewhere it links to the release page. **Update from** sets where releases come
+  newer release on GitHub. **Update to …** in the top bar downloads it, checks it against
+  the release's `SHA256SUMS.txt`, replaces the installed app and offers a restart; on
+  Windows, a copy installed with the `.msi` runs the new installer instead. When the app
+  can't replace itself it links to the release page. **Update from** sets where releases come
   from: an `owner/repo`, a `github.com` link or any URL that answers like GitHub's
   `releases/latest` API (Gitea and Forgejo do). It defaults to this repository and is saved
   to `settings.json` only once changed, so a custom source carries over to later installs.
