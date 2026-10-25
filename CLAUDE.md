@@ -31,6 +31,8 @@ a fork's PR could edit that check.
 
 - The release tag must equal `v` + the `Cargo.toml` version (the workflow checks it), so
   bump `version` in `Cargo.toml` (and `Cargo.lock`, via `cargo build`) in a PR first.
+- A tag with a `-` (e.g. `v0.8.0-dev.1`) makes a pre-release, which the in-app update check
+  skips; the workflow strips the suffix for the `.msi` version, which must be numeric.
 - Then run `.github/workflows/release.yml` by `workflow_dispatch` with `version: vX.Y.Z`
   (or push the tag). It builds a universal macOS `.app`/`.dmg`/`.zip` on the Mac, the
   Windows `.zip` and `.msi` on DARKBASE, and cross-builds both Linux tarballs with `cargo-zigbuild` against glibc 2.28, then creates the
@@ -119,6 +121,19 @@ for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers
 `.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
 `tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
 `AppEvent::FileAttached`.
+
+**Remote access** (`remote/`): an axum server, started by `ChatApp::sync_remote` when
+`general.remote` is on, serves the browser client in `remote/web/` (plain JS embedded with
+`include_str!`; strict CSP, so no inline scripts or styles, and reply text only reaches the DOM
+through `markdown.js`, which escapes everything). Browser requests become
+`AppEvent::Remote(RemoteCommand)`s that `ChatApp::handle_remote` answers on the UI thread with
+the same functions the desktop uses (`send_message`, `approve`, `stop`, …); `publish_remote`
+fingerprints chats each frame and pushes `RemoteEvent`s over SSE so browsers refetch. Views
+(`ChatView`, `MessageView`, …) carry no keys, settings, workspace paths or attachment data.
+`auth.rs` holds password checks, sessions and the login throttle; `tls.rs` the self-signed
+certificate (reissued when the hosts change) or the user's PEM files, with the ring provider
+passed explicitly. Every non-GET needs the `X-CleanRSTAI: 1` header, and the Host must be an
+IP, `localhost`, a `.local` name or the machine's name.
 
 **Persistence**: settings are one JSON file (`config.rs`, paths via `directories` with
 `ProjectDirs("net", "bukn", "CleanRSTAI")`); each conversation is its own JSON file
