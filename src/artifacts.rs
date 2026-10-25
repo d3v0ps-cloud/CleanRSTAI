@@ -21,12 +21,28 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn of(lang: &str) -> Self {
+    /// What a block is, from its language and, when that is missing or generic (`xml`,
+    /// `text`), from how its source starts: models often put an SVG in a ```` ```xml ```` block.
+    fn of(lang: &str, source: &str) -> Self {
         match lang.to_ascii_lowercase().as_str() {
             "html" | "htm" | "xhtml" => Self::Html,
             "svg" => Self::Svg,
             "mermaid" => Self::Mermaid,
             "markdown" | "md" => Self::Markdown,
+            "" | "xml" | "text" | "txt" | "plaintext" => {
+                let start = source.trim_start().to_ascii_lowercase();
+                let start = start
+                    .strip_prefix("<?xml")
+                    .and_then(|s| s.split_once("?>"))
+                    .map_or(start.as_str(), |(_, rest)| rest.trim_start());
+                if start.starts_with("<svg") {
+                    Self::Svg
+                } else if start.starts_with("<!doctype html") || start.starts_with("<html") {
+                    Self::Html
+                } else {
+                    Self::Code
+                }
+            }
             _ => Self::Code,
         }
     }
@@ -126,7 +142,7 @@ pub fn in_reply(message: usize, text: &str) -> Vec<Artifact> {
                 depth = depth.saturating_sub(1);
                 if let Some((info, source, true, start)) = open.take() {
                     let lang = info.split_whitespace().next().unwrap_or("").to_owned();
-                    let kind = Kind::of(&lang);
+                    let kind = Kind::of(&lang, &source);
                     if kind == Kind::Code && source.lines().count() < MIN_CODE_LINES {
                         continue;
                     }
@@ -426,6 +442,26 @@ mod tests {
         assert!(in_reply(0, streaming).is_empty());
         let nested = "- item\n\n  ```html\n  <p>x</p>\n  ```\n";
         assert!(in_reply(0, nested).is_empty());
+    }
+
+    #[test]
+    fn svg_and_html_in_generic_blocks() {
+        let kinds: Vec<_> = in_reply(
+            0,
+            "```xml\n<?xml version=\"1.0\"?>\n<svg viewBox=\"0 0 1 1\"/>\n```\n\n\
+             ```\n<!DOCTYPE html>\n<html></html>\n```\n\n```xml\n<note/>\n```\n",
+        )
+        .into_iter()
+        .map(|a| (a.kind, a.file_name()))
+        .collect();
+        // The plain XML note is too short to be an artifact.
+        assert_eq!(
+            kinds,
+            [
+                (Kind::Svg, "svg-image.svg".to_owned()),
+                (Kind::Html, "web-page.html".to_owned())
+            ]
+        );
     }
 
     #[test]

@@ -260,9 +260,11 @@ pub fn show(
                 ui.add_space(4.0);
                 super::artifact_panel::card(
                     ui,
+                    md_cache,
                     drawings,
                     artifact,
                     open,
+                    remote_images,
                     actions,
                     open_in_panel(a),
                 );

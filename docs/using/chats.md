@@ -161,12 +161,16 @@ tables and images.
 
 ## Artifacts
 
-Web pages, drawings, documents and longer code in a reply are *artifacts*: the reply keeps a
-collapsed preview (the name, then the first six lines or a thumbnail of the drawing), and the
-panel beside the chat shows them in full. Click a preview to open it there.
+Web pages, drawings, documents and longer code in a reply are *artifacts*. They show in the
+panel beside the chat; the reply keeps only a link to each, with its name, type and size.
+
+- **Click the link** to expand the artifact in the chat as well, and again to fold it away.
+- **The panel icon** after the link shows that artifact in the panel ("in the panel" marks
+  the one shown).
 
 - **What counts**: closed top-level code blocks marked ```` ```html ````, ```` ```svg ````,
-  ```` ```mermaid ```` or ```` ```markdown ````, and other code blocks of 10 lines or more.
+  ```` ```mermaid ```` or ```` ```markdown ```` (an SVG or web page in an ```` ```xml ```` or
+  unmarked block counts too), and other code blocks of 10 lines or more.
   Shorter code stays in the reply. A block still being written shows as code until it ends.
 - **Names** come from a file name or `title="…"` after the language (```` ```python build.py ````),
   a page's or SVG's `<title>`, a document's first heading or a Mermaid diagram's title.
@@ -182,7 +186,8 @@ panel beside the chat shows them in full. Click a preview to open it there.
   can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
-  panel** in [General](../settings/general.html#artifacts); the previews still open it.
+  panel** in [General](../settings/general.html#artifacts); the panel icon by each link still
+  opens it.
 
 ## Attachments
 
