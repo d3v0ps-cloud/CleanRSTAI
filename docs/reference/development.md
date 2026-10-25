@@ -51,6 +51,7 @@ src/
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
+  remote/         remote access: web server, login sessions, TLS, and the browser client (web/)
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
   testutil.rs     tiny scripted HTTP server for tests
@@ -69,8 +70,13 @@ and MCP I/O run on a tokio runtime and send events back over a channel.
    ```
 
 The tag must equal `v` + the `Cargo.toml` version. The workflow builds the macOS universal
-`.dmg` and `.zip` and both Linux tarballs, then creates the GitHub Release with
-`SHA256SUMS.txt`. Tags containing `-` (such as `v1.0.0-beta.1`) are marked as pre-releases.
+`.dmg` and `.zip`, the Windows `.zip` and `.msi`, and both Linux tarballs, then creates the
+GitHub Release with `SHA256SUMS.txt`. Tags containing `-` (such as `v1.0.0-dev.1`) are marked
+as pre-releases, which the in-app update check skips; their `.msi` gets the plain numeric
+version (`1.0.0`), since Windows Installer versions can't carry a suffix.
+
+The browser client in `src/remote/web/` is plain JavaScript embedded in the binary. Its
+markdown renderer has tests of its own: `node src/remote/web/markdown.test.js`.
 
 `scripts/release-local.sh [--publish] [--skip-tests]` does the same from a local machine; see
 the [README](https://github.com/d3v0ps-cloud/CleanRSTAI#releasing-without-github-actions) for

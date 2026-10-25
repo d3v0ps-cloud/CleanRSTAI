@@ -40,3 +40,11 @@ It defaults to this project's repository and is saved to `settings.json` only on
 a custom source carries over to later installs. **Reset** goes back to the default.
 
 The release must be public: GitHub answers a private repository's release check with a 404.
+
+## Pre-releases
+
+Test builds are published as pre-releases with versions like `v0.8.0-dev.1`. The update check
+never offers them: download one from the
+[releases page](https://github.com/d3v0ps-cloud/CleanRSTAI/releases) to try it. A pre-release
+counts as older than the release it leads up to, so a test build offers that release once it
+is out.
