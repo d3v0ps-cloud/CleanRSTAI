@@ -125,7 +125,6 @@ pub struct ChatView {
     pub running_tool: Option<String>,
     pub approvals: Vec<ApprovalView>,
     pub error: Option<String>,
-    pub workspace: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -264,6 +263,7 @@ pub fn start(
     let urls = urls(&shown);
     let (events, _) = broadcast::channel(256);
     let auth = Auth::new(&cfg.password, tls.is_some());
+    let hsts = server::hsts_enabled(cfg);
     let task = rt.spawn(server::serve(
         listener,
         tls,
@@ -271,6 +271,7 @@ pub fn start(
         tx,
         repaint,
         events.clone(),
+        hsts,
     ));
     Ok(RemoteHandle::new(cfg.clone(), urls, events, task))
 }

@@ -3,7 +3,7 @@
 
 use std::convert::Infallible;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +22,8 @@ use futures_util::Stream;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 use uuid::Uuid;
@@ -31,6 +32,7 @@ use super::auth::Auth;
 use super::{RemoteCommand, RemoteEvent};
 use crate::agent::{AppEvent, EventSender};
 use crate::approval::Approval;
+use crate::config::{RemoteSettings, RemoteTls};
 
 const CSRF_HEADER: HeaderName = HeaderName::from_static("x-cleanrstai");
 const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'; \
@@ -42,7 +44,14 @@ const APP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Every failed password check waits this long before the answer.
 const FAILURE_DELAY: Duration = Duration::from_millis(400);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// TLS handshakes in progress at once; further connections wait in the accept queue.
+const MAX_HANDSHAKES: usize = 64;
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
+/// How often an open event stream checks that its session still exists.
+#[cfg(not(test))]
+const SESSION_CHECK: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const SESSION_CHECK: Duration = Duration::from_millis(200);
 const FONT_CACHE: &str = "public, max-age=604800";
 
 /// What every handler needs. Shared by all connections.
@@ -51,7 +60,19 @@ pub(crate) struct AppState {
     tx: EventSender,
     repaint: Arc<dyn Fn() + Send + Sync>,
     events: broadcast::Sender<RemoteEvent>,
+    /// The connections are TLS.
     tls: bool,
+    /// Send `Strict-Transport-Security`: only for a certificate the user supplied.
+    hsts: bool,
+    /// This computer's host name, lowercase, read once at start.
+    machine_host: Option<String>,
+}
+
+/// Whether responses carry `Strict-Transport-Security`. Only for certificate files the user
+/// chose: the self-signed certificate is for localhost and LAN addresses, so pinning HSTS to it
+/// would lock browsers out once the certificate changes.
+pub(crate) fn hsts_enabled(cfg: &RemoteSettings) -> bool {
+    cfg.tls == RemoteTls::Files
 }
 
 /// Serves the browser client and API on `listener` until the task is aborted. With `tls`,
@@ -63,6 +84,7 @@ pub(crate) async fn serve(
     tx: EventSender,
     repaint: Arc<dyn Fn() + Send + Sync>,
     events: broadcast::Sender<RemoteEvent>,
+    hsts: bool,
 ) {
     let state = Arc::new(AppState {
         auth,
@@ -70,6 +92,8 @@ pub(crate) async fn serve(
         repaint,
         events,
         tls: tls.is_some(),
+        hsts,
+        machine_host: machine_host(),
     });
     let app = router(state).into_make_service_with_connect_info::<Peer>();
     let result = match tls {
@@ -83,7 +107,6 @@ pub(crate) async fn serve(
 
 fn router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
-        .route("/api/logout", post(logout))
         .route("/api/state", get(state_view))
         .route("/api/chats", post(new_chat))
         .route("/api/chats/{id}", get(chat_view).delete(delete_chat))
@@ -107,9 +130,12 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/fonts/{file}", get(font))
         .route("/api/session", get(session))
         .route("/api/login", post(login))
+        // Not behind the login: a stale or unknown cookie must still be cleared.
+        .route("/api/logout", post(logout))
         .merge(protected)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(middleware::from_fn(csrf_guard))
+        .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security_headers,
@@ -130,6 +156,72 @@ async fn csrf_guard(req: Request, next: Next) -> Response {
     } else {
         ApiError::new(StatusCode::FORBIDDEN, "missing X-CleanRSTAI header").into_response()
     }
+}
+
+/// Rejects requests whose `Host` is not this computer, which stops DNS rebinding: a page on
+/// another site that resolves to 127.0.0.1 still sends its own host name.
+async fn host_guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let allowed = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|host| host_allowed(host, state.machine_host.as_deref()));
+    if allowed {
+        next.run(req).await
+    } else {
+        ApiError::new(StatusCode::MISDIRECTED_REQUEST, "unknown host").into_response()
+    }
+}
+
+/// True for `localhost`, any IP literal, names ending in `.local` (mDNS) and this computer's
+/// own host name. The port is ignored; names compare case-insensitively.
+fn host_allowed(host: &str, machine: Option<&str>) -> bool {
+    let Some(name) = host_name(host) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    if name.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    name == "localhost" || name.ends_with(".local") || machine.is_some_and(|m| m == name)
+}
+
+/// The name part of a `Host` value: `example.com:8484` gives `example.com`, `[::1]:8484` gives
+/// `::1`. None for a value that is not host[:port].
+fn host_name(host: &str) -> Option<&str> {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[') {
+        let (addr, after) = rest.split_once(']')?;
+        return (after.is_empty() || after.starts_with(':')).then_some(addr);
+    }
+    match host.matches(':').count() {
+        0 => Some(host),
+        1 => host.split_once(':').map(|(name, _)| name),
+        // A bare IPv6 address has no brackets, so it cannot be a valid Host.
+        _ => None,
+    }
+}
+
+/// This computer's host name, lowercase. None when it cannot be read.
+#[cfg(unix)]
+fn machine_host() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is valid for `buf.len()` bytes and gethostname NUL-terminates on success.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    if !ok {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8(buf[..end].to_vec()).ok()?;
+    (!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+#[cfg(not(unix))]
+fn machine_host() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_ascii_lowercase())
 }
 
 async fn security_headers(
@@ -156,7 +248,7 @@ async fn security_headers(
     if api {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
-    if state.tls {
+    if state.hsts {
         headers.insert(
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static("max-age=31536000"),
@@ -269,13 +361,11 @@ async fn font(Path(file): Path<String>) -> Response {
     }
 }
 
+/// Only the session cookie counts here. A bearer password is checked by `require_login`, which
+/// throttles failures; answering it here would be an unthrottled password oracle.
 async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| state.auth.check_bearer(v));
     Json(json!({
-        "logged_in": bearer || session_valid(&state, &headers),
+        "logged_in": session_valid(&state, &headers),
         "plain_http": !state.tls,
     }))
 }
@@ -309,6 +399,7 @@ async fn login(
         .into_response())
 }
 
+/// Ends the session the cookie names, if any, and clears the cookie. Always 200.
 async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Some(token) = cookie_token(&headers) {
         state.auth.remove_session(token);
@@ -488,20 +579,59 @@ async fn set_model(
     Ok(Json(json!({})))
 }
 
+/// The state of one open event stream.
+struct Watch {
+    rx: broadcast::Receiver<RemoteEvent>,
+    ticker: tokio::time::Interval,
+    state: Arc<AppState>,
+    /// The session cookie the stream was opened with. None when the request used the bearer
+    /// password, which cannot change without a restart, so the stream keeps going.
+    token: Option<String>,
+}
+
 /// Server-sent events: one `data:` line per `RemoteEvent`. A client that fell behind gets a
-/// `list` event so it refetches everything.
+/// `list` event so it refetches everything. The stream ends when its session is logged out or
+/// expires, so the browser stops receiving chats it can no longer see.
 async fn events(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = futures_util::stream::unfold(state.events.subscribe(), |mut rx| async move {
-        let event = match rx.recv().await {
-            Ok(event) => Event::default().data(serde_json::to_string(&event).unwrap_or_default()),
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                Event::default().data(r#"{"type":"list"}"#)
+    let token = cookie_token(&headers)
+        .filter(|token| state.auth.session_alive(token))
+        .map(str::to_owned);
+    let watch = Watch {
+        rx: state.events.subscribe(),
+        ticker: tokio::time::interval(SESSION_CHECK),
+        state: state.clone(),
+        token,
+    };
+    let stream = futures_util::stream::unfold(watch, |mut w| async move {
+        loop {
+            let received = tokio::select! {
+                received = w.rx.recv() => Some(received),
+                _ = w.ticker.tick() => None,
+            };
+            match received {
+                Some(Ok(event)) => {
+                    let data = serde_json::to_string(&event).unwrap_or_default();
+                    return Some((Ok::<Event, Infallible>(Event::default().data(data)), w));
+                }
+                Some(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    let event = Event::default().data(r#"{"type":"list"}"#);
+                    return Some((Ok(event), w));
+                }
+                Some(Err(broadcast::error::RecvError::Closed)) => return None,
+                None => {
+                    let gone = w
+                        .token
+                        .as_deref()
+                        .is_some_and(|token| !w.state.auth.session_alive(token));
+                    if gone {
+                        return None;
+                    }
+                }
             }
-            Err(broadcast::error::RecvError::Closed) => return None,
-        };
-        Some((Ok::<Event, Infallible>(event), rx))
+        }
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
 }
@@ -526,9 +656,12 @@ async fn ask<T>(
     }
 }
 
-/// An app-side refusal: 409 while a reply is running, otherwise 400.
+/// An app-side refusal: 404 for a missing chat, 409 while a reply is running, otherwise 400.
 fn command_failed(message: String) -> ApiError {
-    let status = if message.contains("running") || message.contains("still") {
+    let lower = message.to_lowercase();
+    let status = if lower.contains("not found") {
+        StatusCode::NOT_FOUND
+    } else if lower.contains("running") || lower.contains("still") {
         StatusCode::CONFLICT
     } else {
         StatusCode::BAD_REQUEST
@@ -576,6 +709,9 @@ impl IntoResponse for ApiError {
 struct TlsListener {
     local: SocketAddr,
     ready: mpsc::Receiver<(TlsStream<TcpStream>, SocketAddr)>,
+    /// The accept loop owns the TCP listener. It must end with this listener, or the port
+    /// stays bound after the server is stopped.
+    accept: JoinHandle<()>,
 }
 
 impl TlsListener {
@@ -584,8 +720,18 @@ impl TlsListener {
             .local_addr()
             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
         let (tx, ready) = mpsc::channel(64);
-        tokio::spawn(accept_loop(listener, TlsAcceptor::from(config), tx));
-        Self { local, ready }
+        let accept = tokio::spawn(accept_loop(listener, TlsAcceptor::from(config), tx));
+        Self {
+            local,
+            ready,
+            accept,
+        }
+    }
+}
+
+impl Drop for TlsListener {
+    fn drop(&mut self) {
+        self.accept.abort();
     }
 }
 
@@ -594,7 +740,13 @@ async fn accept_loop(
     acceptor: TlsAcceptor,
     ready: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>,
 ) {
+    let permits = Arc::new(Semaphore::new(MAX_HANDSHAKES));
     loop {
+        // A permit is taken before accepting, so at most MAX_HANDSHAKES connections are in
+        // their handshake at once; the rest wait in the kernel's accept queue.
+        let Ok(permit) = Arc::clone(&permits).acquire_owned().await else {
+            return;
+        };
         let (stream, addr) = match listener.accept().await {
             Ok(connection) => connection,
             Err(e) => {
@@ -606,6 +758,8 @@ async fn accept_loop(
         let acceptor = acceptor.clone();
         let ready = ready.clone();
         tokio::spawn(async move {
+            // Held until the handshake ends, then released.
+            let _permit = permit;
             match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
                 Ok(Ok(tls)) => {
                     let _ = ready.send((tls, addr)).await;
@@ -652,6 +806,8 @@ impl Connected<IncomingStream<'_, TlsListener>> for Peer {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use chrono::Utc;
     use tokio::runtime::Handle;
 
@@ -696,7 +852,6 @@ mod tests {
             running_tool: None,
             approvals: Vec::<ApprovalView>::new(),
             error: None,
-            workspace: None,
         }
     }
 
@@ -723,10 +878,16 @@ mod tests {
                 let _ = reply.send(());
             }
             RemoteCommand::Regenerate { reply, .. }
-            | RemoteCommand::Rename { reply, .. }
             | RemoteCommand::Pin { reply, .. }
             | RemoteCommand::SetModel { reply, .. } => {
                 let _ = reply.send(Ok(()));
+            }
+            RemoteCommand::Rename { title, reply, .. } => {
+                let _ = reply.send(match title.as_str() {
+                    "missing" => Err("Chat not found".to_string()),
+                    "busy" => Err("A reply is still running".to_string()),
+                    _ => Ok(()),
+                });
             }
             RemoteCommand::Approve {
                 call_id,
@@ -1330,5 +1491,247 @@ mod tests {
         assert_eq!(session["plain_http"], false);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The port in a server address such as `http://127.0.0.1:43123/`.
+    fn port_of(base: &str) -> u16 {
+        base.trim_end_matches('/')
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// A certificate and key for localhost in a new folder: (cert path, key path).
+    fn write_test_cert(dir: &Path) -> (PathBuf, PathBuf) {
+        std::fs::create_dir_all(dir).unwrap();
+        let certified = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+        ])
+        .unwrap();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, certified.cert.pem()).unwrap();
+        std::fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+        (cert_path, key_path)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopped_tls_server_releases_its_port() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-remote-{}", Uuid::new_v4()));
+        let (cert_path, key_path) = write_test_cert(&dir);
+        let cfg = RemoteSettings {
+            cert_path: cert_path.display().to_string(),
+            key_path: key_path.display().to_string(),
+            ..settings(RemoteTls::Files)
+        };
+
+        let first = start_test(&cfg).unwrap();
+        let port = port_of(&first.urls()[0]);
+        drop(first);
+        // The accept task is aborted with the server; once it is gone nothing listens.
+        let released = tokio::time::timeout(Duration::from_secs(1), async {
+            while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            released.is_ok(),
+            "port {port} is still accepting connections"
+        );
+
+        let again = RemoteSettings {
+            port,
+            ..cfg.clone()
+        };
+        assert!(start_test(&again).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn host_header_names() {
+        let machine = Some("box");
+        for host in [
+            "localhost",
+            "LOCALHOST:8484",
+            "127.0.0.1",
+            "127.0.0.1:8484",
+            "192.168.1.5:8484",
+            "[::1]:8484",
+            "[::1]",
+            "myhost.local",
+            "Myhost.LOCAL:8484",
+            "box",
+            "BOX:8484",
+        ] {
+            assert!(host_allowed(host, machine), "{host}");
+        }
+        for host in [
+            "evil.example",
+            "evil.example:8484",
+            "localhost.evil.example",
+            "127.0.0.1.evil.example",
+            "box.example",
+            "local",
+            "",
+            "[::1",
+            "::1",
+        ] {
+            assert!(!host_allowed(host, machine), "{host}");
+        }
+        assert!(!host_allowed("box", None));
+    }
+
+    #[test]
+    fn hsts_only_for_certificate_files() {
+        assert!(hsts_enabled(&settings(RemoteTls::Files)));
+        assert!(!hsts_enabled(&settings(RemoteTls::SelfSigned)));
+        assert!(!hsts_enabled(&settings(RemoteTls::Off)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_host_names_get_421() {
+        let handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        let port = port_of(&base);
+
+        let evil = client()
+            .get(format!("{base}api/session"))
+            .header(header::HOST, "evil.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(evil.status(), 421);
+        assert_eq!(evil.headers()[header::X_FRAME_OPTIONS], "DENY");
+        let body: Value = evil.json().await.unwrap();
+        assert_eq!(body, json!({ "error": "unknown host" }));
+
+        for host in [
+            format!("127.0.0.1:{port}"),
+            format!("localhost:{port}"),
+            format!("myhost.local:{port}"),
+            format!("[::1]:{port}"),
+        ] {
+            let resp = client()
+                .get(format!("{base}api/session"))
+                .header(header::HOST, &host)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{host}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_ignores_the_bearer_password() {
+        let handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let session: Value = client
+            .get(format!("{base}api/session"))
+            .header(header::AUTHORIZATION, format!("Bearer {PASSWORD}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(session, json!({ "logged_in": false, "plain_http": true }));
+
+        // The bearer password still opens the API itself.
+        let state = client
+            .get(format!("{base}api/state"))
+            .header(header::AUTHORIZATION, format!("Bearer {PASSWORD}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(state.status(), 200);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn logout_clears_an_unknown_or_missing_cookie() {
+        let handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+
+        let stale = post_json(
+            &client,
+            format!("{base}api/logout"),
+            "cleanrstai_session=expired-or-unknown",
+            json!({}),
+        )
+        .await;
+        assert_eq!(stale.status(), 200);
+        let clear = stale.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(clear.contains("Max-Age=0"), "{clear}");
+
+        let bare = client
+            .post(format!("{base}api/logout"))
+            .header("X-CleanRSTAI", "1")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bare.status(), 200);
+        assert!(bare.headers().get(header::SET_COOKIE).is_some());
+
+        let no_csrf = client
+            .post(format!("{base}api/logout"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(no_csrf.status(), 403);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_event_stream_ends_after_logout() {
+        let handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let cookie = login(&client, &base).await;
+
+        let mut resp = client
+            .get(format!("{base}api/events"))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let logout = post_json(&client, format!("{base}api/logout"), &cookie, json!({})).await;
+        assert_eq!(logout.status(), 200);
+
+        let ended = tokio::time::timeout(Duration::from_secs(20), async {
+            while resp.chunk().await.unwrap().is_some() {}
+        })
+        .await;
+        assert!(ended.is_ok(), "the event stream is still open after logout");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn command_refusals_map_to_status_codes() {
+        let handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let cookie = login(&client, &base).await;
+        let rename = format!("{base}api/chats/{CHAT}/rename");
+
+        let missing = post_json(
+            &client,
+            rename.clone(),
+            &cookie,
+            json!({ "title": "missing" }),
+        )
+        .await;
+        assert_eq!(missing.status(), 404);
+        let body: Value = missing.json().await.unwrap();
+        assert_eq!(body, json!({ "error": "Chat not found" }));
+
+        let busy = post_json(&client, rename.clone(), &cookie, json!({ "title": "busy" })).await;
+        assert_eq!(busy.status(), 409);
+
+        let other = post_json(&client, rename, &cookie, json!({ "title": "Fine" })).await;
+        assert_eq!(other.status(), 200);
     }
 }

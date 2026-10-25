@@ -651,12 +651,21 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        // Created owner-only, so the secret is never readable by others, not even briefly.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
     }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -857,5 +866,22 @@ mod tests {
         s.general.update_url = "  ".into();
         s.normalize();
         assert_eq!(s.general.update_url, crate::update::LATEST_RELEASE_URL);
+    }
+
+    #[test]
+    fn write_private_replaces_the_file_and_keeps_it_owner_only() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-config-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("secret.json");
+        write_private(&path, b"first").unwrap();
+        write_private(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert!(!path.with_extension("tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

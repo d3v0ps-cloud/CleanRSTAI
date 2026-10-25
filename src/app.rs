@@ -2788,7 +2788,6 @@ impl ChatApp {
                 .map(|r| r.approvals.iter().map(approval_view).collect())
                 .unwrap_or_default(),
             error: self.errors.get(&id).cloned(),
-            workspace: conv.workspace.as_ref().map(|p| p.display().to_string()),
         })
     }
 

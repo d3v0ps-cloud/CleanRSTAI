@@ -46,15 +46,18 @@ fn self_signed_hosts() -> Vec<String> {
 }
 
 /// Loads the certificate chain and key from `dir`, creating them first when missing.
-/// The certificate is cached: a later call returns the same certificate.
+/// The certificate is cached: a later call returns the same certificate, as long as it was
+/// issued for every host now asked for. `hosts.txt` next to it lists the names it was issued for.
 fn self_signed_in(
     dir: &Path,
     hosts: &[String],
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), String> {
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
+    let hosts_path = dir.join("hosts.txt");
     if cert_path.is_file()
         && key_path.is_file()
+        && cached_hosts_cover(&hosts_path, hosts)
         && let Ok(loaded) = load_files(&cert_path, &key_path)
     {
         return Ok(loaded);
@@ -80,8 +83,19 @@ fn self_signed_in(
     })?;
     write_private(&key_path, key_pair.serialize_pem().as_bytes())
         .map_err(|e| format!("Can't write the key file {}: {e}", key_path.display()))?;
+    std::fs::write(&hosts_path, hosts.join("\n"))
+        .map_err(|e| format!("Can't write the file {}: {e}", hosts_path.display()))?;
 
     load_files(&cert_path, &key_path)
+}
+
+/// True when `hosts_path` lists every one of `hosts`. A missing or unreadable list means no.
+fn cached_hosts_cover(hosts_path: &Path, hosts: &[String]) -> bool {
+    let Ok(text) = std::fs::read_to_string(hosts_path) else {
+        return false;
+    };
+    let cached: Vec<&str> = text.lines().map(str::trim).collect();
+    hosts.iter().all(|host| cached.contains(&host.as_str()))
 }
 
 /// Reads a PEM certificate chain and its PEM private key.
@@ -183,6 +197,40 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn self_signed_is_reissued_when_a_host_is_missing() {
+        let dir = temp_dir();
+        let two = hosts();
+        let three: Vec<String> = ["localhost", "127.0.0.1", "192.168.1.50"]
+            .map(String::from)
+            .to_vec();
+        let (first, _) = self_signed_in(&dir, &two).unwrap();
+        let first_bytes = std::fs::read(dir.join("cert.pem")).unwrap();
+
+        // The LAN address is new: the certificate is issued again.
+        let (second, _) = self_signed_in(&dir, &three).unwrap();
+        assert_ne!(second[0].as_ref(), first[0].as_ref());
+        let second_bytes = std::fs::read(dir.join("cert.pem")).unwrap();
+        assert_ne!(second_bytes, first_bytes);
+
+        // Every host is listed now: the cached certificate is kept.
+        let (third, _) = self_signed_in(&dir, &three).unwrap();
+        assert_eq!(third[0].as_ref(), second[0].as_ref());
+        assert_eq!(std::fs::read(dir.join("cert.pem")).unwrap(), second_bytes);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn self_signed_without_the_host_list_is_reissued() {
+        let dir = temp_dir();
+        let (first, _) = self_signed_in(&dir, &hosts()).unwrap();
+        std::fs::remove_file(dir.join("hosts.txt")).unwrap();
+        let (second, _) = self_signed_in(&dir, &hosts()).unwrap();
+        assert_ne!(second[0].as_ref(), first[0].as_ref());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

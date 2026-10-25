@@ -91,6 +91,12 @@ impl Auth {
         self.valid_session_at(token, Instant::now())
     }
 
+    /// True for a live session, without refreshing its idle timer. Event streams use this, so
+    /// that an open stream alone does not keep a session alive.
+    pub fn session_alive(&self, token: &str) -> bool {
+        self.session_alive_at(token, Instant::now())
+    }
+
     pub fn remove_session(&self, token: &str) {
         lock(&self.sessions).remove(token);
     }
@@ -177,6 +183,12 @@ impl Auth {
             }
             None => false,
         }
+    }
+
+    fn session_alive_at(&self, token: &str, now: Instant) -> bool {
+        let mut sessions = lock(&self.sessions);
+        prune(&mut sessions, now);
+        sessions.contains_key(token)
     }
 }
 
@@ -278,6 +290,18 @@ mod tests {
         // Left alone for 7 days: gone.
         let idle = a.create_session_at(t0);
         assert!(!a.valid_session_at(&idle, t0 + SESSION_IDLE));
+    }
+
+    #[test]
+    fn session_alive_does_not_refresh_the_idle_timer() {
+        let a = auth(false);
+        let t0 = Instant::now();
+        let token = a.create_session_at(t0);
+        let day = |d: u64| t0 + Duration::from_secs(d * 24 * 3600);
+        assert!(a.session_alive_at(&token, day(6)));
+        // The check on day 6 did not count as use, so the session is idle for 8 days by day 8.
+        assert!(!a.session_alive_at(&token, day(8)));
+        assert!(!a.session_alive_at("nope", day(0)));
     }
 
     #[test]
