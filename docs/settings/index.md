@@ -1,0 +1,44 @@
+---
+title: Settings
+nav_order: 4
+---
+
+# Settings
+
+Open **Settings** with the gear icon in the sidebar or top bar, or press **⌘/Ctrl + ,**. It
+opens on **General** and takes over the main window.
+
+| Page | What you can set |
+|---|---|
+| [General](general.html) | System prompt, theme, UI scale, send key, secrets, updates, reasoning display, stats, web images, tool approval, tool rounds and timeout, export and import |
+| [Providers](providers.html) | Endpoints: base URL, API key, model, temperature, max tokens, server type, token usage, streaming, timeout, extra headers |
+| [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
+| [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
+| [Subagents](subagents.html) | Delegation on or off; provider and model; tools; parallelism and limits; system prompt |
+
+## Finding a setting
+
+Type in **search settings** at the top of the left column to search every page; click a result
+to jump to its page.
+
+## Saving changes
+
+Edits are made on a draft and take effect only when you save:
+
+- **Save & Close**: apply the changes and close settings.
+- **Apply**: apply them and stay.
+- **Discard changes** (or **Close** when nothing changed): leave without applying.
+
+**Unsaved changes** shows while there are changes. **Esc** closes settings when there are no
+unsaved changes. Only MCP servers whose connection settings changed are reconnected.
+
+## Where settings are stored
+
+| | Settings | Conversations |
+|---|---|---|
+| macOS | `~/Library/Application Support/net.bukn.CleanRSTAI/settings.json` | `~/Library/Application Support/net.bukn.CleanRSTAI/conversations/` |
+| Linux | `~/.config/cleanrstai/settings.json` | `~/.local/share/cleanrstai/conversations/` |
+| Windows | `%APPDATA%\bukn\CleanRSTAI\config\settings.json` | `%APPDATA%\bukn\CleanRSTAI\data\conversations\` |
+
+The exact paths are shown at the bottom of the General page. API keys and other secrets are
+not in `settings.json`; see [Secrets](general.html#secrets).

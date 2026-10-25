@@ -1,0 +1,113 @@
+---
+title: General
+parent: Settings
+nav_order: 1
+---
+
+# General
+{: .no_toc }
+
+Appearance, behaviour, secrets and data.
+
+1. TOC
+{:toc}
+
+## System prompt
+
+The instructions sent at the start of every chat. Default: *You are a helpful assistant.*
+
+## Theme
+
+**System** (default) follows your operating system; **Light** and **Dark** fix it. You can
+also switch from the command palette.
+
+## UI scale
+
+Scales the whole interface from 0.5× to 2.5× (default 1.0×).
+
+## Sending
+
+- **Enter sends, Shift+Enter for newline** (default)
+- **Ctrl/⌘+Enter sends, Enter for newline**
+
+**⌘/Ctrl + Enter** sends in both modes.
+
+## Secrets
+
+**Store API keys and secrets in the system keychain** (default on) keeps API keys, HTTP header
+values and MCP environment variable values in the macOS Keychain, Windows Credential Manager
+or the Secret Service (GNOME Keyring, KWallet) on Linux. `settings.json` keeps only blank
+placeholders, and keys saved in plain text by earlier versions move to the keychain on first
+launch.
+
+If no keychain is available, a warning says so and secrets stay in `settings.json`. On macOS
+and Linux that file is readable only by you.
+
+## Updates
+
+- **Check GitHub for a new release at startup** (default on).
+- **Update from**: where releases come from: an `owner/repo`, a `github.com` link or a URL
+  that answers like GitHub's `releases/latest` API. **Reset** restores the default.
+- **Check for updates now** checks the source as typed, before you save, and shows the
+  installed version. If a newer release can be installed, **Install update** appears.
+
+See [Updates](../using/updates.html).
+
+## Reasoning
+
+How a reasoning model's **Thought process** section starts out:
+
+- **Collapsed** (default)
+- **Expanded**
+- **Expanded while thinking**: open while the model reasons, collapsed once it answers.
+
+## Stats
+
+**Show prefill/decode speed and token counts under responses** (default on).
+
+## Images
+
+**Load web images in replies** (default off). When off, images from the web show as links.
+Loading them tells the image's server that the chat was opened, and a reply could put chat
+contents in the image address.
+
+## Tool calls
+
+**Run MCP tools and subagents without asking for approval** (default off).
+
+{: .warning }
+> This skips every approval, including web fetch and the workspace tools that write files and
+> run shell commands.
+
+## Max tool rounds
+
+How many times the model may call tools before it must answer: 1 to 200, default 20.
+
+## Tool timeout
+
+How long one tool call may take: 5 to 3600 seconds, default 120.
+
+## Export & import
+
+- **Export settings…** saves providers, MCP servers and preferences as last saved (apply
+  first to include unsaved changes). API keys, header values and MCP environment variable
+  values are left blank, with their names kept, unless you tick **Include API keys and
+  secrets** for a complete backup.
+- **Export conversations…** saves every chat, including tool calls and results, to one file.
+- **Import settings…** loads a settings export into the settings page for review:
+  - **Merge** adds the imported providers and MCP servers, updating ones that already exist,
+    and keeps your other preferences.
+  - **Replace** uses the imported settings as they are.
+
+  Blank secrets are filled from matching entries you already have, and any still blank are
+  listed so you can fill them in. Then click **Apply** or **Save & Close**.
+- **Import conversations…** adds chats from a conversations export and skips any that already
+  exist.
+
+Both files record the app version and export time, and are created readable only by you on
+macOS and Linux.
+
+## File locations
+
+The bottom of the page shows where the settings file and conversations folder are. See
+[Where settings are stored](index.html#where-settings-are-stored).
