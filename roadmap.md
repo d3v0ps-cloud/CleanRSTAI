@@ -191,6 +191,21 @@ back.
   task, e.g. a fast local model for simple tasks
 - [x] Count subagent usage in the chat's stats and cost totals
 
+## 13. Remote access in the browser
+
+Run CleanRSTAI as a server so the same interface can be used from another device on the network.
+
+- [ ] A built-in web server, switched on in **Settings → General**, that serves the chat
+  interface to a browser on another device
+- [ ] Log in before the interface is shown, with a password or token set in Settings; off by
+  default, and refused until one is set
+- [ ] Serve over HTTPS (own certificate or one from the OS), and warn when it is plain HTTP
+- [ ] Choose the address to listen on (this computer only, or the local network), and the port
+- [ ] Keep API keys and MCP secrets on the host: the browser only ever sees chats and replies
+- [ ] Run tools and approvals on the host, with approval prompts shown in the browser
+- [ ] Work at phone width, and keep the look and keyboard shortcuts of the desktop app
+- [ ] Document setup and security in the docs (settings, data and privacy, and a remote-access page)
+
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
