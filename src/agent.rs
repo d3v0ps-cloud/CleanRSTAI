@@ -81,7 +81,11 @@ pub enum AppEvent {
     ServerInfo {
         key: (String, String),
         info: Option<crate::llm::LlamaServerInfo>,
+        /// A router's models and their load state (None for a single-model server).
+        router: Option<Vec<crate::llm::RouterModel>>,
     },
+    /// A router load or unload finished (the error, if it failed).
+    ModelLoadChanged(Result<(), String>),
     KindDetected {
         provider_id: String,
         kind: crate::config::ProviderKind,

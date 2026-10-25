@@ -103,6 +103,34 @@ struct ServerInfoState {
     fetched: Option<std::time::Instant>,
     pending: bool,
     info: Option<crate::llm::LlamaServerInfo>,
+    /// A router's models and their load state.
+    router: Option<Vec<crate::llm::RouterModel>>,
+}
+
+impl ServerInfoState {
+    /// The router's state of the selected model, when the server is a router.
+    fn current(&self) -> Option<&crate::llm::RouterModel> {
+        self.router.as_ref()?.iter().find(|m| m.id == self.key.1)
+    }
+}
+
+/// How a router model's state reads in the model picker: label, colour, and whether it can
+/// be loaded (true), unloaded (false), or neither for now (None).
+fn router_state(
+    m: &crate::llm::RouterModel,
+    p: &theme::Palette,
+) -> (&'static str, egui::Color32, Option<bool>) {
+    if m.failed {
+        return ("failed to load", p.error, Some(true));
+    }
+    match m.status.as_str() {
+        "loaded" => ("loaded", p.ok, Some(false)),
+        "loading" => ("loading…", p.warn, None),
+        "downloading" => ("downloading…", p.warn, None),
+        "sleeping" => ("asleep", p.pencil, Some(false)),
+        "incomplete" => ("incomplete download", p.error, None),
+        _ => ("not loaded", p.pencil, Some(true)),
+    }
 }
 
 enum UpdateInstall {
@@ -686,11 +714,21 @@ impl ChatApp {
                     Ok(messages) => self.insert_prompt(messages),
                     Err(e) => self.notice = Some(format!("Prompt {name} failed: {e}")),
                 },
-                AppEvent::ServerInfo { key, info } => {
+                AppEvent::ServerInfo { key, info, router } => {
                     if let Some(state) = self.server_info.as_mut().filter(|s| s.key == key) {
                         state.info = info;
+                        state.router = router;
                         state.pending = false;
                         state.fetched = Some(std::time::Instant::now());
+                    }
+                }
+                AppEvent::ModelLoadChanged(result) => {
+                    if let Err(e) = result {
+                        self.notice = Some(format!("Couldn't change the model's load state: {e}"));
+                    }
+                    // Show the new state straight away.
+                    if let Some(state) = &mut self.server_info {
+                        state.fetched = None;
                     }
                 }
                 AppEvent::KindDetected {
@@ -1619,6 +1657,13 @@ impl ChatApp {
             RichText::new(&provider.name).color(p.pencil),
             RichText::new(icon::CARET_DOWN).size(11.0).color(p.pencil),
         );
+        // A llama.cpp router's models and their load state, for this provider.
+        let router: Option<Vec<crate::llm::RouterModel>> = self
+            .server_info
+            .as_ref()
+            .filter(|s| s.key.0 == provider.id)
+            .and_then(|s| s.router.clone());
+        let mut load_changes: Vec<(String, bool)> = Vec::new();
         let mut changed = false;
         MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
             .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
@@ -1639,7 +1684,39 @@ impl ChatApp {
                 ui.separator();
                 ui.label(RichText::new("Model").small().color(p.pencil));
                 let provider = self.settings.provider_mut();
-                if provider.models.is_empty() {
+                if let Some(router) = &router {
+                    // A router: its models, each with its load state and Load / Unload.
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for m in router {
+                                ui.horizontal(|ui| {
+                                    changed |= ui
+                                        .selectable_value(&mut provider.model, m.id.clone(), &m.id)
+                                        .changed();
+                                    let (state, color, can) = router_state(m, &p);
+                                    ui.label(RichText::new(state).small().color(color));
+                                    if let Some(load) = can {
+                                        let (label, hover) = if load {
+                                            ("Load", "Load this model on the server now")
+                                        } else {
+                                            (
+                                                "Unload",
+                                                "Free the memory this model uses on the server",
+                                            )
+                                        };
+                                        let button = egui::Button::new(
+                                            RichText::new(label).small().color(p.signal),
+                                        )
+                                        .frame_when_inactive(false);
+                                        if ui.add(button).on_hover_text(hover).clicked() {
+                                            load_changes.push((m.id.clone(), load));
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                } else if provider.models.is_empty() {
                     changed |= ui
                         .add(
                             egui::TextEdit::singleline(&mut provider.model)
@@ -1664,6 +1741,17 @@ impl ChatApp {
         if changed {
             self.save_settings();
         }
+        for (model, load) in load_changes {
+            let provider = self.settings.provider().clone();
+            let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ui.ctx().clone());
+            self.rt.spawn(async move {
+                let result = crate::llm::llama_cpp_set_loaded(&http, &provider, &model, load)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(AppEvent::ModelLoadChanged(result));
+                ctx.request_repaint();
+            });
+        }
     }
 
     /// Beside the model picker, for a llama.cpp provider: "Loading model…" or "Asleep" when
@@ -1679,11 +1767,18 @@ impl ChatApp {
         }
         let key = (provider.id.clone(), provider.model.trim().to_owned());
         if self.server_info.as_ref().is_none_or(|s| s.key != key) {
+            // Another model on the same server: its router list still holds meanwhile.
+            let router = self
+                .server_info
+                .take()
+                .filter(|s| s.key.0 == key.0)
+                .and_then(|s| s.router);
             self.server_info = Some(ServerInfoState {
                 key: key.clone(),
                 fetched: None,
                 pending: false,
                 info: None,
+                router,
             });
         }
         let Some(state) = self.server_info.as_mut() else {
@@ -1692,23 +1787,46 @@ impl ChatApp {
         let loading = state
             .info
             .as_ref()
-            .is_some_and(|i| i.status == LlamaStatus::Loading);
+            .is_some_and(|i| i.status == LlamaStatus::Loading)
+            || state
+                .router
+                .iter()
+                .flatten()
+                .any(|m| matches!(m.status.as_str(), "loading" | "downloading"));
         let every = std::time::Duration::from_secs(if loading { 3 } else { 15 });
         if !state.pending && state.fetched.is_none_or(|t| t.elapsed() >= every) {
             state.pending = true;
             let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ui.ctx().clone());
             self.rt.spawn(async move {
-                let info = crate::llm::llama_cpp_server_info(&http, &provider).await;
-                let _ = tx.send(AppEvent::ServerInfo { key, info });
+                let (info, router) = tokio::join!(
+                    crate::llm::llama_cpp_server_info(&http, &provider),
+                    crate::llm::llama_cpp_router_models(&http, &provider),
+                );
+                let _ = tx.send(AppEvent::ServerInfo { key, info, router });
                 ctx.request_repaint();
             });
         }
         ui.ctx().request_repaint_after(every);
 
+        let p = theme::palette(ui.visuals().dark_mode);
+        // A router that hasn't loaded the selected model: say so (it loads on the next
+        // message, or from the model picker).
+        if let Some(m) = state.current().filter(|m| m.status != "loaded") {
+            let (label, color, _) = router_state(m, &p);
+            let mut label = label.to_owned();
+            if let Some(first) = label.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            ui.label(RichText::new(label).small().color(color))
+                .on_hover_text(
+                    "The server runs several models and hasn't got this one loaded. It loads it \
+                 when you send a message, or load it now from the model picker.",
+                );
+            return;
+        }
         let Some(info) = &state.info else {
             return;
         };
-        let p = theme::palette(ui.visuals().dark_mode);
         let details = |ui: &mut egui::Ui| super::ui::stats_view::server_details(ui, info);
         ui.add(
             egui::Label::new(RichText::new(icon::INFO).size(13.0).color(p.pencil))
