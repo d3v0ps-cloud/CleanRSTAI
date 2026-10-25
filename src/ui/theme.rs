@@ -38,6 +38,7 @@ pub mod icon {
     pub const HOURGLASS: &str = "\u{E2B2}";
     pub const WARNING: &str = "\u{E4E0}";
     pub const SERVER: &str = "\u{E47E}";
+    pub const INFO: &str = "\u{E2CE}";
     pub const SPARKLE: &str = "\u{E6A2}";
     pub const COPY: &str = "\u{E1CA}";
     pub const STOP: &str = "\u{E46C}";

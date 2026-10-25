@@ -99,6 +99,154 @@ pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) 
     Some(n)
 }
 
+/// What a llama.cpp server is doing with the provider's model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LlamaStatus {
+    Ready,
+    /// `/health` answers 503 while the model loads.
+    Loading,
+    /// Unloaded after idling (`--sleep-idle-seconds`); the next request reloads it.
+    Asleep,
+}
+
+/// The model a llama.cpp server runs and how it is doing, for the details beside the model
+/// picker. Fields are None when the server doesn't report them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LlamaServerInfo {
+    pub status: LlamaStatus,
+    /// The `.gguf` file (`/props` `model_path`).
+    pub model_path: Option<String>,
+    pub build: Option<String>,
+    /// Context size of one slot, and the number of slots (`--parallel`).
+    pub n_ctx: Option<u64>,
+    pub total_slots: Option<u64>,
+    pub vision: Option<bool>,
+    /// From `/v1/models` `meta`.
+    pub n_params: Option<u64>,
+    pub size_bytes: Option<u64>,
+    pub n_ctx_train: Option<u64>,
+    /// From `/metrics`, when the server runs with `--metrics`.
+    pub metrics: Option<LlamaMetrics>,
+}
+
+/// A few of llama.cpp's Prometheus metrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LlamaMetrics {
+    pub requests_processing: Option<f64>,
+    pub requests_deferred: Option<f64>,
+    /// Speculative decoding: draft tokens accepted out of drafted, when it is on.
+    pub draft_tokens: Option<f64>,
+    pub draft_accepted: Option<f64>,
+}
+
+impl LlamaMetrics {
+    /// Read the metrics we show from Prometheus text (`llamacpp:name value` lines).
+    pub fn parse(text: &str) -> Self {
+        let mut m = Self::default();
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let mut parts = line.split_whitespace();
+            let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let Ok(value) = value.parse::<f64>() else {
+                continue;
+            };
+            match name {
+                "llamacpp:requests_processing" => m.requests_processing = Some(value),
+                "llamacpp:requests_deferred" => m.requests_deferred = Some(value),
+                "llamacpp:spec_decode_num_draft_tokens_total" => m.draft_tokens = Some(value),
+                "llamacpp:spec_decode_num_accepted_tokens_total" => m.draft_accepted = Some(value),
+                _ => {}
+            }
+        }
+        m
+    }
+
+    /// Share of drafted tokens the model accepted, when speculative decoding has run.
+    pub fn draft_acceptance(&self) -> Option<f64> {
+        let drafted = self.draft_tokens.filter(|&d| d > 0.0)?;
+        Some(self.draft_accepted.unwrap_or(0.0) / drafted)
+    }
+}
+
+/// Ask a llama.cpp server about the provider's model: `/health`, `/props`, `/v1/models`
+/// and, when on, `/metrics`, together. None when it doesn't answer like llama.cpp.
+pub async fn llama_cpp_server_info(
+    http: &reqwest::Client,
+    p: &ProviderConfig,
+) -> Option<LlamaServerInfo> {
+    let json = |req: reqwest::RequestBuilder| async move {
+        let resp = req.send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.json::<Value>().await.ok()
+    };
+    let (health, props, models, metrics) = tokio::join!(
+        llama_cpp_get(http, p, "health").send(),
+        json(llama_cpp_get(http, p, "props")),
+        json(
+            authorize(http.get(endpoint(p, "models")), p)
+                .timeout(std::time::Duration::from_secs(5))
+        ),
+        async {
+            let resp = llama_cpp_get(http, p, "metrics").send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp.text().await.ok()
+        },
+    );
+    let loading = health.is_ok_and(|r| r.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    // While a single-model server loads, /props may not answer yet.
+    let props = props.filter(|v| {
+        v.get("default_generation_settings").is_some() || v.get("build_info").is_some()
+    });
+    if props.is_none() && !loading {
+        return None;
+    }
+    let props = props.unwrap_or(Value::Null);
+    let model = p.model.trim();
+    let meta = models.as_ref().and_then(|v| {
+        let list = v.get("data")?.as_array()?;
+        // A single-model server lists one model, whatever its id; a router lists them all.
+        let entry = list
+            .iter()
+            .find(|m| m.get("id").and_then(Value::as_str) == Some(model))
+            .or_else(|| (list.len() == 1).then(|| &list[0]))?;
+        entry.get("meta").filter(|m| m.is_object())
+    });
+    let meta_n = |k: &str| meta.and_then(|m| m.get(k)).and_then(Value::as_u64);
+    let status = if loading {
+        LlamaStatus::Loading
+    } else if props.get("is_sleeping").and_then(Value::as_bool) == Some(true) {
+        LlamaStatus::Asleep
+    } else {
+        LlamaStatus::Ready
+    };
+    Some(LlamaServerInfo {
+        status,
+        model_path: props
+            .get("model_path")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        build: props
+            .get("build_info")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        n_ctx: props
+            .pointer("/default_generation_settings/n_ctx")
+            .and_then(Value::as_u64),
+        total_slots: props.get("total_slots").and_then(Value::as_u64),
+        vision: props.pointer("/modalities/vision").and_then(Value::as_bool),
+        n_params: meta_n("n_params"),
+        size_bytes: meta_n("size"),
+        n_ctx_train: meta_n("n_ctx_train"),
+        metrics: metrics.map(|t| LlamaMetrics::parse(&t)),
+    })
+}
+
 /// llama.cpp's `/slots`: how many of the server's parallel slots are in use. Asked at the
 /// start of a generation, like the context size, not on every request.
 pub async fn llama_cpp_slot_usage(
@@ -393,6 +541,8 @@ pub async fn chat_completion(
     // a long one. Other servers may refuse fields they don't know, so only for llama.cpp.
     if p.stream && p.kind == ProviderKind::LlamaCpp {
         body["return_progress"] = json!(true);
+        // Its own prefill/decode speeds in every chunk, for the live readout.
+        body["timings_per_token"] = json!(true);
     }
     if p.stream && p.request_usage {
         body["stream_options"] = json!({"include_usage": true});
@@ -694,6 +844,7 @@ mod server_tests {
             "first update goes out at once"
         );
         assert_eq!(log.lock().unwrap()[0].json()["return_progress"], true);
+        assert_eq!(log.lock().unwrap()[0].json()["timings_per_token"], true);
 
         // Not asked of other servers, which may refuse fields they don't know.
         let (base, log) = serve(|_| Response::sse(&[json!({"choices": [{"delta": {}}]})])).await;
@@ -707,11 +858,98 @@ mod server_tests {
         )
         .await
         .unwrap();
-        assert!(
-            log.lock().unwrap()[0]
-                .json()
-                .get("return_progress")
-                .is_none()
+        let body = log.lock().unwrap()[0].json();
+        assert!(body.get("return_progress").is_none());
+        assert!(body.get("timings_per_token").is_none());
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_server_info_report() {
+        let (base, _) =
+            serve(
+                |r| match r.path.split_once('?').map_or(r.path.as_str(), |(p, _)| p) {
+                    "/health" => Response::json(json!({"status": "ok"})),
+                    "/props" => Response::json(json!({
+                "default_generation_settings": {"n_ctx": 32768},
+                "total_slots": 2,
+                "model_path": "/models/Qwen-27B-Q4_K_M.gguf",
+                "modalities": {"vision": true},
+                "build_info": "b6500-abc1234",
+                "is_sleeping": false})),
+                    "/v1/models" => Response::json(json!({"data": [{"id": "whatever", "meta": {
+                "n_params": 27_000_000_000_u64, "size": 16_300_000_000_u64,
+                "n_ctx_train": 262_144}}]})),
+                    "/metrics" => Response::with_type(
+                        200,
+                        "text/plain",
+                        "# HELP llamacpp:requests_processing x\n\
+                 llamacpp:requests_processing 1\n\
+                 llamacpp:requests_deferred 2\n\
+                 llamacpp:spec_decode_num_draft_tokens_total 200\n\
+                 llamacpp:spec_decode_num_accepted_tokens_total 150\n",
+                    ),
+                    _ => Response::status(404),
+                },
+            )
+            .await;
+        let http = build_http_client();
+        let info = llama_cpp_server_info(&http, &provider(&base, ProviderKind::LlamaCpp))
+            .await
+            .unwrap();
+        assert_eq!(info.status, LlamaStatus::Ready);
+        assert_eq!(
+            info.model_path.as_deref(),
+            Some("/models/Qwen-27B-Q4_K_M.gguf")
+        );
+        assert_eq!((info.n_ctx, info.total_slots), (Some(32768), Some(2)));
+        assert_eq!(info.vision, Some(true));
+        // A single-model server's one entry counts, whatever its id.
+        assert_eq!(info.n_params, Some(27_000_000_000));
+        assert_eq!(
+            (info.size_bytes, info.n_ctx_train),
+            (Some(16_300_000_000), Some(262_144))
+        );
+        let m = info.metrics.unwrap();
+        assert_eq!(
+            (m.requests_processing, m.requests_deferred),
+            (Some(1.0), Some(2.0))
+        );
+        assert_eq!(m.draft_acceptance(), Some(0.75));
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_server_info_loading_and_asleep() {
+        // Loading: /health answers 503, and /props may not answer yet.
+        let (base, _) = serve(|_| Response::status(503)).await;
+        let http = build_http_client();
+        let info = llama_cpp_server_info(&http, &provider(&base, ProviderKind::LlamaCpp))
+            .await
+            .unwrap();
+        assert_eq!(info.status, LlamaStatus::Loading);
+        assert_eq!(
+            info.metrics, None,
+            "/metrics is off unless the server runs --metrics"
+        );
+
+        let (base, _) =
+            serve(
+                |r| match r.path.split_once('?').map_or(r.path.as_str(), |(p, _)| p) {
+                    "/health" => Response::json(json!({"status": "ok"})),
+                    "/props" => Response::json(json!({"build_info": "b1", "is_sleeping": true})),
+                    _ => Response::status(404),
+                },
+            )
+            .await;
+        let info = llama_cpp_server_info(&http, &provider(&base, ProviderKind::LlamaCpp))
+            .await
+            .unwrap();
+        assert_eq!(info.status, LlamaStatus::Asleep);
+
+        // Not llama.cpp at all.
+        let (base, _) = serve(|_| Response::status(404)).await;
+        assert_eq!(
+            llama_cpp_server_info(&http, &provider(&base, ProviderKind::LlamaCpp)).await,
+            None
         );
     }
 

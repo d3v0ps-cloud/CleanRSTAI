@@ -91,6 +91,18 @@ pub struct ChatApp {
     /// Whether the window icon currently shown is the dark variant (`None` before the first
     /// frame), so it is only swapped when the theme changes.
     window_icon_dark: Option<bool>,
+    /// What the active provider's llama.cpp server reports about its model.
+    server_info: Option<ServerInfoState>,
+}
+
+/// A llama.cpp server's report on one provider's model, refreshed in the background while
+/// it is the active one.
+struct ServerInfoState {
+    /// Provider id and model.
+    key: (String, String),
+    fetched: Option<std::time::Instant>,
+    pending: bool,
+    info: Option<crate::llm::LlamaServerInfo>,
 }
 
 enum UpdateInstall {
@@ -211,6 +223,7 @@ impl ChatApp {
             update: None,
             update_install: None,
             window_icon_dark: None,
+            server_info: None,
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false, app.settings.general.update_url.clone());
@@ -673,6 +686,13 @@ impl ChatApp {
                     Ok(messages) => self.insert_prompt(messages),
                     Err(e) => self.notice = Some(format!("Prompt {name} failed: {e}")),
                 },
+                AppEvent::ServerInfo { key, info } => {
+                    if let Some(state) = self.server_info.as_mut().filter(|s| s.key == key) {
+                        state.info = info;
+                        state.pending = false;
+                        state.fetched = Some(std::time::Instant::now());
+                    }
+                }
                 AppEvent::KindDetected {
                     provider_id,
                     kind,
@@ -1646,6 +1666,70 @@ impl ChatApp {
         }
     }
 
+    /// Beside the model picker, for a llama.cpp provider: "Loading model…" or "Asleep" when
+    /// the server says so, and an icon whose hover lists what it reports about the model.
+    /// Refreshed every 15 s while shown (every 3 s while the model loads).
+    fn server_status(&mut self, ui: &mut egui::Ui) {
+        use crate::llm::LlamaStatus;
+        let provider = self.settings.provider().clone();
+        if provider.kind != crate::config::ProviderKind::LlamaCpp
+            || provider.model.trim().is_empty()
+        {
+            return;
+        }
+        let key = (provider.id.clone(), provider.model.trim().to_owned());
+        if self.server_info.as_ref().is_none_or(|s| s.key != key) {
+            self.server_info = Some(ServerInfoState {
+                key: key.clone(),
+                fetched: None,
+                pending: false,
+                info: None,
+            });
+        }
+        let Some(state) = self.server_info.as_mut() else {
+            return;
+        };
+        let loading = state
+            .info
+            .as_ref()
+            .is_some_and(|i| i.status == LlamaStatus::Loading);
+        let every = std::time::Duration::from_secs(if loading { 3 } else { 15 });
+        if !state.pending && state.fetched.is_none_or(|t| t.elapsed() >= every) {
+            state.pending = true;
+            let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ui.ctx().clone());
+            self.rt.spawn(async move {
+                let info = crate::llm::llama_cpp_server_info(&http, &provider).await;
+                let _ = tx.send(AppEvent::ServerInfo { key, info });
+                ctx.request_repaint();
+            });
+        }
+        ui.ctx().request_repaint_after(every);
+
+        let Some(info) = &state.info else {
+            return;
+        };
+        let p = theme::palette(ui.visuals().dark_mode);
+        let details = |ui: &mut egui::Ui| super::ui::stats_view::server_details(ui, info);
+        ui.add(
+            egui::Label::new(RichText::new(icon::INFO).size(13.0).color(p.pencil))
+                .sense(egui::Sense::hover()),
+        )
+        .on_hover_ui(details);
+        match info.status {
+            LlamaStatus::Loading => {
+                ui.label(RichText::new("Loading model…").small().color(p.warn))
+                    .on_hover_ui(details);
+            }
+            LlamaStatus::Asleep => {
+                ui.label(RichText::new("Asleep").small().color(p.pencil))
+                    .on_hover_text(
+                        "The server unloaded the model after idling; your next message reloads it.",
+                    );
+            }
+            LlamaStatus::Ready => {}
+        }
+    }
+
     fn open_settings(&mut self, tab: Tab) {
         if self.settings_ui.is_none() {
             self.settings_ui = Some(SettingsUi::new(&self.settings, tab));
@@ -2015,6 +2099,7 @@ impl ChatApp {
                 self.workspace_picker(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.model_picker(ui);
+                    self.server_status(ui);
                 });
             });
         });

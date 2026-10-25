@@ -412,6 +412,24 @@ pub fn fmt_cost(usd: f64) -> String {
     }
 }
 
+/// "27.0B", "350M": a parameter count.
+pub fn fmt_count(n: u64) -> String {
+    match n {
+        0..=999_999 => format!("{:.0}K", n as f64 / 1e3),
+        1_000_000..=999_999_999 => format!("{:.0}M", n as f64 / 1e6),
+        _ => format!("{:.1}B", n as f64 / 1e9),
+    }
+}
+
+/// "16.3 GB", "512 MB": a file size (decimal units, as download sites show them).
+pub fn fmt_bytes(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1} GB", n as f64 / 1e9)
+    } else {
+        format!("{:.0} MB", n as f64 / 1e6)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +583,9 @@ mod tests {
         assert_eq!(fmt_rate(45.67), "45.7 t/s");
         assert_eq!(fmt_ms(312.4), "312 ms");
         assert_eq!(fmt_ms(8400.0), "8.40 s");
+        assert_eq!(fmt_count(27_000_000_000), "27.0B");
+        assert_eq!(fmt_count(350_000_000), "350M");
+        assert_eq!(fmt_bytes(16_300_000_000), "16.3 GB");
+        assert_eq!(fmt_bytes(512_000_000), "512 MB");
     }
 }

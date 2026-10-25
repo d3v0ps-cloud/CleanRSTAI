@@ -3,8 +3,8 @@
 use eframe::egui;
 
 use crate::stats::{
-    PromptProgress, RequestStats, StatsSource, Totals, context_percent, fmt_context, fmt_cost,
-    fmt_ms, fmt_rate, fmt_tokens,
+    PromptProgress, RequestStats, StatsSource, Totals, context_percent, fmt_bytes, fmt_context,
+    fmt_cost, fmt_count, fmt_ms, fmt_rate, fmt_tokens,
 };
 
 /// From this share of the context in use, the chat's context figure turns to the warning
@@ -216,4 +216,67 @@ pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals, context: Option<(u64, u64)
             );
         }
     });
+}
+
+/// What a llama.cpp server reports about the model it runs, for the hover beside the model
+/// picker. Rows the server doesn't report are left out.
+pub fn server_details(ui: &mut egui::Ui, info: &crate::llm::LlamaServerInfo) {
+    use crate::llm::LlamaStatus;
+    ui.strong("llama.cpp server");
+    egui::Grid::new("server-details")
+        .num_columns(2)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            let mut row = |k: &str, v: String| {
+                ui.label(k);
+                ui.monospace(v);
+                ui.end_row();
+            };
+            row(
+                "Status",
+                match info.status {
+                    LlamaStatus::Ready => "Ready",
+                    LlamaStatus::Loading => "Loading the model",
+                    LlamaStatus::Asleep => "Asleep (reloads on the next message)",
+                }
+                .to_owned(),
+            );
+            if let Some(path) = &info.model_path {
+                let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                row("Model file", file.to_owned());
+            }
+            if let Some(n) = info.n_params {
+                row("Parameters", fmt_count(n));
+            }
+            if let Some(b) = info.size_bytes {
+                row("Size", fmt_bytes(b));
+            }
+            if let Some(n) = info.n_ctx {
+                let slots = match info.total_slots {
+                    Some(s) if s > 1 => format!(" per slot · {s} slots"),
+                    _ => String::new(),
+                };
+                row("Context", format!("{}{slots}", fmt_tokens(n)));
+            }
+            if let Some(n) = info.n_ctx_train {
+                row("Trained context", fmt_tokens(n));
+            }
+            if let Some(v) = info.vision {
+                row("Images", if v { "Yes" } else { "No" }.to_owned());
+            }
+            if let Some(m) = &info.metrics {
+                if let (Some(busy), Some(queued)) = (m.requests_processing, m.requests_deferred) {
+                    row(
+                        "Requests",
+                        format!("{busy:.0} processing · {queued:.0} queued"),
+                    );
+                }
+                if let Some(a) = m.draft_acceptance() {
+                    row("Draft acceptance", format!("{:.0}%", a * 100.0));
+                }
+            }
+            if let Some(b) = &info.build {
+                row("Build", b.clone());
+            }
+        });
 }

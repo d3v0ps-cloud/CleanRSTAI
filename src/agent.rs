@@ -76,6 +76,12 @@ pub enum AppEvent {
         name: String,
         result: Result<Vec<crate::mcp::PromptMessage>, String>,
     },
+    /// What a llama.cpp server reported about a provider's model (`key` is the provider id
+    /// and model), or None when it didn't answer like llama.cpp.
+    ServerInfo {
+        key: (String, String),
+        info: Option<crate::llm::LlamaServerInfo>,
+    },
     KindDetected {
         provider_id: String,
         kind: crate::config::ProviderKind,
