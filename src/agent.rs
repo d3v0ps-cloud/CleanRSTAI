@@ -21,7 +21,7 @@ pub enum ChatEvent {
     ContentDelta(String),
     ReasoningDelta(String),
     /// A live snapshot of the in-flight request's stats, for the readout above the input box.
-    StatsLive(crate::stats::RequestStats),
+    StatsLive(Box<crate::stats::RequestStats>),
     /// Replaces the in-progress assistant message with its final form (incl. tool calls).
     AssistantFinal(Box<ChatMessage>),
     ToolApproval {
@@ -39,6 +39,19 @@ pub enum ChatEvent {
     ToolResult(Box<ChatMessage>),
     Error(String),
     Done,
+}
+
+/// What a provider's server reported about its model, for the details beside the model
+/// picker. `key` is the provider id and model.
+pub struct ServerReport {
+    pub key: (String, String),
+    /// llama.cpp: the model and server, or None when it didn't answer like llama.cpp.
+    pub info: Option<crate::llm::LlamaServerInfo>,
+    /// A llama.cpp router's models and their load state (None for a single-model server).
+    pub router: Option<Vec<crate::llm::RouterModel>>,
+    /// LiteLLM: the model as the proxy lists it, and the key's spend.
+    pub litellm: Option<crate::llm::LiteLlmModel>,
+    pub litellm_key: Option<crate::llm::LiteLlmKey>,
 }
 
 pub enum AppEvent {
@@ -76,14 +89,8 @@ pub enum AppEvent {
         name: String,
         result: Result<Vec<crate::mcp::PromptMessage>, String>,
     },
-    /// What a llama.cpp server reported about a provider's model (`key` is the provider id
-    /// and model), or None when it didn't answer like llama.cpp.
-    ServerInfo {
-        key: (String, String),
-        info: Option<crate::llm::LlamaServerInfo>,
-        /// A router's models and their load state (None for a single-model server).
-        router: Option<Vec<crate::llm::RouterModel>>,
-    },
+    /// What the active provider's server reported (llama.cpp or LiteLLM).
+    ServerInfo(Box<ServerReport>),
     /// A router load or unload finished (the error, if it failed).
     ModelLoadChanged(Result<(), String>),
     KindDetected {
@@ -153,11 +160,16 @@ pub async fn run(
         } else {
             (None, None)
         };
-    let prices = if req.provider.kind == crate::config::ProviderKind::LiteLlm {
-        llm::litellm_model_prices(&http, &req.provider).await
+    // LiteLLM lists the model's prices and context window.
+    let litellm = if req.provider.kind == crate::config::ProviderKind::LiteLlm {
+        llm::litellm_model_info(&http, &req.provider).await
     } else {
         None
     };
+    if let Some(n) = litellm.as_ref().and_then(|m| m.max_input_tokens) {
+        context_size = Some(n);
+    }
+    let prices = litellm.and_then(|m| m.prices);
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
@@ -187,7 +199,7 @@ pub async fn run(
                 Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
                 Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
             },
-            |s| emit(ChatEvent::StatsLive(s)),
+            |s| emit(ChatEvent::StatsLive(Box::new(s))),
         )
         .await;
 
@@ -563,7 +575,8 @@ mod tests {
         let (base, _) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
             ("GET", "/model/info") => Response::json(serde_json::json!({"data": [
                 {"model_name": "mock", "model_info": {
-                    "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}]})),
+                    "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002,
+                    "max_input_tokens": 8000}}]})),
             ("POST", "/v1/chat/completions") => Response::json(serde_json::json!({
                 "choices": [{"message": {"role": "assistant", "content": "hi"},
                              "finish_reason": "stop"}],
@@ -589,6 +602,8 @@ mod tests {
         assert!(stats.cost_estimated);
         // 1,000 × $1/M + 500 × $2/M
         assert!((stats.cost_usd.unwrap() - 0.002).abs() < 1e-12);
+        // LiteLLM's listed context window gives context use.
+        assert_eq!(stats.context_use(), Some((1500, 8000)));
     }
 
     #[tokio::test]

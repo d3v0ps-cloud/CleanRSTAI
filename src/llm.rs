@@ -358,20 +358,35 @@ async fn llama_cpp_props(http: &reqwest::Client, p: &ProviderConfig) -> Option<V
     (v.get("default_generation_settings").is_some() || v.get("build_info").is_some()).then_some(v)
 }
 
-/// The per-token prices a LiteLLM proxy lists for the provider's model in `/model/info`,
-/// to estimate the cost of streamed replies (LiteLLM sends the cost of non-streamed ones
-/// only). Asked once per proxy and model; failures are asked again.
-pub async fn litellm_model_prices(
+/// What a LiteLLM proxy lists for the provider's model in `/model/info`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiteLlmModel {
+    /// Per-token prices, to estimate the cost of streamed replies (LiteLLM sends the cost of
+    /// non-streamed ones only).
+    pub prices: Option<crate::stats::ModelPrices>,
+    /// The context window, for context use.
+    pub max_input_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub provider: Option<String>,
+    pub vision: Option<bool>,
+    pub tools: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub pdf: Option<bool>,
+}
+
+/// The provider's model in a LiteLLM proxy's `/model/info`, which any key may read for its
+/// own models. Asked once per proxy and model; failures are asked again.
+pub async fn litellm_model_info(
     http: &reqwest::Client,
     p: &ProviderConfig,
-) -> Option<crate::stats::ModelPrices> {
+) -> Option<LiteLlmModel> {
     static CACHE: std::sync::LazyLock<
-        std::sync::Mutex<std::collections::HashMap<(String, String), crate::stats::ModelPrices>>,
+        std::sync::Mutex<std::collections::HashMap<(String, String), LiteLlmModel>>,
     > = std::sync::LazyLock::new(Default::default);
     let model = p.model.trim();
     let key = (origin(p), model.to_owned());
-    if let Some(prices) = CACHE.lock().unwrap().get(&key) {
-        return Some(*prices);
+    if let Some(info) = CACHE.lock().unwrap().get(&key) {
+        return Some(info.clone());
     }
     let resp = authorize(http.get(format!("{}/model/info", origin(p))), p)
         .timeout(std::time::Duration::from_secs(10))
@@ -382,23 +397,125 @@ pub async fn litellm_model_prices(
         return None;
     }
     let v: Value = resp.json().await.ok()?;
-    // One entry per deployment; take the first of this model that lists prices.
-    let prices = v
+    // One entry per deployment of a model name; take each field from the first that has it.
+    let infos: Vec<&Value> = v
         .get("data")?
         .as_array()?
         .iter()
         .filter(|d| d.get("model_name").and_then(Value::as_str) == Some(model))
-        .find_map(|d| {
-            let info = d.get("model_info")?;
-            let price = |k: &str| info.get(k).and_then(Value::as_f64);
+        .filter_map(|d| d.get("model_info"))
+        .collect();
+    if infos.is_empty() {
+        return None;
+    }
+    let first = |k: &str| infos.iter().find_map(|i| i.get(k).filter(|v| !v.is_null()));
+    let num = |k: &str| first(k).and_then(Value::as_u64);
+    let flag = |k: &str| first(k).and_then(Value::as_bool);
+    let info = LiteLlmModel {
+        prices: infos.iter().find_map(|i| {
+            let price = |k: &str| i.get(k).and_then(Value::as_f64);
             Some(crate::stats::ModelPrices {
                 input: price("input_cost_per_token")?,
                 output: price("output_cost_per_token")?,
                 cache_read: price("cache_read_input_token_cost"),
             })
-        })?;
-    CACHE.lock().unwrap().insert(key, prices);
-    Some(prices)
+        }),
+        max_input_tokens: num("max_input_tokens").or_else(|| num("max_tokens")),
+        max_output_tokens: num("max_output_tokens"),
+        provider: first("litellm_provider")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        vision: flag("supports_vision"),
+        tools: flag("supports_function_calling"),
+        reasoning: flag("supports_reasoning"),
+        pdf: flag("supports_pdf_input"),
+    };
+    CACHE.lock().unwrap().insert(key, info.clone());
+    Some(info)
+}
+
+/// A LiteLLM key's spend and budget, from `/key/info` (each key may read its own).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LiteLlmKey {
+    pub spend: Option<f64>,
+    pub max_budget: Option<f64>,
+}
+
+pub async fn litellm_key_info(http: &reqwest::Client, p: &ProviderConfig) -> Option<LiteLlmKey> {
+    let resp = authorize(http.get(format!("{}/key/info", origin(p))), p)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    let info = v.get("info").unwrap_or(&v);
+    let key = LiteLlmKey {
+        spend: info.get("spend").and_then(Value::as_f64),
+        max_budget: info.get("max_budget").and_then(Value::as_f64),
+    };
+    (key.spend.is_some() || key.max_budget.is_some()).then_some(key)
+}
+
+/// What a LiteLLM proxy says about one request in its `x-litellm-*` response headers. None
+/// when there are none (not LiteLLM).
+pub fn litellm_details(headers: &reqwest::header::HeaderMap) -> Option<crate::stats::ProxyDetails> {
+    let get = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && *v != "None")
+    };
+    if !headers.keys().any(|k| k.as_str().starts_with("x-litellm")) {
+        return None;
+    }
+    let f = |name: &str| get(name).and_then(|v| v.parse::<f64>().ok());
+    let n = |name: &str| {
+        get(name)
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| v as u64)
+    };
+    // Per-key limits are sent per model group: x-litellm-key-remaining-requests-<group>.
+    let prefixed = |prefix: &str| {
+        headers.iter().find_map(|(k, v)| {
+            k.as_str()
+                .starts_with(prefix)
+                .then(|| v.to_str().ok()?.trim().parse::<f64>().ok())
+                .flatten()
+                .map(|v| v as u64)
+        })
+    };
+    let mut cost_breakdown = Vec::new();
+    for (part, header) in [
+        ("input", "x-litellm-response-cost-input"),
+        ("output", "x-litellm-response-cost-output"),
+        ("cache read", "x-litellm-response-cost-cache-read"),
+        ("cache write", "x-litellm-response-cost-cache-creation"),
+        ("reasoning", "x-litellm-response-cost-reasoning"),
+        ("tools", "x-litellm-response-cost-tool-usage"),
+    ] {
+        if let Some(c) = f(header).filter(|&c| c > 0.0) {
+            cost_breakdown.push((part.to_owned(), c));
+        }
+    }
+    Some(crate::stats::ProxyDetails {
+        deployment: get("x-litellm-model-name").map(str::to_owned),
+        api_base: get("x-litellm-model-api-base").map(str::to_owned),
+        retries: n("x-litellm-attempted-retries").filter(|&r| r > 0),
+        fallbacks: n("x-litellm-attempted-fallbacks").filter(|&r| r > 0),
+        key_spend: f("x-litellm-key-spend"),
+        key_budget: f("x-litellm-key-max-budget"),
+        remaining_requests: n("x-ratelimit-remaining-requests")
+            .or_else(|| prefixed("x-litellm-key-remaining-requests-")),
+        remaining_tokens: n("x-ratelimit-remaining-tokens")
+            .or_else(|| prefixed("x-litellm-key-remaining-tokens-")),
+        cost_breakdown,
+        cache_used: get("x-litellm-cache-key").is_some(),
+        overhead_ms: f("x-litellm-overhead-duration-ms"),
+    })
 }
 
 /// Work out which kind of server a provider points at.
@@ -676,6 +793,7 @@ pub async fn chat_completion(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<f64>().ok())
     });
+    stats.proxy = litellm_details(resp.headers());
 
     let mut turn = AssistantTurn::default();
     let mut builder = ToolCallBuilder::default();
@@ -1233,36 +1351,109 @@ mod server_tests {
     }
 
     #[tokio::test]
-    async fn litellm_model_prices_from_model_info() {
+    async fn litellm_model_info_and_key_info() {
         let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
             ("GET", "/model/info") => Response::json(json!({"data": [
                 {"model_name": "other", "model_info": {
                     "input_cost_per_token": 1.0, "output_cost_per_token": 1.0}},
-                // A deployment without prices is skipped for the next one of the model.
-                {"model_name": "m", "model_info": {"id": "a"}},
+                // Fields come from the first deployment of the model that has them.
+                {"model_name": "m", "model_info": {"id": "a", "max_input_tokens": 128000,
+                    "litellm_provider": "azure", "supports_vision": true}},
                 {"model_name": "m", "model_info": {
                     "input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015,
-                    "cache_read_input_token_cost": 0.0000003}},
+                    "cache_read_input_token_cost": 0.0000003, "max_input_tokens": 1,
+                    "supports_function_calling": true}},
             ]})),
+            ("GET", "/key/info") => Response::json(json!({"key": "sk-…",
+                "info": {"spend": 4.2, "max_budget": 50.0}})),
             _ => Response::status(404),
         })
         .await;
         let http = build_http_client();
         let p = provider(&base, ProviderKind::LiteLlm);
-        let want = crate::stats::ModelPrices {
-            input: 0.000003,
-            output: 0.000015,
-            cache_read: Some(0.0000003),
+        let want = LiteLlmModel {
+            prices: Some(crate::stats::ModelPrices {
+                input: 0.000003,
+                output: 0.000015,
+                cache_read: Some(0.0000003),
+            }),
+            max_input_tokens: Some(128_000),
+            provider: Some("azure".into()),
+            vision: Some(true),
+            tools: Some(true),
+            ..Default::default()
         };
-        assert_eq!(litellm_model_prices(&http, &p).await, Some(want));
+        assert_eq!(litellm_model_info(&http, &p).await, Some(want.clone()));
         // Asked once: the second call is answered from the cache.
-        assert_eq!(litellm_model_prices(&http, &p).await, Some(want));
-        assert_eq!(log.lock().unwrap().len(), 1);
+        assert_eq!(litellm_model_info(&http, &p).await, Some(want));
+        assert_eq!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path == "/model/info")
+                .count(),
+            1
+        );
+        assert_eq!(
+            litellm_key_info(&http, &p).await,
+            Some(LiteLlmKey {
+                spend: Some(4.2),
+                max_budget: Some(50.0)
+            })
+        );
 
-        // A proxy without /model/info (or a model it doesn't list) gives nothing.
+        // A proxy without these endpoints (or a model it doesn't list) gives nothing.
         let (base, _) = serve(|_| Response::status(404)).await;
         let p = provider(&base, ProviderKind::LiteLlm);
-        assert_eq!(litellm_model_prices(&http, &p).await, None);
+        assert_eq!(litellm_model_info(&http, &p).await, None);
+        assert_eq!(litellm_key_info(&http, &p).await, None);
+    }
+
+    #[test]
+    fn litellm_response_headers() {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in [
+            ("x-litellm-model-name", "azure/gpt-4o"),
+            ("x-litellm-model-api-base", "https://x.openai.azure.com"),
+            ("x-litellm-attempted-retries", "2"),
+            ("x-litellm-attempted-fallbacks", "0"),
+            ("x-litellm-key-spend", "4.25"),
+            ("x-litellm-key-max-budget", "None"),
+            ("x-litellm-key-remaining-requests-gpt-4o", "99"),
+            ("x-ratelimit-remaining-tokens", "40000"),
+            ("x-litellm-response-cost-input", "0.001"),
+            ("x-litellm-response-cost-output", "0.002"),
+            ("x-litellm-response-cost-reasoning", "0"),
+            ("x-litellm-cache-key", "abc"),
+            ("x-litellm-overhead-duration-ms", "12.5"),
+        ] {
+            h.insert(k, v.parse().unwrap());
+        }
+        let d = litellm_details(&h).unwrap();
+        assert_eq!(d.deployment.as_deref(), Some("azure/gpt-4o"));
+        assert_eq!(d.api_base.as_deref(), Some("https://x.openai.azure.com"));
+        assert_eq!(
+            (d.retries, d.fallbacks),
+            (Some(2), None),
+            "zero isn't shown"
+        );
+        assert_eq!(
+            (d.key_spend, d.key_budget),
+            (Some(4.25), None),
+            "\"None\" is no budget"
+        );
+        assert_eq!(
+            (d.remaining_requests, d.remaining_tokens),
+            (Some(99), Some(40_000))
+        );
+        assert_eq!(
+            d.cost_breakdown,
+            [("input".to_owned(), 0.001), ("output".to_owned(), 0.002)]
+        );
+        assert!(d.cache_used);
+        assert_eq!(d.overhead_ms, Some(12.5));
+        // Not LiteLLM: nothing.
+        assert_eq!(litellm_details(&reqwest::header::HeaderMap::new()), None);
     }
 
     #[tokio::test]

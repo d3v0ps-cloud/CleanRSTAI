@@ -83,6 +83,22 @@ the model loads.
 While a reply streams in, the live readout above the message box shows the server's own
 prefill and decode speeds.
 
+#### LiteLLM details
+
+With a LiteLLM proxy (set **Server type** to *LiteLLM proxy*, or click **Detect**):
+
+- **Under each reply**, the hover over the stats line adds what the proxy reports for that
+  request: the deployment that served it (such as `azure/gpt-4o-2024-08-06` behind a
+  `gpt-4o` alias) and its endpoint, retries and fallbacks, whether LiteLLM's response cache
+  was used, the time LiteLLM itself added, your key's spend against its budget, the rate
+  limit left, and for non-streamed replies the cost split into input, output, cache and
+  reasoning.
+- **Beside the model picker**, an info icon shows the model as the proxy lists it: the
+  provider behind it, context window, longest reply, price per million tokens, whether it
+  reads images and PDFs, calls tools and reasons, and your key's spend against its budget.
+  It refreshes every minute.
+- **Context use** works with LiteLLM too, against the context window the proxy lists.
+
 #### Several models on one llama.cpp server
 
 A llama.cpp server started in router mode (without `-m`) serves several models and loads

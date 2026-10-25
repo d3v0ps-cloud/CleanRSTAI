@@ -34,7 +34,9 @@ too, as an installer and a portable `.exe`.
 - **Speed and token stats**: under every reply, prefill and decode speed, prompt time and
   tokens in and out, plus a running total for the chat. llama.cpp's own `timings` are used
   when the server reports them, and the cost when OpenRouter or a LiteLLM proxy reports it
-  (for LiteLLM's streamed replies, estimated from its listed prices); otherwise speeds are measured from the stream. With llama.cpp the stats also show how full
+  (for LiteLLM's streamed replies, estimated from its listed prices), and with LiteLLM the
+  deployment that served each reply, retries and fallbacks, key spend and rate limits left;
+  otherwise speeds are measured from the stream. With llama.cpp the stats also show how full
   the context is, turning to a warning colour from 80%, and a progress bar while the server
   reads a long prompt; an info icon beside the model picker shows the model file, size,
   parameters, trained context and whether the server is loading it or asleep. With a
