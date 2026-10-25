@@ -43,15 +43,15 @@ jobs:
       - name: Use Git Bash for bash steps
         # On Windows, a plain `bash` is System32's WSL launcher, which fails without a Linux
         # distribution. Put Git for Windows' bash first for the rest of the job.
+        # cmd, not PowerShell: the runner's execution policy may block PowerShell scripts.
         if: runner.os == 'Windows'
-        shell: powershell
+        shell: cmd
         run: |
-          $gitBash = Join-Path $env:ProgramFiles "Git\bin"
-          if (-not (Test-Path (Join-Path $gitBash "bash.exe"))) {
-            Write-Output "::error::Git for Windows is not installed at $gitBash"
-            exit 1
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value $gitBash
+          if not exist "%ProgramFiles%\Git\bin\bash.exe" (
+            echo ::error::Git for Windows is not installed in %ProgramFiles%\Git
+            exit /b 1
+          )
+          echo %ProgramFiles%\Git\bin>>"%GITHUB_PATH%"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
