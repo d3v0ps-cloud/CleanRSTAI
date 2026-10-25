@@ -74,6 +74,10 @@ Decides which extra statistics are read:
 | **Generic OpenAI-compatible** | Token usage from the API; speeds measured by the app. |
 | **llama.cpp server** | Prefill/decode speeds, context size and slot usage reported by llama.cpp, how full the context is ([context use](../using/chats.html#context-use)), a progress bar while it reads a long prompt ([prompt progress](../using/chats.html#prompt-progress)), and the model's details and loading or asleep status ([server details](../using/chats.html#llamacpp-server-details)). |
 | **LiteLLM proxy** | The deployment that served each request and its cost (estimated from the proxy's listed prices for streamed replies), the model's context window and capabilities, and your key's spend and rate limits ([LiteLLM details](../using/chats.html#litellm-details)). |
+| **Ollama** | Whether the model is loaded, its size and share in GPU memory, parameters, quantization, context size and capabilities ([details](../using/chats.html#ollama-lm-studio-vllm-and-openrouter)). |
+| **LM Studio** | Whether the model is loaded, its quantization and format, and the context size it was loaded with. |
+| **vLLM** | Context size, and the server's load: running and waiting requests, KV cache use and prefix cache hits. |
+| **OpenRouter** | The provider that served each request and its cost, the model's context, prices and inputs, and your key's spend and credit left. |
 
 **Detect** probes the server and picks the type for you.
 

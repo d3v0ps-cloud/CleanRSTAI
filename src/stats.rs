@@ -119,6 +119,9 @@ pub struct RequestStats {
     pub context_used: Option<u64>,
     /// Slot occupancy, when the server exposes it (llama.cpp).
     pub slot_usage: Option<SlotUsage>,
+    /// The provider a router such as OpenRouter sent the request to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
     /// What a LiteLLM proxy reported about the request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyDetails>,
@@ -277,6 +280,7 @@ pub struct Collector {
     pub context_size: Option<u64>,
     pub prompt_progress: Option<PromptProgress>,
     pub proxy: Option<ProxyDetails>,
+    pub upstream: Option<String>,
 }
 
 impl Collector {
@@ -290,6 +294,14 @@ impl Collector {
         }
         if let Some(p) = PromptProgress::parse(v) {
             self.prompt_progress = Some(p);
+        }
+        // OpenRouter names the provider that served it in every response and chunk.
+        if let Some(p) = v
+            .get("provider")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+        {
+            self.upstream = Some(p.to_owned());
         }
         if let Some(m) = v
             .get("model")
@@ -335,6 +347,7 @@ impl Collector {
                 .or_else(|| self.served_model.clone())
                 .filter(|m| !m.eq_ignore_ascii_case(requested_model.trim())),
             proxy: self.proxy.clone(),
+            upstream: self.upstream.clone(),
             ..Default::default()
         };
 

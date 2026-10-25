@@ -12,6 +12,7 @@ mod export;
 mod llm;
 mod mcp;
 mod secrets;
+mod servers;
 mod sse;
 mod stats;
 mod subagent;

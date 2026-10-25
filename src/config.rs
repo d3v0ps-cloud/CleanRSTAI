@@ -44,16 +44,36 @@ pub enum ProviderKind {
     LlamaCpp,
     /// LiteLLM proxy: served model and cost.
     LiteLlm,
+    /// Ollama: loaded models, their size in GPU memory and context size.
+    Ollama,
+    /// LM Studio: load state, quantization and loaded context size.
+    LmStudio,
+    /// vLLM: context size and load (running and waiting requests, KV cache, prefix cache).
+    Vllm,
+    /// OpenRouter: the provider that served each request, cost, context and key credit.
+    OpenRouter,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 3] = [Self::Generic, Self::LlamaCpp, Self::LiteLlm];
+    pub const ALL: [ProviderKind; 7] = [
+        Self::Generic,
+        Self::LlamaCpp,
+        Self::LiteLlm,
+        Self::Ollama,
+        Self::LmStudio,
+        Self::Vllm,
+        Self::OpenRouter,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Generic => "Generic OpenAI-compatible",
             Self::LlamaCpp => "llama.cpp server",
             Self::LiteLlm => "LiteLLM proxy",
+            Self::Ollama => "Ollama",
+            Self::LmStudio => "LM Studio",
+            Self::Vllm => "vLLM",
+            Self::OpenRouter => "OpenRouter",
         }
     }
 
@@ -64,6 +84,18 @@ impl ProviderKind {
                 "Prefill/decode speeds, context size and slot usage reported by llama.cpp."
             }
             Self::LiteLlm => "Shows the model that served each request and its cost.",
+            Self::Ollama => {
+                "Whether the model is loaded, its size in GPU memory, quantization and context size."
+            }
+            Self::LmStudio => {
+                "Whether the model is loaded, its quantization and loaded context size."
+            }
+            Self::Vllm => {
+                "Context size, and the server's load: running and waiting requests, KV cache use."
+            }
+            Self::OpenRouter => {
+                "The provider that served each request, its cost, the model's context and your credit."
+            }
         }
     }
 }

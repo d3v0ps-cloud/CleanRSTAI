@@ -43,6 +43,7 @@ pub enum ChatEvent {
 
 /// What a provider's server reported about its model, for the details beside the model
 /// picker. `key` is the provider id and model.
+#[derive(Default)]
 pub struct ServerReport {
     pub key: (String, String),
     /// llama.cpp: the model and server, or None when it didn't answer like llama.cpp.
@@ -52,6 +53,8 @@ pub struct ServerReport {
     /// LiteLLM: the model as the proxy lists it, and the key's spend.
     pub litellm: Option<crate::llm::LiteLlmModel>,
     pub litellm_key: Option<crate::llm::LiteLlmKey>,
+    /// Ollama, LM Studio, vLLM and OpenRouter: what the server reports, as rows.
+    pub details: Option<crate::servers::ServerDetails>,
 }
 
 pub enum AppEvent {
@@ -160,6 +163,10 @@ pub async fn run(
         } else {
             (None, None)
         };
+    // Ollama, LM Studio, vLLM and OpenRouter report the context size the model runs with.
+    if context_size.is_none() {
+        context_size = crate::servers::context_size(&http, &req.provider).await;
+    }
     // LiteLLM lists the model's prices and context window.
     let litellm = if req.provider.kind == crate::config::ProviderKind::LiteLlm {
         llm::litellm_model_info(&http, &req.provider).await
