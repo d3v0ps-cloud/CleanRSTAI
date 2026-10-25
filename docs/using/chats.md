@@ -14,8 +14,10 @@ nav_order: 1
 
 - **Sidebar** (left): **New chat**, a search box, pinned chats and recent chats, and
   **Settings** at the bottom. Hide or show it with **⌘/Ctrl + B**.
-- **Top bar**: the sidebar, settings and command palette buttons, plus an **Update to …**
+- **Top bar**: the sidebar, settings, command palette and [artifact panel](#artifacts) buttons,
+  plus an **Update to …**
   link when a new version is out and a warning when an MCP server needs attention.
+- **Artifact panel** (right): web pages, drawings and longer code from replies.
 - **Chat**: your messages sit in bubbles on the right; replies run full width, and tool calls
   show as collapsible cards.
 - **Message box** (bottom, or centred under the greeting in a new chat): **+** to attach
@@ -165,8 +167,10 @@ Web pages, drawings, documents and longer code in a reply are *artifacts*. They 
 panel beside the chat; the reply keeps only a link to each, with its name, type and size.
 
 - **Click the link** to expand the artifact in the chat as well, and again to fold it away.
-- **The panel icon** after the link shows that artifact in the panel ("in the panel" marks
+- **Open in panel** after the link shows that artifact in the panel ("in the panel" marks
   the one shown).
+- **The panel button** in the top bar, beside the command palette, shows and hides the panel
+  (it opens on the newest artifact, and is greyed out in a chat without any).
 
 - **What counts**: closed top-level code blocks marked ```` ```html ````, ```` ```svg ````,
   ```` ```mermaid ```` or ```` ```markdown ```` (an SVG or web page in an ```` ```xml ```` or
@@ -186,8 +190,8 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
-  panel** in [General](../settings/general.html#artifacts); the panel icon by each link still
-  opens it.
+  panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar
+  button still open it.
 
 ## Attachments
 

@@ -1559,6 +1559,28 @@ impl ChatApp {
                 if icon_button(ui, icon::COMMAND, "Command palette (⌘K)").clicked() {
                     self.palette.toggle();
                 }
+                if self.settings_ui.is_none()
+                    && let Some(conv) = self.current
+                {
+                    let open = self.artifact.as_ref().is_some_and(|v| v.conv == conv);
+                    let newest = self.artifacts.list.last();
+                    let tip = if open {
+                        "Hide the artifact panel"
+                    } else if newest.is_some() {
+                        "Show the artifact panel"
+                    } else {
+                        "No artifacts in this chat yet"
+                    };
+                    if artifact_panel::toggle_button(ui, open, newest.is_some())
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.artifact = match newest {
+                            Some(a) if !open => Some(ArtifactView::new(conv, a, true)),
+                            _ => None,
+                        };
+                    }
+                }
                 if let Some(r) = &self.update {
                     let link = |label: String| {
                         egui::Button::new(RichText::new(label).small().color(p.signal))
@@ -2572,6 +2594,11 @@ impl eframe::App for ChatApp {
                 )
                 .show(ui, |ui| self.sidebar(ui));
         }
+        // Before the top bar, whose panel button needs the open chat's artifacts.
+        let current = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id));
+        self.artifacts.refresh(current);
         egui::Panel::top("top-bar")
             .show_separator_line(false)
             .frame(
@@ -2582,10 +2609,6 @@ impl eframe::App for ChatApp {
             .show(ui, |ui| self.top_bar(ui));
 
         if !settings_open {
-            let current = self
-                .current
-                .and_then(|id| self.conversations.iter().find(|c| c.id == id));
-            self.artifacts.refresh(current);
             let remote_images = self.settings.general.load_remote_images;
             if let Some(view) = self
                 .artifact
