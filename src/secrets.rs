@@ -5,7 +5,8 @@
 //! on save each secret is written to the store and blanked in the file, and on load the
 //! blanks are filled back in from the store.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::config::{KeyValue, McpTransportConfig, Settings};
 
@@ -105,13 +106,122 @@ impl SecretStore for FileStore {
     }
 }
 
+/// Account of the one item that [`Bundled`] keeps every secret in.
+const BUNDLE: &str = "secrets";
+
+/// Every secret in one store item (a JSON object), read once per run. macOS asks for the login
+/// password for each Keychain item an app may not read yet (a new install or a new build), so
+/// one item means one prompt instead of one per API key, header and sign-in. Secrets that
+/// older versions saved as separate items move into the bundle the first time they are read.
+pub struct Bundled<S> {
+    inner: S,
+    /// The bundle, or why it couldn't be read (kept, so a refusal isn't asked again).
+    cache: Mutex<Option<Result<BTreeMap<String, String>, String>>>,
+}
+
+impl<S: SecretStore> Bundled<S> {
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            cache: Mutex::new(None),
+        }
+    }
+
+    fn with_map<R>(
+        &self,
+        f: impl FnOnce(&S, &mut BTreeMap<String, String>) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut cache = self.cache.lock().unwrap();
+        let loaded = cache.get_or_insert_with(|| match self.inner.get(BUNDLE)? {
+            Some(json) => serde_json::from_str(&json).map_err(|e| format!("reading secrets: {e}")),
+            None => Ok(BTreeMap::new()),
+        });
+        match loaded {
+            Ok(map) => f(&self.inner, map),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    fn save(inner: &S, map: &BTreeMap<String, String>) -> Result<(), String> {
+        inner.set(
+            BUNDLE,
+            &serde_json::to_string(map).map_err(|e| e.to_string())?,
+        )
+    }
+}
+
+impl<S: SecretStore> SecretStore for Bundled<S> {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        self.with_map(|inner, map| {
+            if let Some(v) = map.get(account) {
+                return Ok(Some(v.clone()));
+            }
+            let Some(v) = inner.get(account)? else {
+                return Ok(None);
+            };
+            map.insert(account.into(), v.clone());
+            match Self::save(inner, map) {
+                Ok(()) => {
+                    if let Err(e) = inner.delete(account) {
+                        log::warn!("removing {account} after moving it: {e}");
+                    }
+                }
+                Err(e) => log::warn!("moving {account} into one keychain item: {e}"),
+            }
+            Ok(Some(v))
+        })
+    }
+
+    fn set(&self, account: &str, secret: &str) -> Result<(), String> {
+        self.with_map(|inner, map| {
+            if map.get(account).is_some_and(|v| v == secret) {
+                return Ok(());
+            }
+            let old = map.insert(account.into(), secret.into());
+            Self::save(inner, map).inspect_err(|_| match old {
+                Some(old) => {
+                    map.insert(account.into(), old);
+                }
+                None => {
+                    map.remove(account);
+                }
+            })
+        })
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        self.with_map(|inner, map| {
+            let Some(old) = map.remove(account) else {
+                return Ok(());
+            };
+            Self::save(inner, map).inspect_err(|_| {
+                map.insert(account.into(), old);
+            })
+        })
+    }
+}
+
+/// The OS credential store, shared by settings and MCP sign-ins. On macOS every secret goes in
+/// one Keychain item ([`Bundled`]); elsewhere each has its own item, since Windows Credential
+/// Manager holds at most 2.5 KB per item and doesn't prompt anyway.
+pub fn keychain() -> Arc<dyn SecretStore> {
+    static STORE: LazyLock<Arc<dyn SecretStore>> = LazyLock::new(|| {
+        if cfg!(target_os = "macos") {
+            Arc::new(Bundled::new(OsKeychain))
+        } else {
+            Arc::new(OsKeychain)
+        }
+    });
+    STORE.clone()
+}
+
 /// The keychain when available, otherwise a private file in the config directory.
 /// Used for data that must persist even without a keychain (MCP sign-in tokens).
-pub fn durable_store() -> std::sync::Arc<dyn SecretStore + Send + Sync> {
+pub fn durable_store() -> Arc<dyn SecretStore + Send + Sync> {
     if OsKeychain::status().is_ok() {
-        std::sync::Arc::new(OsKeychain)
+        keychain()
     } else {
-        std::sync::Arc::new(FileStore::new(
+        Arc::new(FileStore::new(
             crate::config::config_dir().join("tokens.json"),
         ))
     }
@@ -209,22 +319,26 @@ pub mod tests {
     use super::*;
     use crate::config::{McpServerConfig, ProviderConfig};
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
     pub struct MemoryStore {
         pub items: Mutex<HashMap<String, String>>,
         pub fail: bool,
+        pub reads: AtomicUsize,
+        pub writes: AtomicUsize,
     }
 
     impl SecretStore for MemoryStore {
         fn get(&self, a: &str) -> Result<Option<String>, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
             Ok(self.items.lock().unwrap().get(a).cloned())
         }
         fn set(&self, a: &str, s: &str) -> Result<(), String> {
             if self.fail {
                 return Err("locked".into());
             }
+            self.writes.fetch_add(1, Ordering::SeqCst);
             self.items.lock().unwrap().insert(a.into(), s.into());
             Ok(())
         }
@@ -304,5 +418,72 @@ pub mod tests {
         let items = store.items.lock().unwrap();
         assert!(!items.contains_key("provider:p1:header:X-Org"));
         assert!(items.contains_key("provider:p1:api_key"));
+    }
+
+    #[test]
+    fn bundles_every_secret_in_one_item() {
+        let store = Bundled::new(MemoryStore::default());
+        let original = sample();
+        let mut on_disk = original.clone();
+        let accounts = externalize(&mut on_disk, &store).unwrap();
+        assert_eq!(accounts.len(), 3);
+        let items: Vec<String> = store.inner.items.lock().unwrap().keys().cloned().collect();
+        assert_eq!(items, [BUNDLE]);
+
+        // Saving again unchanged writes nothing; a fresh run reads the item once.
+        let writes = store.inner.writes.load(Ordering::SeqCst);
+        externalize(&mut original.clone(), &store).unwrap();
+        assert_eq!(store.inner.writes.load(Ordering::SeqCst), writes);
+        let fresh = Bundled::new(MemoryStore::default());
+        *fresh.inner.items.lock().unwrap() = store.inner.items.lock().unwrap().clone();
+        assert!(internalize(&mut on_disk, &fresh, &accounts).is_empty());
+        assert_eq!(on_disk, original);
+        assert_eq!(fresh.inner.reads.load(Ordering::SeqCst), 1);
+
+        let mut s = original.clone();
+        s.providers[0].extra_headers.clear();
+        let now = externalize(&mut s, &store).unwrap();
+        remove_stale(&store, &accounts, &now);
+        assert_eq!(store.get("provider:p1:header:X-Org").unwrap(), None);
+        assert_eq!(
+            store.get("provider:p1:api_key").unwrap().as_deref(),
+            Some("sk-1")
+        );
+    }
+
+    #[test]
+    fn moves_separate_items_into_the_bundle() {
+        let old = MemoryStore::default();
+        let mut on_disk = sample();
+        let accounts = externalize(&mut on_disk, &old).unwrap();
+        let store = Bundled::new(old);
+        assert!(internalize(&mut on_disk, &store, &accounts).is_empty());
+        assert_eq!(on_disk, sample());
+        let items: Vec<String> = store.inner.items.lock().unwrap().keys().cloned().collect();
+        assert_eq!(items, [BUNDLE], "old items are removed once moved");
+    }
+
+    #[test]
+    fn bundle_failures_change_nothing() {
+        let store = Bundled::new(MemoryStore {
+            fail: true,
+            ..Default::default()
+        });
+        assert!(store.set("a", "1").is_err());
+        assert_eq!(store.get("a").unwrap(), None, "a failed write isn't kept");
+
+        let unreadable = Bundled::new(MemoryStore::default());
+        unreadable
+            .inner
+            .items
+            .lock()
+            .unwrap()
+            .insert(BUNDLE.into(), "not json".into());
+        assert!(unreadable.get("a").is_err());
+        assert!(
+            unreadable.set("a", "1").is_err(),
+            "never overwrites what it can't read"
+        );
+        assert_eq!(unreadable.inner.reads.load(Ordering::SeqCst), 1);
     }
 }

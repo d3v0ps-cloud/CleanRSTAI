@@ -40,6 +40,10 @@ or the Secret Service (GNOME Keyring, KWallet) on Linux. `settings.json` keeps o
 placeholders, and keys saved in plain text by earlier versions move to the keychain on first
 launch.
 
+On macOS every secret is kept in one Keychain item, so a new install or update asks for your
+password once rather than once per key; choose **Always Allow** to stop the prompt until the
+next update. Secrets that earlier versions kept as separate items move into it on first launch.
+
 If no keychain is available, a warning says so and secrets stay in `settings.json`. On macOS
 and Linux that file is readable only by you.
 

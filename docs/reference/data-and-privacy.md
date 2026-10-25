@@ -16,7 +16,7 @@ nav_order: 2
 |---|---|
 | Settings | `settings.json` (see [Where settings are stored](../settings/#where-settings-are-stored)) |
 | Conversations | one JSON file per chat in the `conversations` folder |
-| API keys, header values, MCP environment variable values, OAuth tokens | the system keychain |
+| API keys, header values, MCP environment variable values, OAuth tokens | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 
 On macOS and Linux, settings and export files are created readable only by you. If the
 keychain is off or unavailable, secrets are kept in `settings.json` instead
