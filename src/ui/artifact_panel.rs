@@ -89,7 +89,7 @@ const INLINE_DRAWING_HEIGHT: f32 = 600.0;
 
 /// An artifact in a reply: one link-style line (its name, kind and size). The artifact itself
 /// is shown in the panel; clicking the link expands it here in the chat too, and again folds
-/// it away. The panel icon at the end sends `open`.
+/// it away. "Open in panel" at the end sends `open`.
 #[allow(clippy::too_many_arguments)]
 pub fn card(
     ui: &mut egui::Ui,
@@ -128,10 +128,10 @@ pub fn card(
             ui.label(RichText::new("· in the panel").small().color(p.pencil));
         } else if ui
             .add(
-                egui::Button::new(RichText::new(icon::SIDEBAR).size(14.0).color(p.pencil))
-                    .frame(false),
+                egui::Button::new(RichText::new("Open in panel").small().color(p.pencil))
+                    .frame_when_inactive(false),
             )
-            .on_hover_text("Show in the panel")
+            .on_hover_text("Show it in the panel beside the chat")
             .clicked()
         {
             actions.push(open);
@@ -168,6 +168,44 @@ pub fn card(
             Kind::Html | Kind::Code => markdown::code_view(ui, md_cache, id, &a.lang, &a.source),
         }
     }
+}
+
+/// The top bar's button that shows and hides the panel: a window with a bar on the right,
+/// the mirror of the sidebar icon (Phosphor has none), in the accent colour while open.
+pub fn toggle_button(ui: &mut egui::Ui, open: bool, enabled: bool) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), sense);
+    let p = theme::palette(ui.visuals().dark_mode);
+    let color = if !enabled {
+        ui.visuals().weak_text_color()
+    } else if open {
+        p.signal
+    } else if resp.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    let stroke = egui::Stroke::new(1.3, color);
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(15.0, 13.0));
+    let painter = ui.painter();
+    painter.rect_stroke(r, 2.5, stroke, egui::StrokeKind::Inside);
+    let x = r.right() - 5.5;
+    painter.line_segment([egui::pos2(x, r.top()), egui::pos2(x, r.bottom())], stroke);
+    if open {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x, r.top()), r.max).shrink(1.0),
+            1.5,
+            color.gamma_multiply(0.5),
+        );
+    }
+    resp.widget_info(move || {
+        egui::WidgetInfo::selected(egui::Role::Button, enabled, open, "Artifact panel")
+    });
+    resp
 }
 
 /// The panel's contents. Asks to close the panel when the chat has no artifacts left.
