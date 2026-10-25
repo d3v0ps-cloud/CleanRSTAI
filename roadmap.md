@@ -9,7 +9,8 @@ source in **v0.7.5**, and llama.cpp context use and prompt progress, llama.cpp r
 support and Windows builds again (on the self-hosted DARKBASE runner) in **v0.7.8**, and
 llama.cpp server details and model loading, LiteLLM model, key and proxy details, Ollama,
 LM Studio, vLLM and OpenRouter provider types, the Windows icon and in-app updates, and the
-accessibility pass in **v0.7.9**.
+accessibility pass in **v0.7.9**, and one macOS Keychain item for all secrets (one password
+prompt instead of one per key) in **v0.7.10**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
