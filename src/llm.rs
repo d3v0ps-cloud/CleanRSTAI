@@ -105,11 +105,7 @@ pub async fn llama_cpp_slot_usage(
     http: &reqwest::Client,
     p: &ProviderConfig,
 ) -> Option<crate::stats::SlotUsage> {
-    let resp = authorize(http.get(format!("{}/slots", origin(p))), p)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .ok()?;
+    let resp = llama_cpp_get(http, p, "slots").send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -128,12 +124,24 @@ pub async fn llama_cpp_slot_usage(
     Some(crate::stats::SlotUsage { busy, total })
 }
 
+/// A GET to one of llama.cpp's own endpoints (`/props`, `/slots`). In router mode (one
+/// server, several models) these need `?model=`; a single-model server ignores it.
+/// `autoload=false` keeps the router from loading a model just to answer.
+fn llama_cpp_get(
+    http: &reqwest::Client,
+    p: &ProviderConfig,
+    path: &str,
+) -> reqwest::RequestBuilder {
+    let mut req = http.get(format!("{}/{path}", origin(p)));
+    let model = p.model.trim();
+    if !model.is_empty() {
+        req = req.query(&[("model", model), ("autoload", "false")]);
+    }
+    authorize(req, p).timeout(std::time::Duration::from_secs(5))
+}
+
 async fn llama_cpp_props(http: &reqwest::Client, p: &ProviderConfig) -> Option<Value> {
-    let resp = authorize(http.get(format!("{}/props", origin(p))), p)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .ok()?;
+    let resp = llama_cpp_get(http, p, "props").send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -596,7 +604,7 @@ mod server_tests {
     #[tokio::test]
     async fn llama_cpp_detection_and_server_timings() {
         let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
-            ("GET", "/props") => Response::json(json!({
+            ("GET", "/props?model=m&autoload=false") => Response::json(json!({
                 "default_generation_settings": {"n_ctx": 8192}, "build_info": "b1"})),
             ("POST", "/v1/chat/completions") => Response::sse(&[
                 json!({"choices": [{"delta": {"content": "Hel"}}]}),
@@ -616,7 +624,7 @@ mod server_tests {
             log.lock()
                 .unwrap()
                 .iter()
-                .filter(|r| r.path == "/props")
+                .filter(|r| r.path.starts_with("/props"))
                 .count()
         };
         let before = props(&log);
@@ -638,9 +646,25 @@ mod server_tests {
     }
 
     #[tokio::test]
+    async fn llama_cpp_router_mode_needs_the_model() {
+        // A router answers /props only for a named model, like llama.cpp's own router.
+        let (base, _) = serve(|r| match r.path.split_once('?') {
+            Some(("/props", q)) if q.contains("model=qwen%2Fq4") => Response::json(json!({
+                "default_generation_settings": {"n_ctx": 32768}, "build_info": "b2"})),
+            _ => Response::status(400),
+        })
+        .await;
+        let http = build_http_client();
+        let mut p = provider(&base, ProviderKind::Generic);
+        p.model = "qwen/q4".into();
+        assert_eq!(detect_kind(&http, &p).await, ProviderKind::LlamaCpp);
+        assert_eq!(llama_cpp_context_size(&http, &p).await, Some(32768));
+    }
+
+    #[tokio::test]
     async fn llama_cpp_slot_usage_report() {
         let (base, log) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
-            ("GET", "/slots") => Response::json(json!([
+            ("GET", "/slots?model=m&autoload=false") => Response::json(json!([
                 {"id": 0, "is_processing": true, "n_ctx": 4096},
                 {"id": 1, "is_processing": false, "n_ctx": 4096},
                 {"id": 2, "state": 1},
@@ -655,7 +679,12 @@ mod server_tests {
             llama_cpp_slot_usage(&http, &p).await,
             Some(crate::stats::SlotUsage { busy: 2, total: 4 })
         );
-        assert!(log.lock().unwrap().iter().any(|r| r.path == "/slots"));
+        assert!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.path.starts_with("/slots"))
+        );
         // A 404 (not a llama.cpp slot endpoint) yields nothing rather than panicking.
         let (base, _) = serve(|_| Response::status(404)).await;
         assert_eq!(

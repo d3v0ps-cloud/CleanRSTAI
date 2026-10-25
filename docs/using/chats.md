@@ -50,8 +50,8 @@ the stream. Hover over the line for the full breakdown. Turn the stats off in
 
 #### Context use
 
-With a llama.cpp server (set **Server type** on the provider, or click **Detect**), the
-stats also show how full the model's context is:
+With a llama.cpp server, including one running several models in router mode, the stats
+also show how full the model's context is:
 
 - under each reply, as a percentage, such as *context 38%*;
 - in the chat's summary at the top, as tokens used out of the context size, such as

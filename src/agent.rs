@@ -133,14 +133,16 @@ pub async fn run(
     let mut history = req.history;
     let max_rounds = req.general.max_tool_rounds.max(1);
     let tool_timeout = Duration::from_secs(req.general.tool_timeout_secs.max(5));
-    let (context_size, slot_usage) = if req.provider.kind == crate::config::ProviderKind::LlamaCpp {
-        tokio::join!(
-            llm::llama_cpp_context_size(&http, &req.provider),
-            llm::llama_cpp_slot_usage(&http, &req.provider)
-        )
-    } else {
-        (None, None)
-    };
+    let mut asked_context_after_reply = false;
+    let (mut context_size, slot_usage) =
+        if req.provider.kind == crate::config::ProviderKind::LlamaCpp {
+            tokio::join!(
+                llm::llama_cpp_context_size(&http, &req.provider),
+                llm::llama_cpp_slot_usage(&http, &req.provider)
+            )
+        } else {
+            (None, None)
+        };
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
@@ -188,6 +190,16 @@ pub async fn run(
         }
         msg.tool_calls = turn.tool_calls;
         let mut stats = turn.stats;
+        // Only llama.cpp sends `timings` (source Server). Ask for the context size after such
+        // a reply too: when Server type is left on Generic, or when a router had not loaded
+        // the model yet at the start.
+        if context_size.is_none()
+            && !asked_context_after_reply
+            && stats.source == crate::stats::StatsSource::Server
+        {
+            asked_context_after_reply = true;
+            context_size = llm::llama_cpp_context_size(&http, &req.provider).await;
+        }
         stats.context_size = context_size;
         stats.slot_usage = slot_usage;
         msg.stats = Some(stats);
@@ -493,6 +505,38 @@ mod tests {
             "hi"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn context_size_after_a_llama_cpp_reply_on_a_generic_provider() {
+        let (base, _) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/props?model=mock&autoload=false") => Response::json(serde_json::json!({
+                "default_generation_settings": {"n_ctx": 4096}, "build_info": "b1"})),
+            ("POST", "/v1/chat/completions") => Response::json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+                "timings": {"prompt_n": 90, "cache_n": 10, "prompt_ms": 50.0,
+                            "prompt_per_second": 1800.0, "predicted_n": 2,
+                            "predicted_ms": 40.0, "predicted_per_second": 50.0}})),
+            _ => Response::status(404),
+        })
+        .await;
+        let settings = crate::config::Settings::default();
+        let req = request(&base, &settings, &Default::default());
+        assert_eq!(req.provider.kind, crate::config::ProviderKind::Generic);
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run(req, http, mcp, tx, || {}).await;
+
+        let mut stats = None;
+        while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
+            if let ChatEvent::AssistantFinal(m) = event {
+                stats = m.stats;
+            }
+        }
+        let stats = stats.unwrap();
+        assert_eq!(stats.context_use(), Some((102, 4096)));
     }
 
     #[tokio::test]
