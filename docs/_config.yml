@@ -11,6 +11,18 @@ search_enabled: true
 aux_links:
   "View on GitHub": "https://github.com/d3v0ps-cloud/CleanRSTAI"
 
+# Styles for {: .note }, {: .tip } and {: .warning } blocks
+callouts:
+  note:
+    title: Note
+    color: blue
+  tip:
+    title: Tip
+    color: green
+  warning:
+    title: Warning
+    color: red
+
 # Keep local preview files out of the built site
 exclude:
   - Gemfile

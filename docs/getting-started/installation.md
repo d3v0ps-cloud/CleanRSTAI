@@ -5,23 +5,82 @@ nav_order: 1
 ---
 
 # Installation
+{: .no_toc }
 
-## From a release
+1. TOC
+{:toc}
 
-Download the file for your platform from the
-[latest release](https://github.com/d3v0ps-cloud/CleanRSTAI/releases/latest):
+## Download a release
 
-- **macOS**: `CleanRSTAI-macos-universal.zip` (or the `.dmg`), then move `CleanRSTAI.app`
-  to Applications.
-- **Linux**: `CleanRSTAI-linux-<arch>.tar.gz`, which holds the `cleanrstai` binary.
+Every release on the [releases page](https://github.com/d3v0ps-cloud/CleanRSTAI/releases/latest)
+has these files:
 
-`SHA256SUMS.txt` lists the checksums of every file.
+| File | Platform |
+|---|---|
+| `CleanRSTAI-macos-universal.dmg` | macOS disk image, Apple Silicon and Intel |
+| `CleanRSTAI-macos-universal.zip` | the same `.app`, zipped |
+| `CleanRSTAI-linux-x86_64.tar.gz` | Linux x86_64 |
+| `CleanRSTAI-linux-aarch64.tar.gz` | Linux ARM64 |
+| `SHA256SUMS.txt` | checksums of every file |
 
-## From source
-
-Requires Rust 1.95 or newer (`rustup update`).
+To check a download against the checksums:
 
 ```sh
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # macOS
+sha256sum -c SHA256SUMS.txt --ignore-missing       # Linux
+```
+
+## macOS
+
+1. Open the `.dmg` (or unzip the `.zip`).
+2. Drag **CleanRSTAI.app** to **Applications**.
+3. Open it from Applications or Launchpad.
+
+{: .note }
+> If a release isn't signed and notarized, macOS blocks it on first launch. Right-click the
+> app and choose **Open**, or run:
+>
+> ```sh
+> xattr -dr com.apple.quarantine /Applications/CleanRSTAI.app
+> ```
+
+GUI apps on macOS start with a minimal `PATH`. CleanRSTAI imports the `PATH` from your login
+shell at startup, so MCP servers started with `npx`, `uvx`, `docker` or Homebrew tools are
+found the same way your terminal finds them.
+
+## Linux
+
+The tarball holds a single `cleanrstai` binary. Put it somewhere on your `PATH` that your
+user can write to, such as `~/.local/bin`, so the [in-app updater](../using/updates.html) can
+replace it later:
+
+```sh
+tar -xzf CleanRSTAI-linux-x86_64.tar.gz
+mkdir -p ~/.local/bin
+mv cleanrstai ~/.local/bin/
+cleanrstai
+```
+
+Use `CleanRSTAI-linux-aarch64.tar.gz` on ARM64. The binary is built against glibc 2.28, so it
+runs on any distribution with glibc 2.28 or newer.
+
+At runtime you need a desktop with X11 or Wayland (`libxkbcommon-x11` and a GL or Vulkan
+driver, which standard desktops already have). The keychain uses the Secret Service (GNOME
+Keyring or KWallet), and save dialogs use the desktop portal (`xdg-desktop-portal`).
+
+## Windows
+
+There is no Windows release yet. Build it from source (below); `cargo build --release`
+produces `target/release/cleanrstai.exe`, which doesn't open a console window. On Windows,
+`npx` resolves to `npx.cmd` automatically for MCP servers.
+
+## Build from source
+
+Requires Rust 1.95 or newer (`rustup update`) and a C compiler.
+
+```sh
+git clone https://github.com/d3v0ps-cloud/CleanRSTAI.git
+cd CleanRSTAI
 cargo run --release
 ```
 
@@ -32,3 +91,7 @@ cargo install cargo-bundle
 cargo bundle --release
 open target/release/bundle/osx/CleanRSTAI.app
 ```
+
+## Next step
+
+[Set up a provider and send your first message](first-chat.html).
