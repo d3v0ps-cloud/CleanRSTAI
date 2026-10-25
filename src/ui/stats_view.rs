@@ -2,10 +2,17 @@
 
 use eframe::egui;
 
-use crate::stats::{RequestStats, StatsSource, Totals, fmt_cost, fmt_ms, fmt_rate, fmt_tokens};
+use crate::stats::{
+    RequestStats, StatsSource, Totals, context_percent, fmt_context, fmt_cost, fmt_ms, fmt_rate,
+    fmt_tokens,
+};
 
-/// The compact parts of a stats readout: speeds, time-to-first-token, token counts, total
-/// time and cost, in that order. Shared by the per-response line and the live readout.
+/// From this share of the context in use, the chat's context figure turns to the warning
+/// colour: the next turns may not fit.
+const CONTEXT_WARN_PERCENT: f64 = 80.0;
+
+/// The compact parts of a stats readout: speeds, time-to-first-token, token counts, context
+/// use, total time and cost, in that order. Shared by the per-response line and the live readout.
 fn parts(s: &RequestStats) -> Vec<String> {
     let mut parts = Vec::new();
     if let Some(p) = s.prefill_tps {
@@ -34,6 +41,9 @@ fn parts(s: &RequestStats) -> Vec<String> {
             fmt_tokens(c)
         )),
         _ => {}
+    }
+    if let Some(c) = s.context_use() {
+        parts.push(format!("context {:.0}%", context_percent(c)));
     }
     parts.push(fmt_ms(s.total_ms));
     if let Some(c) = s.cost_usd {
@@ -107,19 +117,8 @@ fn details(ui: &mut egui::Ui, s: &RequestStats) {
                 };
                 row("Completion tokens", format!("{}{est}", fmt_tokens(c)));
             }
-            if let (Some(ctx), Some(p), Some(c)) =
-                (s.context_size, s.prompt_tokens, s.completion_tokens)
-            {
-                let used = p + c;
-                row(
-                    "Context used",
-                    format!(
-                        "{} / {} ({:.0}%)",
-                        fmt_tokens(used),
-                        fmt_tokens(ctx),
-                        used as f64 * 100.0 / ctx as f64
-                    ),
-                );
+            if let Some(c) = s.context_use() {
+                row("Context used", fmt_context(c));
             }
             if let Some(sl) = s.slot_usage {
                 row(
@@ -136,8 +135,9 @@ fn details(ui: &mut egui::Ui, s: &RequestStats) {
         });
 }
 
-/// Summary bar for the whole conversation.
-pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals) {
+/// Summary bar for the whole conversation. `context` is how full the context was after the
+/// chat's latest request, when the server reports it.
+pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals, context: Option<(u64, u64)>) {
     if totals.requests == 0 {
         return;
     }
@@ -160,9 +160,25 @@ pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals) {
     if let Some(c) = totals.cost_usd {
         parts.push(fmt_cost(c));
     }
-    ui.label(
-        egui::RichText::new(format!("This chat: {}", parts.join(" · ")))
-            .small()
-            .weak(),
-    );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(
+            egui::RichText::new(format!("This chat: {}", parts.join(" · ")))
+                .small()
+                .weak(),
+        );
+        if let Some(c) = context {
+            let text = egui::RichText::new(format!(" · context {}", fmt_context(c))).small();
+            let label = if context_percent(c) >= CONTEXT_WARN_PERCENT {
+                ui.label(text.color(ui.visuals().warn_fg_color))
+            } else {
+                ui.label(text.weak())
+            };
+            label.on_hover_text(
+                "Tokens in the model's context after the latest reply, out of the context size \
+                 the server reports. When it fills up, the server may drop older parts of the \
+                 chat or refuse the request; start a new chat to free it.",
+            );
+        }
+    });
 }

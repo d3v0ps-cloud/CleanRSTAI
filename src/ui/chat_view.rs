@@ -85,8 +85,15 @@ pub fn show(
                 .iter()
                 .chain(m.subagents.iter().flat_map(|s| s.stats.iter()))
         }));
+        // The chat's own latest request; subagents have contexts of their own.
+        let context = conv
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| m.stats.as_ref())
+            .and_then(crate::stats::RequestStats::context_use);
         if totals.requests > 0 {
-            centered(ui, |ui| super::stats_view::totals_bar(ui, &totals));
+            centered(ui, |ui| super::stats_view::totals_bar(ui, &totals, context));
         }
     }
 

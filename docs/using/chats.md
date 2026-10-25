@@ -45,7 +45,22 @@ can keep it expanded, or expanded only while the model is thinking.
 Under every reply you see prefill and decode speed, prompt time and tokens in and out, plus a
 running total for the chat. llama.cpp's own `timings` are used when the server reports them,
 and the cost when OpenRouter or a LiteLLM proxy reports it; otherwise speeds are measured from
-the stream. Turn the stats off in [General](../settings/general.html#stats).
+the stream. Hover over the line for the full breakdown. Turn the stats off in
+[General](../settings/general.html#stats).
+
+#### Context use
+
+With a llama.cpp server, including one running several models in router mode, the stats
+also show how full the model's context is:
+
+- under each reply, as a percentage, such as *context 38%*;
+- in the chat's summary at the top, as tokens used out of the context size, such as
+  *context 12.4k / 32.8k (38%)*. It turns to the warning colour from 80%.
+
+The figure counts the prompt, the tokens reused from the server's cache and the reply. When
+the context is full, the server may drop older parts of the chat or refuse the request, so
+start a new chat before it gets there. Other server types don't report their context size,
+so no figure is shown for them.
 
 ## Editing and retrying
 

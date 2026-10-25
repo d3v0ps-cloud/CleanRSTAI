@@ -47,6 +47,39 @@ source in **v0.7.5**. Unticked items are still open.
 - [ ] Dedicated types for Ollama, LM Studio, vLLM and OpenRouter (OpenRouter's `usage.cost`
   is already read)
 
+More of what the servers report (from the llama.cpp server README and the LiteLLM proxy
+source):
+
+- [x] **llama.cpp server**: context use (`prompt_n + cache_n + predicted_n` against `n_ctx`)
+  under each reply and in the chat's totals, in the warning colour from 80%
+- [ ] **llama.cpp server**: model details from `/props` and `/v1/models`: the loaded file
+  (`model_path`), size, parameter count, trained context (`n_ctx_train`), vision support
+  (`modalities`) and server build (`build_info`)
+- [ ] **llama.cpp server**: prompt processing progress while a long prompt is read
+  (`return_progress` → `prompt_progress`)
+- [ ] **llama.cpp server**: "Model loading" from `/health` (503) and "Model asleep" from
+  `/props` `is_sleeping`
+- [ ] **llama.cpp server**: live speeds while streaming (`timings_per_token`)
+- [ ] **llama.cpp server**: router mode: load state of each model in the model picker
+  (`/models` `status`), with load and unload (`/models/load`, `/models/unload`)
+- [ ] **llama.cpp server**: optional `/metrics` readout (queued requests, speculative
+  decoding acceptance) when the server runs with `--metrics`
+- [ ] **LiteLLM proxy**: the deployment that served the request (`x-litellm-model-name`,
+  `-model-id`, `-model-api-base`), and retries or fallbacks
+  (`x-litellm-attempted-retries`, `-attempted-fallbacks`)
+- [ ] **LiteLLM proxy**: key spend against its budget (`x-litellm-key-spend`,
+  `-key-max-budget`, or `/key/info` before the first request) and remaining rate limits
+  (`x-litellm-key-remaining-requests-*`, `x-ratelimit-*`)
+- [ ] **LiteLLM proxy**: cost breakdown (input, output, cache read and write, reasoning) from
+  the `x-litellm-response-cost-*` headers, on non-streamed responses
+- [ ] **LiteLLM proxy**: check the cost of streamed replies: the `x-litellm-response-cost`
+  header can be missing when streaming, so fall back to `usage.cost` or another source
+- [ ] **LiteLLM proxy**: context size and capabilities from `/model/info`
+  (`max_input_tokens`, `supports_vision`, `supports_function_calling`, …), for context use and
+  the model picker
+- [ ] **LiteLLM proxy**: cache hits (`x-litellm-cache-key`) and LiteLLM's own overhead
+  (`x-litellm-overhead-duration-ms`)
+
 ## 4. Import settings and conversations
 
 - [x] Import a settings export, choosing to merge with or replace the current setup
