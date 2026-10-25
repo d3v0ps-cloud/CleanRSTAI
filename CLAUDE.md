@@ -157,8 +157,8 @@ which `ChatApp::server_status` refreshes in the background as an `AppEvent::Serv
   upgrading `egui_commonmark`.
 - Artifacts (`artifacts.rs`) are closed top-level fenced blocks in replies: html, svg, mermaid,
   markdown at any length, other code from 10 lines. `markdown::segments` swaps them by byte
-  range for collapsed previews (`artifact_panel::card`: first lines or a thumbnail), so both
-  parse with `artifacts::markdown_options`. `ui/artifact_panel.rs` is the right-hand panel; `ChatApp`
+  range for one-line links (`artifact_panel::card`, expandable inline), so both parse with
+  `artifacts::markdown_options`. `ui/artifact_panel.rs` is the right-hand panel; `ChatApp`
   keeps the open `ArtifactView` and the chat's artifact list, re-found when messages change.
   HTML isn't rendered in the app: "Open in browser" writes a temp file.
 - Widget ids inside a reply are scoped by message index (`push_id`), and tool results are

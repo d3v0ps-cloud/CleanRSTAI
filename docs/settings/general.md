@@ -78,8 +78,8 @@ contents in the image address.
 ## Artifacts
 
 **Open web pages, drawings and long code in a side panel** (default on). When a reply makes an
-[artifact](../using/chats.html#artifacts), the panel opens beside the chat. When off, click its
-preview in the reply to open it.
+[artifact](../using/chats.html#artifacts), the panel opens beside the chat. When off, click the
+panel icon by its link in the reply to open it.
 
 ## Tool calls
 

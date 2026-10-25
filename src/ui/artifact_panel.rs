@@ -84,129 +84,90 @@ fn kind_label(a: &Artifact) -> String {
     format!("{what} · {lines} line{}", if lines == 1 { "" } else { "s" })
 }
 
-/// Lines of source a reply's artifact card shows.
-const PREVIEW_LINES: usize = 6;
-/// Characters per line in that preview; the card is narrower than the panel.
-const PREVIEW_COLUMNS: usize = 100;
-/// Height of a drawing's thumbnail in the card.
-const THUMBNAIL_HEIGHT: f32 = 140.0;
+/// Most a drawing grows to when expanded in the chat.
+const INLINE_DRAWING_HEIGHT: f32 = 600.0;
 
-/// A collapsed preview in a reply that stands in for an artifact: its name, then the first
-/// lines of its source or a thumbnail of the drawing. Clicking it sends `open`, which shows
-/// the artifact in full in the panel.
+/// An artifact in a reply: one link-style line (its name, kind and size). The artifact itself
+/// is shown in the panel; clicking the link expands it here in the chat too, and again folds
+/// it away. The panel icon at the end sends `open`.
+#[allow(clippy::too_many_arguments)]
 pub fn card(
     ui: &mut egui::Ui,
+    md_cache: &mut CommonMarkCache,
     drawings: &mut DrawingCache,
     a: &Artifact,
     is_open: bool,
+    remote_images: bool,
     actions: &mut Vec<Action>,
     open: Action,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
-    let frame = egui::Frame::new()
-        .fill(if is_open { p.selected } else { p.raised })
-        .stroke(egui::Stroke::new(
-            1.0,
-            if is_open { p.signal } else { p.outline },
-        ))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(kind_icon(a.kind)).size(22.0).color(p.signal));
-                ui.vertical(|ui| {
-                    ui.add(egui::Label::new(RichText::new(&a.title).strong()).truncate());
-                    ui.label(RichText::new(kind_label(a)).small().color(p.pencil));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let hint = if is_open { "In the panel" } else { "Open" };
-                    ui.label(RichText::new(hint).small().color(p.pencil));
-                });
-            });
-            ui.add_space(6.0);
-            match a.kind {
-                Kind::Svg => markdown::drawing_preview(
-                    ui,
-                    drawings,
-                    DrawingKind::Svg,
-                    &a.source,
-                    THUMBNAIL_HEIGHT,
-                ),
-                Kind::Mermaid => markdown::drawing_preview(
-                    ui,
-                    drawings,
-                    DrawingKind::Mermaid,
-                    &a.source,
-                    THUMBNAIL_HEIGHT,
-                ),
-                _ => source_peek(ui, a),
-            }
-        });
-    let resp = ui
-        .interact(
-            frame.response.rect,
-            ui.make_persistent_id(("artifact", a.message, a.index)),
-            egui::Sense::click(),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if is_open {
-            "Shown in the panel"
+    let expanded_id = ui.make_persistent_id(("artifact-expanded", a.message, a.index));
+    let expanded = ui.data_mut(|d| *d.get_persisted_mut_or_default::<bool>(expanded_id));
+    let link = ui.visuals().hyperlink_color;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let caret = if expanded {
+            icon::CARET_DOWN
         } else {
-            "Open in the panel"
-        });
-    let title = a.title.clone();
-    resp.widget_info(move || {
-        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Open {title}"))
+            icon::CARET_RIGHT
+        };
+        let text = format!("{caret}  {}  {}", kind_icon(a.kind), a.title);
+        let resp = ui
+            .add(egui::Link::new(RichText::new(text).color(link)))
+            .on_hover_text(if expanded {
+                "Fold it away"
+            } else {
+                "Show it here in the chat"
+            });
+        if resp.clicked() {
+            ui.data_mut(|d| d.insert_persisted(expanded_id, !expanded));
+        }
+        ui.label(RichText::new(kind_label(a)).small().color(p.pencil));
+        if is_open {
+            ui.label(RichText::new("· in the panel").small().color(p.pencil));
+        } else if ui
+            .add(
+                egui::Button::new(RichText::new(icon::SIDEBAR).size(14.0).color(p.pencil))
+                    .frame(false),
+            )
+            .on_hover_text("Show in the panel")
+            .clicked()
+        {
+            actions.push(open);
+        }
     });
-    if resp.clicked() {
-        actions.push(open);
+    if expanded {
+        let id = ui.make_persistent_id(("artifact-inline", a.message, a.index));
+        ui.add_space(4.0);
+        match a.kind {
+            Kind::Svg => markdown::drawing_preview(
+                ui,
+                drawings,
+                DrawingKind::Svg,
+                &a.source,
+                INLINE_DRAWING_HEIGHT,
+            ),
+            Kind::Mermaid => markdown::drawing_preview(
+                ui,
+                drawings,
+                DrawingKind::Mermaid,
+                &a.source,
+                INLINE_DRAWING_HEIGHT,
+            ),
+            Kind::Markdown => markdown::show(
+                ui,
+                md_cache,
+                drawings,
+                id,
+                &a.source,
+                remote_images,
+                None,
+                actions,
+            ),
+            Kind::Html | Kind::Code => markdown::code_view(ui, md_cache, id, &a.lang, &a.source),
+        }
     }
-}
-
-/// The first lines of an artifact's source, muted, with how many more there are.
-fn source_peek(ui: &mut egui::Ui, a: &Artifact) {
-    let p = theme::palette(ui.visuals().dark_mode);
-    let total = a.lines();
-    let peek: Vec<String> = a
-        .source
-        .lines()
-        .take(PREVIEW_LINES)
-        .map(|l| {
-            let mut line: String = l.chars().take(PREVIEW_COLUMNS).collect();
-            if l.chars().count() > PREVIEW_COLUMNS {
-                line.push('…');
-            }
-            line
-        })
-        .collect();
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for line in &peek {
-                // One label per line, so long lines are cut rather than wrapped.
-                ui.add(
-                    egui::Label::new(RichText::new(line).monospace().size(12.0).color(p.pencil))
-                        .selectable(false)
-                        .truncate(),
-                );
-            }
-            if total > PREVIEW_LINES {
-                let more = total - PREVIEW_LINES;
-                ui.label(
-                    RichText::new(format!(
-                        "… {more} more line{}",
-                        if more == 1 { "" } else { "s" }
-                    ))
-                    .small()
-                    .color(p.pencil),
-                );
-            }
-        });
 }
 
 /// The panel's contents. Asks to close the panel when the chat has no artifacts left.
