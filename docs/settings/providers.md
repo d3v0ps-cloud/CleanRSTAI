@@ -72,7 +72,7 @@ Decides which extra statistics are read:
 | Type | What you get |
 |---|---|
 | **Generic OpenAI-compatible** | Token usage from the API; speeds measured by the app. |
-| **llama.cpp server** | Prefill/decode speeds, context size and slot usage reported by llama.cpp. |
+| **llama.cpp server** | Prefill/decode speeds, context size and slot usage reported by llama.cpp, and how full the context is ([context use](../using/chats.html#context-use)). |
 | **LiteLLM proxy** | The model that served each request and its cost. |
 
 **Detect** probes the server and picks the type for you.

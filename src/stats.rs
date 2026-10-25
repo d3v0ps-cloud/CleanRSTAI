@@ -42,8 +42,23 @@ pub struct RequestStats {
     pub cost_usd: Option<f64>,
     /// Context window size, when the server exposes it (llama.cpp).
     pub context_size: Option<u64>,
+    /// Tokens in the context after this request, when the server reports the parts
+    /// (llama.cpp: `prompt_n + cache_n + predicted_n`).
+    pub context_used: Option<u64>,
     /// Slot occupancy, when the server exposes it (llama.cpp).
     pub slot_usage: Option<SlotUsage>,
+}
+
+impl RequestStats {
+    /// How full the context is after this request, as (tokens used, context size). Only when
+    /// the server reports its context size.
+    pub fn context_use(&self) -> Option<(u64, u64)> {
+        let size = self.context_size.filter(|&n| n > 0)?;
+        let used = self
+            .context_used
+            .or_else(|| Some(self.prompt_tokens? + self.completion_tokens.unwrap_or(0)))?;
+        Some((used, size))
+    }
 }
 
 /// Timestamps and counters collected while a response streams in.
@@ -222,6 +237,9 @@ impl Collector {
             if let Some(ms) = st.prompt_ms {
                 s.ttft_ms = Some(ms);
             }
+            if let (Some(p), Some(n)) = (st.prompt_n, st.predicted_n) {
+                s.context_used = Some(p + st.cache_n.unwrap_or(0) + n);
+            }
             return s;
         }
 
@@ -293,6 +311,21 @@ pub fn fmt_tokens(n: u64) -> String {
         10_000..=999_999 => format!("{:.1}k", n as f64 / 1000.0),
         _ => format!("{:.2}M", n as f64 / 1_000_000.0),
     }
+}
+
+/// Share of the context in use, as a whole percentage.
+pub fn context_percent((used, size): (u64, u64)) -> f64 {
+    used as f64 * 100.0 / size as f64
+}
+
+/// "12.4k / 32.8k (38%)"
+pub fn fmt_context(context: (u64, u64)) -> String {
+    format!(
+        "{} / {} ({:.0}%)",
+        fmt_tokens(context.0),
+        fmt_tokens(context.1),
+        context_percent(context)
+    )
 }
 
 pub fn fmt_rate(tps: f64) -> String {
@@ -382,6 +415,23 @@ mod tests {
         assert_eq!(s.cached_tokens, Some(100));
         assert_eq!(s.completion_tokens, Some(64));
         assert_eq!(s.ttft_ms, Some(450.0));
+        assert_eq!(s.context_used, Some(1064));
+    }
+
+    #[test]
+    fn context_use() {
+        let mut s = RequestStats {
+            prompt_tokens: Some(3000),
+            completion_tokens: Some(200),
+            ..Default::default()
+        };
+        assert_eq!(s.context_use(), None, "no context size, no context use");
+        s.context_size = Some(8192);
+        assert_eq!(s.context_use(), Some((3200, 8192)));
+        s.context_used = Some(3500);
+        assert_eq!(s.context_use(), Some((3500, 8192)), "server's figure wins");
+        assert_eq!(fmt_context((3500, 8192)), "3,500 / 8,192 (43%)");
+        assert_eq!(fmt_context((12_400, 32_768)), "12.4k / 32.8k (38%)");
     }
 
     #[test]
