@@ -45,7 +45,11 @@ can keep it expanded, or expanded only while the model is thinking.
 Under every reply you see prefill and decode speed, prompt time and tokens in and out, plus a
 running total for the chat. llama.cpp's own `timings` are used when the server reports them,
 and the cost when OpenRouter or a LiteLLM proxy reports it; otherwise speeds are measured from
-the stream. Hover over the line for the full breakdown. Turn the stats off in
+the stream. Hover over the line for the full breakdown.
+
+A LiteLLM proxy doesn't report the cost of streamed replies, so the app estimates it from
+the per-token prices the proxy lists for the model. An estimated cost shows with a "~", such
+as *~$0.0123*, and so does the chat's total when it includes one. Turn the stats off in
 [General](../settings/general.html#stats).
 
 #### Prompt progress

@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::stats::{
     PromptProgress, RequestStats, StatsSource, Totals, context_percent, fmt_bytes, fmt_context,
-    fmt_cost, fmt_count, fmt_ms, fmt_rate, fmt_tokens,
+    fmt_cost, fmt_cost_estimated, fmt_count, fmt_ms, fmt_rate, fmt_tokens,
 };
 
 /// From this share of the context in use, the chat's context figure turns to the warning
@@ -47,7 +47,7 @@ fn parts(s: &RequestStats) -> Vec<String> {
     }
     parts.push(fmt_ms(s.total_ms));
     if let Some(c) = s.cost_usd {
-        parts.push(fmt_cost(c));
+        parts.push(fmt_cost_estimated(c, s.cost_estimated));
     }
     parts
 }
@@ -165,9 +165,19 @@ fn details(ui: &mut egui::Ui, s: &RequestStats) {
                 row("Served by", m.clone());
             }
             if let Some(c) = s.cost_usd {
-                row("Cost", fmt_cost(c));
+                if s.cost_estimated {
+                    row("Cost (estimated)", fmt_cost_estimated(c, true));
+                } else {
+                    row("Cost", fmt_cost(c));
+                }
             }
         });
+    if s.cost_estimated {
+        ui.weak(
+            "Cost estimated from the per-token prices the LiteLLM proxy lists: it doesn't \
+             report the cost of streamed replies.",
+        );
+    }
 }
 
 /// Summary bar for the whole conversation. `context` is how full the context was after the
@@ -193,7 +203,7 @@ pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals, context: Option<(u64, u64)
         parts.push(format!("avg decode {}", fmt_rate(d)));
     }
     if let Some(c) = totals.cost_usd {
-        parts.push(fmt_cost(c));
+        parts.push(fmt_cost_estimated(c, totals.cost_estimated));
     }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;

@@ -149,6 +149,11 @@ pub async fn run(
         } else {
             (None, None)
         };
+    let prices = if req.provider.kind == crate::config::ProviderKind::LiteLlm {
+        llm::litellm_model_prices(&http, &req.provider).await
+    } else {
+        None
+    };
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
@@ -208,6 +213,10 @@ pub async fn run(
         }
         stats.context_size = context_size;
         stats.slot_usage = slot_usage;
+        // LiteLLM reports no cost for streamed replies: estimate it from its prices.
+        if let Some(pr) = prices {
+            pr.fill_in(&mut stats);
+        }
         msg.stats = Some(stats);
         let calls = msg.tool_calls.clone();
         history.push(msg.clone());
@@ -543,6 +552,39 @@ mod tests {
         }
         let stats = stats.unwrap();
         assert_eq!(stats.context_use(), Some((102, 4096)));
+    }
+
+    #[tokio::test]
+    async fn litellm_reply_without_a_cost_gets_an_estimate() {
+        let (base, _) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/model/info") => Response::json(serde_json::json!({"data": [
+                {"model_name": "mock", "model_info": {
+                    "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}]})),
+            ("POST", "/v1/chat/completions") => Response::json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500}})),
+            _ => Response::status(404),
+        })
+        .await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        req.provider.kind = crate::config::ProviderKind::LiteLlm;
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run(req, http, mcp, tx, || {}).await;
+
+        let mut stats = None;
+        while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
+            if let ChatEvent::AssistantFinal(m) = event {
+                stats = m.stats;
+            }
+        }
+        let stats = stats.unwrap();
+        assert!(stats.cost_estimated);
+        // 1,000 × $1/M + 500 × $2/M
+        assert!((stats.cost_usd.unwrap() - 0.002).abs() < 1e-12);
     }
 
     #[tokio::test]

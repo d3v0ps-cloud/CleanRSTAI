@@ -87,6 +87,9 @@ pub struct RequestStats {
     /// The model that actually served the request, if it differs from the one requested.
     pub served_model: Option<String>,
     pub cost_usd: Option<f64>,
+    /// `cost_usd` was worked out from the model's listed prices, not reported for this
+    /// request (LiteLLM leaves the cost out of streamed replies).
+    pub cost_estimated: bool,
     /// Context window size, when the server exposes it (llama.cpp).
     pub context_size: Option<u64>,
     /// Tokens in the context after this request, when the server reports the parts
@@ -109,6 +112,40 @@ impl RequestStats {
             .context_used
             .or_else(|| Some(self.prompt_tokens? + self.completion_tokens.unwrap_or(0)))?;
         Some((used, size))
+    }
+}
+
+/// A model's prices per token, as a LiteLLM proxy lists them in `/model/info`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModelPrices {
+    pub input: f64,
+    pub output: f64,
+    /// Prompt tokens read from the provider's cache, when they cost less than the rest.
+    pub cache_read: Option<f64>,
+}
+
+impl ModelPrices {
+    /// What a request with these token counts costs at these prices. None without a prompt
+    /// token count to go by.
+    pub fn cost(&self, s: &RequestStats) -> Option<f64> {
+        let prompt = s.prompt_tokens?;
+        let cached = s.cached_tokens.unwrap_or(0).min(prompt);
+        let completion = s.completion_tokens.unwrap_or(0);
+        Some(
+            (prompt - cached) as f64 * self.input
+                + cached as f64 * self.cache_read.unwrap_or(self.input)
+                + completion as f64 * self.output,
+        )
+    }
+
+    /// Give a request that came back without a cost an estimated one.
+    pub fn fill_in(&self, s: &mut RequestStats) {
+        if s.cost_usd.is_none()
+            && let Some(cost) = self.cost(s)
+        {
+            s.cost_usd = Some(cost);
+            s.cost_estimated = true;
+        }
     }
 }
 
@@ -330,6 +367,8 @@ pub struct Totals {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cost_usd: Option<f64>,
+    /// Some of the costs summed in `cost_usd` are estimates.
+    pub cost_estimated: bool,
     pub total_ms: f64,
     pub avg_decode_tps: Option<f64>,
 }
@@ -345,6 +384,7 @@ impl Totals {
             t.total_ms += s.total_ms;
             if let Some(c) = s.cost_usd {
                 *t.cost_usd.get_or_insert(0.0) += c;
+                t.cost_estimated |= s.cost_estimated;
             }
             if let Some(d) = s.decode_tps {
                 decode_sum += d;
@@ -428,6 +468,11 @@ pub fn fmt_bytes(n: u64) -> String {
     } else {
         format!("{:.0} MB", n as f64 / 1e6)
     }
+}
+
+/// A cost, marked "~" when it is an estimate.
+pub fn fmt_cost_estimated(usd: f64, estimated: bool) -> String {
+    format!("{}{}", if estimated { "~" } else { "" }, fmt_cost(usd))
 }
 
 #[cfg(test)]
@@ -523,6 +568,49 @@ mod tests {
         let mut c = Collector::default();
         c.observe(&v);
         assert_eq!(c.finish("m").prompt_progress, None);
+    }
+
+    #[test]
+    fn estimated_cost_from_prices() {
+        let prices = ModelPrices {
+            input: 0.000003,
+            output: 0.000015,
+            cache_read: Some(0.0000003),
+        };
+        let mut s = RequestStats {
+            prompt_tokens: Some(10_000),
+            cached_tokens: Some(4_000),
+            completion_tokens: Some(1_000),
+            ..Default::default()
+        };
+        // 6,000 uncached × $3/M + 4,000 cached × $0.30/M + 1,000 out × $15/M
+        let want = 0.018 + 0.0012 + 0.015;
+        assert!((prices.cost(&s).unwrap() - want).abs() < 1e-12);
+        prices.fill_in(&mut s);
+        assert!(s.cost_estimated);
+        assert_eq!(fmt_cost_estimated(s.cost_usd.unwrap(), true), "~$0.03");
+
+        // A reported cost is never replaced.
+        let mut reported = RequestStats {
+            prompt_tokens: Some(10),
+            cost_usd: Some(0.5),
+            ..Default::default()
+        };
+        prices.fill_in(&mut reported);
+        assert_eq!(
+            (reported.cost_usd, reported.cost_estimated),
+            (Some(0.5), false)
+        );
+        // No prompt count, no estimate.
+        let mut empty = RequestStats::default();
+        prices.fill_in(&mut empty);
+        assert_eq!(empty.cost_usd, None);
+
+        let t = Totals::of([&s, &reported]);
+        assert!(
+            t.cost_estimated,
+            "a sum with an estimate in it is an estimate"
+        );
     }
 
     #[test]
