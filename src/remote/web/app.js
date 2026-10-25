@@ -67,6 +67,15 @@
     retryDelay: 1000
   };
 
+  // Rendered Markdown per assistant message of the open chat, keyed by chat, index and role.
+  // An entry is reused only while its content is unchanged. Cleared when the open chat changes.
+  var MD_CACHE_MAX = 500;
+  var mdCache = new Map();
+
+  // Refetches of the open chat run at most once per CHAT_THROTTLE_MS. A trailing call is always scheduled.
+  var CHAT_THROTTLE_MS = 250;
+  var chatThrottle = { at: 0, timer: null };
+
   // ---- Small helpers --------------------------------------------------------
 
   // el("tag", {cls, text, attrs, on, data}, [children]): children are nodes or strings.
@@ -469,7 +478,8 @@
     es.onmessage = function (ev) {
       var msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
-      if (msg.type === "list") refreshState();
+      // "list" also means the browser fell behind, so the open chat is refetched as well.
+      if (msg.type === "list") { refreshState(); refreshChat(); }
       else if (msg.type === "chat" && msg.id === state.openId) refreshChat();
     };
     es.onerror = function () {
@@ -510,20 +520,41 @@
     }
     state.openId = id;
     state.chat = null;
+    mdCache.clear();
     if (state.optimistic && state.optimistic.chat !== id) state.optimistic = null;
     setHash(id, opts.replace);
     closeMenus();
     renderChat();
     renderSidebar();
-    if (id) refreshChat();
+    if (id) {
+      clearTimeout(chatThrottle.timer);
+      chatThrottle.timer = null;
+      fetchChatNow();
+    }
     closeSidebarOnPhone();
     if (!isPhone()) dom.input.focus();
   }
 
+  // Asks for the open chat, at most once per CHAT_THROTTLE_MS. Calls inside the window
+  // are answered by one trailing fetch, so the final state is always requested.
+  function refreshChat() {
+    if (!state.openId) return;
+    var wait = chatThrottle.at + CHAT_THROTTLE_MS - Date.now();
+    if (wait <= 0) {
+      fetchChatNow();
+    } else if (!chatThrottle.timer) {
+      chatThrottle.timer = setTimeout(function () {
+        chatThrottle.timer = null;
+        refreshChat();
+      }, wait);
+    }
+  }
+
   // Fetches the open chat. Responses for a chat that is no longer open are dropped.
-  var refreshChat = coalesce(async function () {
+  var fetchChatNow = coalesce(async function () {
     var id = state.openId;
     if (!id) return;
+    chatThrottle.at = Date.now();
     var chat = await api("GET", "/api/chats/" + id);
     if (state.openId !== id) return;
     var opt = state.optimistic;
@@ -622,7 +653,7 @@
     if (m.reasoning) kids.push(reasoningNode(m.reasoning, i));
     if (m.content) {
       var body = el("div");
-      body.innerHTML = CleanMarkdown.render(m.content);
+      body.innerHTML = renderMarkdownCached(chat.id, i, m.role, m.content);
       kids.push(body);
     }
     var results = [];
@@ -652,6 +683,17 @@
       ]));
     }
     return el("div", { cls: "msg assistant" + (m.cancelled ? " cancelled" : "") }, kids);
+  }
+
+  // CleanMarkdown output for one message, reused while its content is unchanged.
+  function renderMarkdownCached(chatId, index, role, content) {
+    var key = chatId + "\u0000" + index + "\u0000" + role;
+    var hit = mdCache.get(key);
+    if (hit && hit.content === content) return hit.html;
+    var html = CleanMarkdown.render(content);
+    if (mdCache.size >= MD_CACHE_MAX) mdCache.clear();
+    mdCache.set(key, { content: content, html: html });
+    return html;
   }
 
   function makeDetails(cls, key) {

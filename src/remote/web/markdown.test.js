@@ -194,6 +194,30 @@ t("unbalanced emphasis stays literal", () => {
   assert.strictEqual(M.render("**a"), "<p>**a</p>");
 });
 
+// ---- Performance: unmatched delimiters must not cost O(n^2) ----
+// Each pathological 40-80 KB input renders in well under 300 ms (about 10-30 ms when fixed;
+// the old scans took 1-8 s).
+function renderMs(text) {
+  const start = process.hrtime.bigint();
+  M.render(text);
+  return Number(process.hrtime.bigint() - start) / 1e6;
+}
+[
+  ["unmatched * openers", "*x ".repeat(20000)],
+  ["unmatched _ openers", "_a ".repeat(20000)],
+  ["unmatched [ openers", "[x".repeat(20000)],
+  ["unmatched backtick openers", "`a".repeat(20000)],
+  ["unmatched ~~ openers", "~~a".repeat(20000)],
+  ["unmatched ** openers", "**a ".repeat(20000)],
+  ["many [ sharing one ] and an unclosed (", "[".repeat(20000) + "a](" + "a".repeat(20000)],
+  ["autolink with many trailing )", "https://x" + ")".repeat(20000)],
+].forEach(([name, text]) => {
+  t("performance: " + name + " renders in < 300 ms", () => {
+    const ms = renderMs(text);
+    assert(ms < 300, `took ${ms.toFixed(1)} ms`);
+  });
+});
+
 let failed = 0;
 for (const [name, fn] of cases) {
   try {

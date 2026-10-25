@@ -25,7 +25,8 @@ var CleanMarkdown = (function () {
   var LANG = /^[A-Za-z0-9_+-]+$/;
 
   // Inline patterns, matched with sticky flags at the current index
-  var LINK = /!?\[([^\]\n]*)\]\(\s*([^()\s]*)\s*\)/y;
+  var LINK_TAIL = /\(\s*([^()\s]*)\s*\)/y;   // the "(url)" part after a "]"
+  var BRACKET_STOP = /[\]\n]/g;                 // ends a link label
   var AUTOLINK = /https?:\/\/[^\s<>"'`\[\]]+/iy;
   var SAFE_URL = /^(https?:\/\/|mailto:)/i;
 
@@ -43,6 +44,9 @@ var CleanMarkdown = (function () {
     var buf = "";            // pending plain text, escaped when flushed
     var i = 0;
     var m;
+    // Scan results that are reused for later openers, so unmatched openers
+    // cost O(1) each instead of a rescan to the end of the text.
+    var memo = { noCloser: {}, noCode: {}, stopFrom: -1, stopAt: -1, tails: {} };
 
     function flush() { out += escapeHtml(buf); buf = ""; }
 
@@ -60,7 +64,7 @@ var CleanMarkdown = (function () {
       if (ch === "`") {
         var n = 0;
         while (raw.charAt(i + n) === "`") n++;
-        var close = findCodeClose(raw, i + n, n);
+        var close = findCodeClose(raw, i + n, n, memo);
         if (close === -1) {
           buf += raw.substr(i, n);
           i += n;
@@ -76,21 +80,19 @@ var CleanMarkdown = (function () {
 
       // Links and images (images become links carrying their alt text)
       if (ch === "[" || (ch === "!" && raw.charAt(i + 1) === "[")) {
-        LINK.lastIndex = i;
-        m = LINK.exec(raw);
+        m = linkAt(raw, i, memo);
         if (m) {
-          if (!SAFE_URL.test(m[2])) {          // unsafe scheme: plain text
-            buf += m[0];
-            i += m[0].length;
+          if (!SAFE_URL.test(m.url)) {         // unsafe scheme: plain text
+            buf += raw.substr(i, m.len);
+            i += m.len;
             continue;
           }
           flush();
-          var isImage = m[0].charAt(0) === "!";
-          var label = m[1] || m[2];
-          var text = isImage || inLink ? escapeHtml(label) : inline(label, true, depth + 1);
-          out += '<a href="' + escapeHtml(m[2]) +
+          var label = m.label || m.url;
+          var text = m.image || inLink ? escapeHtml(label) : inline(label, true, depth + 1);
+          out += '<a href="' + escapeHtml(m.url) +
             '" target="_blank" rel="noopener noreferrer">' + text + "</a>";
-          i += m[0].length;
+          i += m.len;
           continue;
         }
       }
@@ -118,7 +120,7 @@ var CleanMarkdown = (function () {
           continue;
         }
         if (openerOk(raw, i, d)) {
-          var end = findCloser(raw, i + d.length, d);
+          var end = findCloser(raw, i + d.length, d, memo);
           if (end !== -1) {
             flush();
             var tag = ch === "~" ? "del" : d.length === 2 ? "strong" : "em";
@@ -140,8 +142,10 @@ var CleanMarkdown = (function () {
     return out;
   }
 
-  // Closing backtick run of exactly n backticks at or after `from`, or -1
-  function findCodeClose(raw, from, n) {
+  // Closing backtick run of exactly n backticks at or after `from`, or -1.
+  // A search that fails from `from` also fails from any later position.
+  function findCodeClose(raw, from, n, memo) {
+    if (memo.noCode[n] !== undefined && from >= memo.noCode[n]) return -1;
     var p = raw.indexOf("`", from);
     while (p !== -1) {
       var q = p;
@@ -149,7 +153,44 @@ var CleanMarkdown = (function () {
       if (q - p === n) return p;
       p = raw.indexOf("`", q);
     }
+    memo.noCode[n] = memo.noCode[n] === undefined ? from : Math.min(memo.noCode[n], from);
     return -1;
+  }
+
+  // Index of the next "]" or newline at or after `from` (or raw.length).
+  // Valid for any position up to the cached stop, since nothing stops in between.
+  function nextBracketStop(raw, from, memo) {
+    if (from >= memo.stopFrom && from <= memo.stopAt) return memo.stopAt;
+    BRACKET_STOP.lastIndex = from;
+    var m = BRACKET_STOP.exec(raw);
+    memo.stopFrom = from;
+    memo.stopAt = m ? m.index : raw.length;
+    return memo.stopAt;
+  }
+
+  // Link or image starting at i (a "[", or "!" before "["), or null.
+  // Label: no "]" or newline. Destination: "(" ws url ws ")".
+  function linkAt(raw, i, memo) {
+    var image = raw.charAt(i) === "!";
+    var open = image ? i + 1 : i;
+    var stop = nextBracketStop(raw, open + 1, memo);
+    if (raw.charAt(stop) !== "]") return null;
+    var tail = linkTail(raw, stop, memo);
+    if (!tail) return null;
+    return { len: tail.end - i, url: tail.url, label: raw.slice(open + 1, stop), image: image };
+  }
+
+  // The "(url)" after the "]" at `stop`. Memoized, since several openers can share one "]".
+  function linkTail(raw, stop, memo) {
+    if (stop in memo.tails) return memo.tails[stop];
+    var r = null;
+    if (raw.charAt(stop + 1) === "(") {
+      LINK_TAIL.lastIndex = stop + 1;
+      var m = LINK_TAIL.exec(raw);
+      if (m) r = { url: m[1], end: stop + 1 + m[0].length };
+    }
+    memo.tails[stop] = r;
+    return r;
   }
 
   // An opener must be followed by non-space; underscores must not follow a word character
@@ -160,8 +201,10 @@ var CleanMarkdown = (function () {
     return true;
   }
 
-  // A closer must be preceded by non-space and not be part of a longer run
-  function findCloser(raw, from, d) {
+  // A closer must be preceded by non-space and not be part of a longer run.
+  // A search that fails from `from` also fails from any later position (memoized per delimiter).
+  function findCloser(raw, from, d, memo) {
+    if (memo.noCloser[d] !== undefined && from >= memo.noCloser[d]) return -1;
     for (var j = from; j + d.length <= raw.length; j++) {
       if (raw.substr(j, d.length) !== d) continue;
       if (j === from || /\s/.test(raw.charAt(j - 1))) continue;
@@ -169,19 +212,27 @@ var CleanMarkdown = (function () {
       if (d.length === 1 && raw.charAt(j + 1) === d) continue;
       return j;
     }
+    memo.noCloser[d] = memo.noCloser[d] === undefined ? from : Math.min(memo.noCloser[d], from);
     return -1;
   }
 
   // Drop sentence punctuation (and unbalanced ")") from the end of an autolink
   function trimUrl(url) {
-    for (;;) {
-      var last = url.charAt(url.length - 1);
-      if (".,;:!?".indexOf(last) !== -1 || (last === ")" && count(url, "(") < count(url, ")"))) {
-        url = url.slice(0, -1);
+    var end = url.length;
+    var opens = count(url, "(");
+    var closes = count(url, ")");
+    while (end > 0) {
+      var last = url.charAt(end - 1);
+      if (".,;:!?".indexOf(last) !== -1) {
+        end--;
+      } else if (last === ")" && opens < closes) {
+        closes--;
+        end--;
       } else {
-        return url;
+        break;
       }
     }
+    return url.slice(0, end);
   }
 
   function renderLines(lines) {
