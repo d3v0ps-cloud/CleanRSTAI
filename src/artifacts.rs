@@ -52,6 +52,9 @@ pub struct Artifact {
     /// The code block's language, as written ("" if none).
     pub lang: String,
     pub title: String,
+    /// Whether the title was given (a file name, `title=`, `<title>`, a heading or a Mermaid
+    /// title) rather than made up from the kind ("Flowchart", "Python code").
+    pub named: bool,
     pub source: String,
     /// Where the code block is in the reply's text.
     pub range: Range<usize>,
@@ -88,9 +91,10 @@ impl Artifact {
         format!("{stem}.{}", extension(&self.lang, self.kind))
     }
 
-    /// Artifacts with the same title and kind are versions of one another.
+    /// Artifacts of the same kind with the same given title are versions of one another. A
+    /// made-up title says nothing: two flowcharts in one reply aren't versions.
     pub fn same_thing(&self, other: &Artifact) -> bool {
-        self.kind == other.kind && self.title == other.title
+        self.named && other.named && self.kind == other.kind && self.title == other.title
     }
 }
 
@@ -126,13 +130,14 @@ pub fn in_reply(message: usize, text: &str) -> Vec<Artifact> {
                     if kind == Kind::Code && source.lines().count() < MIN_CODE_LINES {
                         continue;
                     }
-                    let title = title(&info, &lang, kind, &source);
+                    let (title, named) = title(&info, &lang, kind, &source);
                     out.push(Artifact {
                         message,
                         index: out.len(),
                         kind,
                         lang,
                         title,
+                        named,
                         source,
                         range: start..range.end,
                     });
@@ -174,45 +179,106 @@ pub fn fence_is_closed(block: &str) -> bool {
     })
 }
 
-/// A name for the artifact: a file name or `title="…"` in the fence's info string, a page's
-/// `<title>`, a document's first heading, or else what it is.
-fn title(info: &str, lang: &str, kind: Kind, source: &str) -> String {
+/// A name for the artifact, and whether it was given: a file name or `title="…"` in the fence's
+/// info string, a page's or SVG's `<title>`, a document's first heading or a Mermaid diagram's
+/// title. Otherwise a name for what it is, such as "Sequence diagram" or "Python code".
+fn title(info: &str, lang: &str, kind: Kind, source: &str) -> (String, bool) {
     let rest = info.trim_start()[lang.len()..].trim();
     if let Some(t) = rest
         .split_once("title=")
         .map(|(_, t)| t.trim_matches(|c| c == '"' || c == '\''))
         .filter(|t| !t.is_empty())
     {
-        return t.to_owned();
+        return (t.to_owned(), true);
     }
     if let Some(file) = rest
         .split_whitespace()
         .find(|w| w.contains('.') && !w.contains('='))
     {
-        return file.rsplit(['/', '\\']).next().unwrap_or(file).to_owned();
+        return (
+            file.rsplit(['/', '\\']).next().unwrap_or(file).to_owned(),
+            true,
+        );
     }
     let found = match kind {
-        Kind::Html => tag_text(source, "title"),
-        Kind::Svg => tag_text(source, "title"),
+        Kind::Html | Kind::Svg => tag_text(source, "title"),
         Kind::Markdown => source
             .lines()
             .find_map(|l| l.trim().strip_prefix('#'))
             .map(|h| h.trim_start_matches('#').trim().to_owned()),
-        _ => None,
+        Kind::Mermaid => mermaid_title(source),
+        Kind::Code => None,
     };
     if let Some(t) = found.filter(|t| !t.is_empty()) {
-        return t.chars().take(80).collect();
+        return (t.chars().take(80).collect(), true);
     }
-    match kind {
+    let made_up = match kind {
         Kind::Html => "Web page".into(),
         Kind::Svg => "SVG image".into(),
-        Kind::Mermaid => "Diagram".into(),
+        Kind::Mermaid => mermaid_type(source).unwrap_or("Diagram").into(),
         Kind::Markdown => "Document".into(),
         Kind::Code => match language_name(lang) {
             Some(name) => format!("{name} code"),
             None => "Code".into(),
         },
+    };
+    (made_up, false)
+}
+
+/// A Mermaid diagram's own title: `title:` in its front matter, or a `title` line (Gantt, pie
+/// and other charts).
+fn mermaid_title(source: &str) -> Option<String> {
+    let mut lines = source.lines().map(str::trim).filter(|l| !l.is_empty());
+    if lines.clone().next() == Some("---") {
+        lines.next();
+        for l in lines.by_ref() {
+            if l == "---" {
+                break;
+            }
+            if let Some(t) = l.strip_prefix("title:") {
+                return Some(t.trim().trim_matches(|c| c == '"' || c == '\'').to_owned());
+            }
+        }
     }
+    lines
+        .filter(|l| !l.starts_with("%%"))
+        .find_map(|l| l.strip_prefix("title "))
+        .map(|t| t.trim().to_owned())
+}
+
+/// What kind of Mermaid diagram `source` is, from its first statement.
+fn mermaid_type(source: &str) -> Option<&'static str> {
+    let mut lines = source.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut first = lines.next()?;
+    if first == "---" {
+        // Skip the front matter.
+        lines.by_ref().find(|l| *l == "---")?;
+        first = lines.next()?;
+    }
+    while first.starts_with("%%") {
+        first = lines.next()?;
+    }
+    let keyword = first.split_whitespace().next()?.to_ascii_lowercase();
+    Some(match keyword.as_str() {
+        "flowchart" | "graph" => "Flowchart",
+        "sequencediagram" => "Sequence diagram",
+        "classdiagram" | "classdiagram-v2" => "Class diagram",
+        "statediagram" | "statediagram-v2" => "State diagram",
+        "erdiagram" => "ER diagram",
+        "gantt" => "Gantt chart",
+        "pie" => "Pie chart",
+        "journey" => "User journey",
+        "gitgraph" => "Git graph",
+        "mindmap" => "Mind map",
+        "timeline" => "Timeline",
+        "quadrantchart" => "Quadrant chart",
+        "xychart-beta" | "xychart" => "XY chart",
+        "sankey-beta" | "sankey" => "Sankey diagram",
+        "block-beta" | "block" => "Block diagram",
+        "requirementdiagram" => "Requirement diagram",
+        "c4context" | "c4container" | "c4component" => "C4 diagram",
+        _ => return None,
+    })
 }
 
 /// The text inside the first `<tag>…</tag>`, if any.
@@ -339,7 +405,7 @@ mod tests {
                 (Kind::Html, "My Page"),
                 (Kind::Code, "main.rs"),
                 (Kind::Svg, "SVG image"),
-                (Kind::Mermaid, "Diagram"),
+                (Kind::Mermaid, "Flowchart"),
                 (Kind::Markdown, "Plan"),
                 (Kind::Code, "Python code"),
             ]
@@ -360,6 +426,37 @@ mod tests {
         assert!(in_reply(0, streaming).is_empty());
         let nested = "- item\n\n  ```html\n  <p>x</p>\n  ```\n";
         assert!(in_reply(0, nested).is_empty());
+    }
+
+    #[test]
+    fn mermaid_titles_and_types() {
+        let names: Vec<_> = in_reply(
+            0,
+            "```mermaid\nflowchart TD\n  A-->B\n```\n\n```mermaid\n%% note\nsequenceDiagram\n  A->>B: hi\n```\n\n\
+             ```mermaid\ngantt\n  title Launch plan\n```\n\n```mermaid\n---\ntitle: Pets\n---\nclassDiagram\n```\n",
+        )
+        .into_iter()
+        .map(|a| (a.title, a.named))
+        .collect();
+        assert_eq!(
+            names,
+            [
+                ("Flowchart".to_owned(), false),
+                ("Sequence diagram".to_owned(), false),
+                ("Launch plan".to_owned(), true),
+                ("Pets".to_owned(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn made_up_titles_are_never_versions() {
+        let two = in_reply(
+            0,
+            "```mermaid\nflowchart TD\n```\n\n```mermaid\nflowchart LR\n```\n",
+        );
+        assert_eq!(two[0].title, two[1].title);
+        assert!(!two[0].same_thing(&two[1]));
     }
 
     #[test]
