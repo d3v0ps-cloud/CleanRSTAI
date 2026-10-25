@@ -36,8 +36,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   release, at startup if enabled and when you check by hand.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
 - **Remote access**: while it is on, a browser that has logged in receives your chats, replies,
-  tool calls and their results, approval prompts, chat titles, the workspace folder path of each
-  chat, the model and provider names, and your name if you set one. It never receives API keys,
+  tool calls and their results, approval prompts, chat titles, the model and provider names,
+  and your name if you set one. It never receives API keys,
   MCP secrets or settings. Over plain HTTP all of this crosses the network unencrypted
   ([Remote access](../using/remote-access.html)).
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the

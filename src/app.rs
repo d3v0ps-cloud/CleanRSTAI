@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
@@ -17,10 +18,10 @@ use crate::llm;
 use crate::mcp::manager::McpManager;
 use crate::remote::{
     ApprovalView, AttachmentView, ChatSummary, ChatView, MessageView, ProviderView, RemoteCommand,
-    RemoteEvent, RemoteStatus, StateView,
+    RemoteEvent, RemoteStatus, StateView, ToolCallView,
 };
 use crate::subagent::Delegation;
-use crate::tools::{ToolOverrides, ToolSelection};
+use crate::tools::{self, ToolOverrides, ToolSelection};
 use crate::types::{ChatMessage, Conversation, Role};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
@@ -121,6 +122,9 @@ pub struct ChatApp {
     remote_seen: HashMap<Uuid, u64>,
     /// Fingerprint of the chat list and models as last sent (see `list_fingerprint`).
     remote_list_seen: u64,
+    /// When each chat was last notified to the browsers, to space out a streaming chat's
+    /// notices (see `chat_notices`).
+    remote_sent: HashMap<Uuid, Instant>,
 }
 
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
@@ -316,6 +320,7 @@ impl ChatApp {
             remote_status: RemoteStatus::Off,
             remote_seen: HashMap::new(),
             remote_list_seen: 0,
+            remote_sent: HashMap::new(),
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false, app.settings.general.update_url.clone());
@@ -708,14 +713,7 @@ impl ChatApp {
             return Err("A reply is still running in this chat".into());
         }
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
-        while conv.messages.last().is_some_and(|m| m.role != Role::User) {
-            conv.messages.pop();
-        }
-        let last = conv
-            .messages
-            .last_mut()
-            .ok_or("There is nothing to regenerate")?;
-        last.cancelled = false;
+        cut_for_regenerate(&mut conv.messages)?;
         self.start_run(id, ctx);
         Ok(())
     }
@@ -2722,10 +2720,7 @@ impl ChatApp {
 
     /// Picks a provider and its model, as the model picker does.
     fn set_remote_model(&mut self, index: usize, model: String) -> Result<(), String> {
-        let model = model.trim();
-        if model.is_empty() {
-            return Err("Choose a model".into());
-        }
+        let model = remote_model_name(&model)?;
         let provider = self
             .settings
             .providers
@@ -2792,25 +2787,30 @@ impl ChatApp {
     }
 
     /// Tells the connected browsers about the chats and the list that changed since the last
-    /// frame. Does nothing while the server is off.
+    /// frame. Does nothing while the server is off. A chat that changes faster than
+    /// `REMOTE_CHAT_INTERVAL` is told about later, and a repaint is requested for then.
     fn publish_remote(&mut self) {
         let Some(remote) = &self.remote else {
             return;
         };
-        let mut events = Vec::new();
-        let mut seen = HashMap::with_capacity(self.conversations.len());
-        for conv in &self.conversations {
-            let fp = chat_fingerprint(conv, self.runs.get(&conv.id), self.errors.get(&conv.id));
-            if self.remote_seen.get(&conv.id) != Some(&fp) {
-                events.push(RemoteEvent::Chat { id: conv.id });
-            }
-            seen.insert(conv.id, fp);
-        }
-        // Chats that were deleted since the last frame.
-        for id in self.remote_seen.keys().filter(|id| !seen.contains_key(id)) {
-            events.push(RemoteEvent::Chat { id: *id });
-        }
-        self.remote_seen = seen;
+        let current: Vec<(Uuid, u64)> = self
+            .conversations
+            .iter()
+            .map(|conv| {
+                let fp = chat_fingerprint(conv, self.runs.get(&conv.id), self.errors.get(&conv.id));
+                (conv.id, fp)
+            })
+            .collect();
+        let (chats, wait) = chat_notices(
+            &current,
+            &mut self.remote_seen,
+            &mut self.remote_sent,
+            Instant::now(),
+        );
+        let mut events: Vec<RemoteEvent> = chats
+            .into_iter()
+            .map(|id| RemoteEvent::Chat { id })
+            .collect();
         let list = list_fingerprint(&self.conversations, &self.runs, &self.settings);
         if list != self.remote_list_seen {
             self.remote_list_seen = list;
@@ -2819,8 +2819,95 @@ impl ChatApp {
         for event in events {
             remote.notify(event);
         }
+        if let Some(wait) = wait {
+            self.repaint_ctx.request_repaint_after(wait);
+        }
     }
 }
+
+/// The least time between two `RemoteEvent::Chat` notices for the same chat.
+const REMOTE_CHAT_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Decides which chats to tell the browsers about this frame. `current` lists each chat with
+/// its fingerprint now, `seen` the fingerprints last sent, `sent` when each chat was last
+/// notified. Returns the chats to notify, and how long until a changed chat that was held back
+/// may go out (`None` when nothing is held back). A held-back chat keeps its old fingerprint, so
+/// it still differs on a later frame and is notified then. Deleted chats are notified at once.
+fn chat_notices(
+    current: &[(Uuid, u64)],
+    seen: &mut HashMap<Uuid, u64>,
+    sent: &mut HashMap<Uuid, Instant>,
+    now: Instant,
+) -> (Vec<Uuid>, Option<Duration>) {
+    let mut notify = Vec::new();
+    let mut wait: Option<Duration> = None;
+    let mut next_seen = HashMap::with_capacity(current.len());
+    for &(id, fp) in current {
+        let previous = seen.get(&id).copied();
+        if previous == Some(fp) {
+            next_seen.insert(id, fp);
+            continue;
+        }
+        match throttle(sent, id, now) {
+            None => {
+                notify.push(id);
+                next_seen.insert(id, fp);
+            }
+            Some(left) => {
+                wait = Some(wait.map_or(left, |w| w.min(left)));
+                if let Some(old) = previous {
+                    next_seen.insert(id, old);
+                }
+            }
+        }
+    }
+    let live: HashSet<Uuid> = current.iter().map(|(id, _)| *id).collect();
+    // Chats deleted since the last frame: a final notice, never held back.
+    notify.extend(seen.keys().filter(|id| !live.contains(id)));
+    sent.retain(|id, _| live.contains(id));
+    *seen = next_seen;
+    (notify, wait)
+}
+
+/// Whether chat `id` may be notified at `now`: `None` and the notice is recorded, or the time
+/// left until it may be.
+fn throttle(sent: &mut HashMap<Uuid, Instant>, id: Uuid, now: Instant) -> Option<Duration> {
+    if let Some(&at) = sent.get(&id) {
+        let elapsed = now.saturating_duration_since(at);
+        if elapsed < REMOTE_CHAT_INTERVAL {
+            return Some(REMOTE_CHAT_INTERVAL - elapsed);
+        }
+    }
+    sent.insert(id, now);
+    None
+}
+
+/// Drops the reply being regenerated and anything after the last user message, which is kept
+/// for the new reply. Nothing changes when there is no user message.
+fn cut_for_regenerate(messages: &mut Vec<ChatMessage>) -> Result<(), String> {
+    let last_user = messages
+        .iter()
+        .rposition(|m| m.role == Role::User)
+        .ok_or("There is nothing to regenerate")?;
+    messages.truncate(last_user + 1);
+    messages[last_user].cancelled = false;
+    Ok(())
+}
+
+/// The model name a browser sent, trimmed. Names are limited to 200 characters.
+fn remote_model_name(model: &str) -> Result<&str, String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("Choose a model".into());
+    }
+    if model.chars().count() > REMOTE_MODEL_MAX_CHARS {
+        return Err("Model name is too long".into());
+    }
+    Ok(model)
+}
+
+/// The longest model name a browser may set.
+const REMOTE_MODEL_MAX_CHARS: usize = 200;
 
 /// Whether the sidebar lists a chat: an empty new chat is listed once it has a message or a run.
 fn listed(conv: &Conversation, runs: &HashMap<Uuid, Run>) -> bool {
@@ -2851,7 +2938,16 @@ fn message_view(m: &ChatMessage) -> MessageView {
         role: m.role,
         content: m.content.clone(),
         reasoning: m.reasoning.clone(),
-        tool_calls: m.tool_calls.clone(),
+        tool_calls: m
+            .tool_calls
+            .iter()
+            .map(|call| ToolCallView {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+                label: tools::display_name(&call.name),
+            })
+            .collect(),
         tool_call_id: m.tool_call_id.clone(),
         tool_name: m.tool_name.clone(),
         is_error: m.is_error,
@@ -2873,6 +2969,7 @@ fn approval_view(p: &PendingApproval) -> ApprovalView {
     ApprovalView {
         call_id: p.call.id.clone(),
         name: p.call.name.clone(),
+        label: tools::display_name(&p.call.name),
         arguments: p.call.arguments.clone(),
         server_name: p.server_name.clone(),
         can_always_server: p.origin.is_some(),
@@ -3315,6 +3412,109 @@ mod remote_tests {
         conv.pinned = true;
         let after = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings);
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn chat_notices_hold_back_a_quick_change_and_deliver_it_after_the_interval() {
+        let (a, t0) = (Uuid::new_v4(), Instant::now());
+        let (mut seen, mut sent) = (HashMap::new(), HashMap::new());
+        // A new chat is notified at once.
+        let (notify, wait) = chat_notices(&[(a, 1)], &mut seen, &mut sent, t0);
+        assert_eq!((notify, wait), (vec![a], None));
+        // A change 50 ms later is held back for the rest of the interval, keeping the old
+        // fingerprint so it still counts as changed.
+        let at = t0 + Duration::from_millis(50);
+        let (notify, wait) = chat_notices(&[(a, 2)], &mut seen, &mut sent, at);
+        assert!(notify.is_empty());
+        assert_eq!(wait, Some(Duration::from_millis(150)));
+        assert_eq!(seen.get(&a), Some(&1));
+        // A frame before the interval ends still holds it back.
+        let (notify, _) = chat_notices(
+            &[(a, 2)],
+            &mut seen,
+            &mut sent,
+            t0 + Duration::from_millis(199),
+        );
+        assert!(notify.is_empty());
+        // Once the interval has passed, the held-back change is delivered.
+        let (notify, wait) =
+            chat_notices(&[(a, 2)], &mut seen, &mut sent, t0 + REMOTE_CHAT_INTERVAL);
+        assert_eq!((notify, wait), (vec![a], None));
+        assert_eq!(seen.get(&a), Some(&2));
+        // Unchanged chats are not notified.
+        let (notify, wait) =
+            chat_notices(&[(a, 2)], &mut seen, &mut sent, t0 + Duration::from_secs(5));
+        assert_eq!((notify, wait), (vec![], None));
+    }
+
+    #[test]
+    fn chat_notices_send_a_deleted_chat_at_once_and_forget_it() {
+        let (a, b, t0) = (Uuid::new_v4(), Uuid::new_v4(), Instant::now());
+        let (mut seen, mut sent) = (HashMap::new(), HashMap::new());
+        chat_notices(&[(a, 1), (b, 1)], &mut seen, &mut sent, t0);
+        // `b` changes and is held back, then is deleted in the same frame: it still goes out.
+        let quick = t0 + Duration::from_millis(10);
+        let (notify, _) = chat_notices(&[(a, 1), (b, 2)], &mut seen, &mut sent, quick);
+        assert!(notify.is_empty());
+        let (notify, _) = chat_notices(&[(a, 1)], &mut seen, &mut sent, quick);
+        assert_eq!(notify, vec![b]);
+        assert!(!seen.contains_key(&b) && !sent.contains_key(&b));
+    }
+
+    #[test]
+    fn regenerate_keeps_the_chat_when_there_is_no_user_message() {
+        let mut messages = vec![ChatMessage::new(Role::Assistant, "hi")];
+        assert!(cut_for_regenerate(&mut messages).is_err());
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn regenerate_cuts_back_to_the_last_user_message() {
+        let mut messages = vec![
+            ChatMessage::new(Role::User, "first"),
+            ChatMessage::new(Role::Assistant, "answer"),
+            ChatMessage::new(Role::User, "second"),
+            ChatMessage::new(Role::Assistant, "old reply"),
+            ChatMessage::new(Role::Tool, "result"),
+        ];
+        messages[2].cancelled = true;
+        cut_for_regenerate(&mut messages).unwrap();
+        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, ["first", "answer", "second"]);
+        assert!(!messages[2].cancelled);
+    }
+
+    #[test]
+    fn remote_model_names_are_trimmed_and_limited_to_200_characters() {
+        assert_eq!(remote_model_name("  gpt-x "), Ok("gpt-x"));
+        assert_eq!(remote_model_name("  "), Err("Choose a model".to_owned()));
+        let max = "m".repeat(200);
+        assert_eq!(remote_model_name(&max), Ok(max.as_str()));
+        let long = "m".repeat(201);
+        assert_eq!(
+            remote_model_name(&long),
+            Err("Model name is too long".to_owned())
+        );
+        // Counted in characters, not bytes.
+        let accents = "é".repeat(200);
+        assert_eq!(remote_model_name(&accents), Ok(accents.as_str()));
+    }
+
+    #[test]
+    fn tool_calls_and_approvals_carry_the_desktop_label() {
+        let mut msg = ChatMessage::new(Role::Assistant, "");
+        msg.tool_calls.push(ToolCall {
+            id: "call_1".into(),
+            name: crate::tools::FETCH.into(),
+            arguments: "{}".into(),
+        });
+        let view = message_view(&msg);
+        assert_eq!(view.tool_calls[0].label, "Web fetch");
+        assert_eq!(view.tool_calls[0].name, crate::tools::FETCH);
+        let run = run_awaiting("call_2");
+        let approval = approval_view(&run.approvals[0]);
+        assert_eq!(approval.name, "fetch");
+        assert_eq!(approval.label, "fetch");
     }
 
     #[test]

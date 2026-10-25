@@ -721,7 +721,7 @@
     var d = makeDetails("tool-card" + (failed ? " error" : ""), "m" + i + ":" + call.id);
     d.appendChild(el("summary", null, [
       icon(ICON.TOOL),
-      el("span", { cls: "tool-name", text: call.name }),
+      el("span", { cls: "tool-name", text: call.label || call.name }),
       el("span", { cls: "tool-status", text: status })
     ]));
     d.appendChild(el("pre", { cls: "tool-args", text: prettyJson(call.arguments) }));
@@ -746,7 +746,8 @@
       });
     });
     card.appendChild(el("div", { cls: "approval-title", text: "Approval needed" }));
-    card.appendChild(el("div", { cls: "muted", text: a.server_name ? a.name + " on " + a.server_name : a.name }));
+    var shown = a.label || a.name;
+    card.appendChild(el("div", { cls: "muted", text: a.server_name ? shown + " on " + a.server_name : shown }));
     card.appendChild(el("pre", { text: prettyJson(a.arguments) }));
     card.appendChild(el("div", { cls: "approval-actions" }, buttons));
     return card;

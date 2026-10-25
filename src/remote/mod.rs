@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::agent::EventSender;
 use crate::approval::Approval;
 use crate::config::{REMOTE_DEFAULT_PORT, RemoteBind, RemoteSettings, RemoteTls};
-use crate::types::{Role, ToolCall};
+use crate::types::Role;
 
 use auth::Auth;
 
@@ -133,7 +133,7 @@ pub struct MessageView {
     pub role: Role,
     pub content: String,
     pub reasoning: Option<String>,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<ToolCallView>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub is_error: bool,
@@ -142,6 +142,18 @@ pub struct MessageView {
     pub attachments: Vec<AttachmentView>,
     /// A short one-line summary, or None.
     pub stats: Option<String>,
+}
+
+/// A tool call the model made, with the name the desktop shows for it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolCallView {
+    pub id: String,
+    /// The function name the model used, e.g. `builtin__fetch`.
+    pub name: String,
+    /// JSON-encoded arguments, exactly as produced by the model.
+    pub arguments: String,
+    /// The desktop's label, e.g. "Web fetch".
+    pub label: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -154,6 +166,8 @@ pub struct AttachmentView {
 pub struct ApprovalView {
     pub call_id: String,
     pub name: String,
+    /// The desktop's label for the tool, e.g. "Web fetch".
+    pub label: String,
     pub arguments: String,
     pub server_name: Option<String>,
     pub can_always_server: bool,

@@ -79,9 +79,14 @@ its attachments, but you can't add files from the browser.
 
 - **Password.** The server refuses to start without one. The password is kept in the system
   keychain with your API keys ([Secrets](../settings/general.html#secrets)).
-- **HTTPS.** The default is a self-signed certificate. The app makes it once and keeps it in a
-  `remote` folder in its configuration folder. Use HTTPS unless the network is one you trust
-  completely. With **Off (plain HTTP)** the password and chats cross the network unencrypted.
+- **HTTPS.** The default is a self-signed certificate. The app keeps it in a `remote` folder in
+  its configuration folder and makes a new one when this computer's network address changes.
+  Use HTTPS unless the network is one you trust completely. With **Off (plain HTTP)** the
+  password and chats cross the network unencrypted. Strict transport security is sent only with
+  your own certificate files (**Certificate files**).
+- **Addresses.** The server only answers requests addressed to an IP address, `localhost`, a
+  `.local` name or this computer's name, so a web page can't reach it through a look-alike
+  domain (DNS rebinding).
 - **Sessions.** A login lasts 30 days, or 7 days without use. Sessions are kept in memory only.
   Restarting the server logs every browser out. Changing any remote access setting, or quitting
   the app, restarts the server.
