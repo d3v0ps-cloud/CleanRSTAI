@@ -136,6 +136,9 @@ source):
 - [x] Export a single chat as Markdown
 - [x] Rich markdown rendering in chat, including code blocks, tables, images and mermaid diagrams
 - [x] Support for rendering SVGs in chat
+- [x] Artifacts: web pages, drawings, documents and longer code open in a side panel beside
+  the chat, with preview and code tabs, versions, copy, save and "Open in browser"
+- [ ] Live HTML preview inside the panel (needs an embedded webview)
 
 ## 8. Broader MCP support
 

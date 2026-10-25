@@ -31,6 +31,9 @@ keychain is off or unavailable, secrets are kept in `settings.json` instead
 - **Update checks** ask the [update source](../using/updates.html#update-source) for its latest
   release, at startup if enabled and when you check by hand.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
+- **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
+  system's temporary folder and run in the browser, where a page can load anything it links to.
+  The app only does this when you click **Open in browser**.
 
 Nothing else is sent: there is no telemetry.
 

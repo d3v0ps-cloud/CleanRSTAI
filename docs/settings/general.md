@@ -75,6 +75,12 @@ How a reasoning model's **Thought process** section starts out:
 Loading them tells the image's server that the chat was opened, and a reply could put chat
 contents in the image address.
 
+## Artifacts
+
+**Open web pages, drawings and long code in a side panel** (default on). When a reply makes an
+[artifact](../using/chats.html#artifacts), the panel opens beside the chat. When off, click the
+card in the reply to open it.
+
 ## Tool calls
 
 **Run MCP tools and subagents without asking for approval** (default off).

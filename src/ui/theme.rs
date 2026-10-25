@@ -55,6 +55,12 @@ pub mod icon {
     pub const GLOBE: &str = "\u{E288}";
     pub const FOLDER: &str = "\u{E24A}";
     pub const TERMINAL: &str = "\u{EAE8}";
+    pub const CODE: &str = "\u{E1BC}";
+    pub const ARROW_SQUARE_OUT: &str = "\u{E5DE}";
+    pub const CARET_LEFT: &str = "\u{E138}";
+    pub const CARET_RIGHT: &str = "\u{E13A}";
+    pub const IMAGE: &str = "\u{E2CA}";
+    pub const FLOW: &str = "\u{E67C}";
 }
 
 /// The colours of one mode. Every text colour (ink to error) reads at WCAG AA contrast,

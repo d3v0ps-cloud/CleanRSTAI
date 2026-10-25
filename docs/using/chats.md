@@ -159,6 +159,29 @@ tables and images.
   [General](../settings/general.html#images). Loading them tells the image's server that the
   chat was opened, so it is off by default.
 
+## Artifacts
+
+Web pages, drawings, documents and longer code in a reply are *artifacts*: they show as a card
+in the reply and open in a panel beside the chat.
+
+- **What counts**: closed top-level code blocks marked ```` ```html ````, ```` ```svg ````,
+  ```` ```mermaid ```` or ```` ```markdown ````, and other code blocks of 10 lines or more.
+  Shorter code stays in the reply. A block still being written shows as code until it ends.
+- **Names** come from a file name or `title="…"` after the language (```` ```python build.py ````),
+  a page's `<title>`, a document's first heading, or else what it is ("Python code").
+- **The panel** shows drawings and documents with **Preview** and **Code** tabs, and pages and
+  code with syntax highlighting. **Copy**, **Save as…** and **Close** sit at the top. The
+  menu on the right lists every artifact in the chat.
+- **Versions**: artifacts with the same name and type are versions of one another; the arrows
+  step between them, keeping the tab you are on.
+- **Web pages** don't run inside the app: **Open in browser** writes the page to a temporary
+  file and opens it in your default browser, where its scripts run as in any local file. SVGs
+  can open there too.
+- Drawings stay drawn in the reply, with an extra button to open them in the panel.
+- The panel opens by itself when a reply makes an artifact, and follows each new one while
+  the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
+  panel** in [General](../settings/general.html#artifacts); the cards still open it.
+
 ## Attachments
 
 Attach files with the **+** button or by dropping them on the window. Files up to 50 MB can be

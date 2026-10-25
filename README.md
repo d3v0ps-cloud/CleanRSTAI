@@ -112,6 +112,9 @@ too, as an installer and a portable `.exe`.
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
   show as links unless you turn on **Load web images in replies** in Settings → General.
+- **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
+  reply open in a side panel beside the chat, with preview and code tabs, versions, copy and
+  save. Web pages open in your browser.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to

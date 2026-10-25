@@ -349,6 +349,8 @@ pub struct GeneralSettings {
     /// Load images that replies link to on the web. Off by default: a reply could otherwise
     /// send data to any server just by being shown.
     pub load_remote_images: bool,
+    /// Open the artifact panel when a reply makes a web page, drawing, document or long code.
+    pub open_artifacts: bool,
     pub builtin_tools: BuiltinToolSettings,
 }
 
@@ -372,6 +374,7 @@ impl Default for GeneralSettings {
             update_url: crate::update::LATEST_RELEASE_URL.into(),
             reasoning_display: ReasoningDisplay::default(),
             load_remote_images: false,
+            open_artifacts: true,
             builtin_tools: BuiltinToolSettings::default(),
         }
     }
