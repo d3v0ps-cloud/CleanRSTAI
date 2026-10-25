@@ -68,8 +68,8 @@ fn kind_label(a: &Artifact) -> String {
     let what = match a.kind {
         Kind::Html => "Web page".to_owned(),
         Kind::Svg => "SVG".to_owned(),
-        Kind::Mermaid => "Diagram".to_owned(),
-        Kind::Markdown => "Document".to_owned(),
+        Kind::Mermaid => "Mermaid".to_owned(),
+        Kind::Markdown => "Markdown".to_owned(),
         Kind::Code => crate::artifacts::language_name(&a.lang)
             .map(str::to_owned)
             .unwrap_or_else(|| {
@@ -234,7 +234,7 @@ pub fn show(
     view.show(&artifacts[current], current == newest);
     let p = theme::palette(ui.visuals().dark_mode);
 
-    // Title row: what it is, then the actions on the right.
+    // Title row: what it is (a menu of every artifact in the chat), then the actions.
     let a = &artifacts[current];
     ui.add_space(10.0);
     ui.horizontal(|ui| {
@@ -256,66 +256,70 @@ pub fn show(
             }
             // The rest of the row, from the left.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add(egui::Label::new(RichText::new(&a.title).strong().size(15.0)).truncate());
+                let title = egui::Button::new(RichText::new(&a.title).strong().size(15.0))
+                    .right_text(RichText::new(icon::CARET_DOWN).color(p.pencil))
+                    .frame(false)
+                    .truncate();
+                egui::containers::menu::MenuButton::from_button(title)
+                    .ui(ui, |ui| {
+                        for (i, other) in artifacts.iter().enumerate() {
+                            if ui
+                                .selectable_label(
+                                    i == current,
+                                    format!("{}  {}", kind_icon(other.kind), other.title),
+                                )
+                                .clicked()
+                            {
+                                current = i;
+                            }
+                        }
+                    })
+                    .0
+                    .on_hover_text(format!(
+                        "{} of {} artifacts in this chat",
+                        current + 1,
+                        artifacts.len()
+                    ));
             });
         });
     });
 
-    // Tabs, versions of this artifact, and every artifact in the chat.
+    // Tabs on the left, versions of this artifact on the right.
     ui.horizontal(|ui| {
         if a.kind.has_preview() {
             ui.selectable_value(&mut view.tab, Tab::Preview, "Preview");
             ui.selectable_value(&mut view.tab, Tab::Code, "Code");
-            ui.separator();
         }
         let versions: Vec<usize> = (0..artifacts.len())
             .filter(|&i| artifacts[i].same_thing(a))
             .collect();
         if versions.len() > 1 {
             let at = versions.iter().position(|&i| i == current).unwrap_or(0);
-            if ui
-                .add_enabled(at > 0, egui::Button::new(icon::CARET_LEFT).frame(false))
-                .on_hover_text("Previous version")
-                .clicked()
-            {
-                current = versions[at - 1];
-            }
-            ui.label(
-                RichText::new(format!("Version {} of {}", at + 1, versions.len()))
-                    .small()
-                    .color(p.pencil),
-            );
-            if ui
-                .add_enabled(
-                    at + 1 < versions.len(),
-                    egui::Button::new(icon::CARET_RIGHT).frame(false),
-                )
-                .on_hover_text("Next version")
-                .clicked()
-            {
-                current = versions[at + 1];
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        at + 1 < versions.len(),
+                        egui::Button::new(icon::CARET_RIGHT).frame(false),
+                    )
+                    .on_hover_text("Next version")
+                    .clicked()
+                {
+                    current = versions[at + 1];
+                }
+                ui.label(
+                    RichText::new(format!("Version {} of {}", at + 1, versions.len()))
+                        .small()
+                        .color(p.pencil),
+                );
+                if ui
+                    .add_enabled(at > 0, egui::Button::new(icon::CARET_LEFT).frame(false))
+                    .on_hover_text("Previous version")
+                    .clicked()
+                {
+                    current = versions[at - 1];
+                }
+            });
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            egui::ComboBox::from_id_salt("artifact-list")
-                .selected_text(format!("{} of {}", current + 1, artifacts.len()))
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    for (i, other) in artifacts.iter().enumerate() {
-                        if ui
-                            .selectable_label(
-                                i == current,
-                                format!("{}  {}", kind_icon(other.kind), other.title),
-                            )
-                            .clicked()
-                        {
-                            current = i;
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("All artifacts in this chat");
-        });
     });
     view.show(&artifacts[current], current == newest);
     let a = &artifacts[current];

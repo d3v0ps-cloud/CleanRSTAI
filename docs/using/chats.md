@@ -169,12 +169,14 @@ panel beside the chat shows them in full. Click a preview to open it there.
   ```` ```mermaid ```` or ```` ```markdown ````, and other code blocks of 10 lines or more.
   Shorter code stays in the reply. A block still being written shows as code until it ends.
 - **Names** come from a file name or `title="…"` after the language (```` ```python build.py ````),
-  a page's `<title>`, a document's first heading, or else what it is ("Python code").
+  a page's or SVG's `<title>`, a document's first heading or a Mermaid diagram's title.
+  Otherwise the name says what it is: "Sequence diagram", "Python code".
 - **The panel** shows drawings and documents with **Preview** and **Code** tabs, and pages and
-  code with syntax highlighting. **Copy**, **Save as…** and **Close** sit at the top. The
-  menu on the right lists every artifact in the chat.
-- **Versions**: artifacts with the same name and type are versions of one another; the arrows
-  step between them, keeping the tab you are on.
+  code with syntax highlighting. **Copy**, **Save as…** and **Close** sit at the top. Click the
+  title to pick any artifact in the chat.
+- **Versions**: artifacts with the same given name and type are versions of one another (the
+  same file name in a later reply, say); the arrows step between them, keeping the tab you are
+  on. Made-up names like "Flowchart" never make versions.
 - **Web pages** don't run inside the app: **Open in browser** writes the page to a temporary
   file and opens it in your default browser, where its scripts run as in any local file. SVGs
   can open there too.
