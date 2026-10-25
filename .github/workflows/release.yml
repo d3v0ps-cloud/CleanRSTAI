@@ -52,6 +52,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - name: Use Git Bash for bash steps
+        # On Windows, a plain `bash` is System32's WSL launcher, which fails without a Linux
+        # distribution. Put Git for Windows' bash first for the rest of the job.
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $gitBash = Join-Path $env:ProgramFiles "Git\bin"
+          if (-not (Test-Path (Join-Path $gitBash "bash.exe"))) {
+            Write-Output "::error::Git for Windows is not installed at $gitBash"
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $gitBash
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.targets }}
@@ -174,12 +186,12 @@ jobs:
 
       - name: Build Windows
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: cargo build --release
 
       - name: Package Windows (.zip and .msi)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -228,7 +240,7 @@ jobs:
         # DARKBASE is a persistent machine: never leave the decoded .pfx behind, even when a
         # step above failed.
         if: always() && runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: Remove-Item (Join-Path $env:RUNNER_TEMP "cert.pfx") -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v7
