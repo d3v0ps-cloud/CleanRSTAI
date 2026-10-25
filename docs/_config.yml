@@ -1,0 +1,24 @@
+title: CleanRSTAI
+description: A fast, native desktop AI chat client for OpenAI-compatible endpoints, with MCP support
+remote_theme: just-the-docs/just-the-docs
+
+plugins:
+  - jekyll-remote-theme
+
+color_scheme: light        # or: dark
+search_enabled: true
+
+aux_links:
+  "View on GitHub": "https://github.com/d3v0ps-cloud/CleanRSTAI"
+
+# Keep local preview files out of the built site
+exclude:
+  - Gemfile
+  - Gemfile.lock
+
+# Every page uses the theme's layout without needing it in front matter
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

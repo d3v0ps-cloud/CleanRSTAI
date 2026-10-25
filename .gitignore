@@ -30,3 +30,8 @@ rustc-ice-*.txt
 /dist
 .DS_Store
 assets/.DS_Store
+
+# Jekyll docs preview
+/docs/_site/
+/docs/.jekyll-cache/
+/docs/Gemfile.lock
