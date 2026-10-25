@@ -52,9 +52,15 @@ fn parts(s: &RequestStats) -> Vec<String> {
     parts
 }
 
+/// The compact one-line summary of a response's stats, as shown under it (the browser client
+/// shows the same text).
+pub fn summary(s: &RequestStats) -> String {
+    parts(s).join(" · ")
+}
+
 /// One compact line under a response; the hover shows the full breakdown.
 pub fn request_line(ui: &mut egui::Ui, s: &RequestStats) {
-    let text = parts(s).join(" · ");
+    let text = summary(s);
     ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).sense(egui::Sense::hover()))
         .on_hover_ui(|ui| details(ui, s));
 }

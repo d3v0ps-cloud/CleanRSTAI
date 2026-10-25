@@ -1236,7 +1236,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn second_server_on_the_same_port_fails() {
         let first = start_test(&settings(RemoteTls::Off)).unwrap();
-        let port = first.port();
+        // The address reports the port actually bound, e.g. `http://127.0.0.1:43123/`.
+        let port: u16 = first.urls()[0]
+            .trim_end_matches('/')
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
         let cfg = RemoteSettings {
             port,
             ..settings(RemoteTls::Off)
@@ -1244,6 +1251,25 @@ mod tests {
         let message = expect_err(start_test(&cfg));
         assert!(message.contains(&port.to_string()), "{message}");
         assert!(message.starts_with("Can't listen on port"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restart_on_the_same_port_right_after_drop() {
+        // The app drops the old server before it starts the new one with the same settings.
+        let first = start_test(&settings(RemoteTls::Off)).unwrap();
+        let port: u16 = first.urls()[0]
+            .trim_end_matches('/')
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        drop(first);
+        let cfg = RemoteSettings {
+            port,
+            ..settings(RemoteTls::Off)
+        };
+        assert!(start_test(&cfg).is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -59,8 +59,6 @@ pub struct ServerReport {
 
 pub enum AppEvent {
     /// A request from a browser connected to the remote access server.
-    // TODO(remote): remove once the app handles remote commands.
-    #[allow(dead_code)]
     Remote(crate::remote::RemoteCommand),
     /// Result of a GitHub Releases check. `explicit` when the user asked for it.
     UpdateChecked {

@@ -2,8 +2,6 @@
 //! commands that `ChatApp` handles on the UI thread, exactly like a click. This module holds
 //! the types both sides share; the server itself lives in `server.rs`.
 
-#![allow(dead_code)] // TODO(remote): remove once the app uses everything (subscribe, config, status).
-
 mod auth;
 mod server;
 mod tls;
@@ -179,7 +177,6 @@ pub enum RemoteStatus {
 pub struct RemoteHandle {
     config: RemoteSettings,
     urls: Vec<String>,
-    port: u16,
     events: broadcast::Sender<RemoteEvent>,
     task: Option<JoinHandle<()>>,
 }
@@ -188,14 +185,12 @@ impl RemoteHandle {
     pub(crate) fn new(
         config: RemoteSettings,
         urls: Vec<String>,
-        port: u16,
         events: broadcast::Sender<RemoteEvent>,
         task: JoinHandle<()>,
     ) -> Self {
         Self {
             config,
             urls,
-            port,
             events,
             task: Some(task),
         }
@@ -204,11 +199,6 @@ impl RemoteHandle {
     /// The settings the server was started with.
     pub fn config(&self) -> &RemoteSettings {
         &self.config
-    }
-
-    /// The port the server actually listens on (differs from the settings when they say 0).
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// The addresses the server reports, e.g. `https://127.0.0.1:8484/`.
@@ -222,6 +212,7 @@ impl RemoteHandle {
     }
 
     /// A receiver for the events the browsers get.
+    #[cfg(test)]
     pub fn subscribe(&self) -> broadcast::Receiver<RemoteEvent> {
         self.events.subscribe()
     }
@@ -258,7 +249,7 @@ pub fn start(
         RemoteBind::Network => Ipv4Addr::UNSPECIFIED,
     };
     let listen_error = |e: std::io::Error| format!("Can't listen on port {}: {e}", cfg.port);
-    let std_listener = std::net::TcpListener::bind((ip, cfg.port)).map_err(listen_error)?;
+    let std_listener = bind_with_retry(ip, cfg.port).map_err(listen_error)?;
     std_listener.set_nonblocking(true).map_err(listen_error)?;
     let listener = {
         let _guard = rt.enter();
@@ -281,7 +272,22 @@ pub fn start(
         repaint,
         events.clone(),
     ));
-    Ok(RemoteHandle::new(cfg.clone(), urls, port, events, task))
+    Ok(RemoteHandle::new(cfg.clone(), urls, events, task))
+}
+
+/// Binds the port. A server that was just stopped (its handle dropped) releases the port only
+/// once its task is cancelled, a moment later, so a busy port is retried for up to half a second.
+fn bind_with_retry(ip: Ipv4Addr, port: u16) -> std::io::Result<std::net::TcpListener> {
+    let mut attempts = 0;
+    loop {
+        match std::net::TcpListener::bind((ip, port)) {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 10 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
 }
 
 /// The addresses to show for these settings: always the loopback address, and for
@@ -391,7 +397,7 @@ mod tests {
             let (tx, _) = broadcast::channel(4);
             let task = tokio::spawn(std::future::pending::<()>());
             let abort = task.abort_handle();
-            let handle = RemoteHandle::new(RemoteSettings::default(), Vec::new(), 0, tx, task);
+            let handle = RemoteHandle::new(RemoteSettings::default(), Vec::new(), tx, task);
             let mut rx = handle.subscribe();
             drop(handle);
             tokio::task::yield_now().await;
