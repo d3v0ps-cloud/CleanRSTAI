@@ -49,8 +49,11 @@ Unticked items are still open.
 - [x] **Generic OpenAI-compatible**: standard `usage` plus client-side timing
 - [x] Auto-detect the type from a probe request, with a manual override
 - [x] Only show stats that the server actually provides
-- [ ] Dedicated types for Ollama, LM Studio, vLLM and OpenRouter (OpenRouter's `usage.cost`
-  is already read)
+- [x] Dedicated types for Ollama, LM Studio, vLLM and OpenRouter, each recognised by
+  **Detect**, with context use against the size the model runs with and the server's details
+  beside the model picker (Ollama `/api/ps` and `/api/show`, LM Studio `/api/v0/models`, vLLM
+  `/v1/models`, `/version` and `/metrics`, OpenRouter `/models` and `/key`), and the provider
+  that served each OpenRouter request
 
 More of what the servers report (from the llama.cpp server README and the LiteLLM proxy
 source):

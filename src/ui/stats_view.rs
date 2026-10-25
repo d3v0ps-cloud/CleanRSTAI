@@ -164,6 +164,9 @@ fn details(ui: &mut egui::Ui, s: &RequestStats) {
             if let Some(m) = &s.served_model {
                 row("Served by", m.clone());
             }
+            if let Some(p) = &s.upstream {
+                row("Provider", p.clone());
+            }
             if let Some(px) = &s.proxy {
                 if let Some(base) = &px.api_base {
                     row("Endpoint", base.clone());
@@ -268,6 +271,21 @@ pub fn totals_bar(ui: &mut egui::Ui, totals: &Totals, context: Option<(u64, u64)
             );
         }
     });
+}
+
+/// What Ollama, LM Studio, vLLM or OpenRouter reports, for the hover beside the model picker.
+pub fn server_rows(ui: &mut egui::Ui, d: &crate::servers::ServerDetails) {
+    ui.strong(d.title);
+    egui::Grid::new("server-rows")
+        .num_columns(2)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            for (label, value) in &d.rows {
+                ui.label(label);
+                ui.monospace(value);
+                ui.end_row();
+            }
+        });
 }
 
 /// What a LiteLLM proxy lists for the model and the key's spend, for the hover beside the

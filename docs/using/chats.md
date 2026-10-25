@@ -99,6 +99,24 @@ With a LiteLLM proxy (set **Server type** to *LiteLLM proxy*, or click **Detect*
   It refreshes every minute.
 - **Context use** works with LiteLLM too, against the context window the proxy lists.
 
+#### Ollama, LM Studio, vLLM and OpenRouter
+
+With **Server type** set to one of these (or found by **Detect**), an info icon beside the
+model picker shows what the server reports, and context use works against the context size
+the model actually runs with:
+
+- **Ollama**: whether the model is loaded (*Not loaded* shows beside the picker; Ollama loads
+  it for your next message), parameters, quantization, family, size and how much of it is in
+  GPU memory, context size (as loaded, or `num_ctx` from the Modelfile), trained context,
+  capabilities and the Ollama version.
+- **LM Studio**: whether the model is loaded, its type, architecture, quantization, format and
+  publisher, and the context size it was loaded with next to its maximum.
+- **vLLM**: context size (`max_model_len`), the weights behind the served name, requests
+  running and waiting, KV cache use, prefix cache hits and the vLLM version.
+- **OpenRouter**: context size, longest reply, price per million tokens, what the model
+  reads, and your key's spend, limit and credit left. Each reply's stats hover also names the
+  provider OpenRouter sent it to, and the cost comes from OpenRouter's usage accounting.
+
 #### Several models on one llama.cpp server
 
 A llama.cpp server started in router mode (without `-m`) serves several models and loads

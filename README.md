@@ -41,8 +41,10 @@ too, as an installer and a portable `.exe`.
   reads a long prompt; an info icon beside the model picker shows the model file, size,
   parameters, trained context and whether the server is loading it or asleep. With a
   llama.cpp router (several models on one server), the model picker shows which models are
-  loaded and loads or unloads them. Set **Server type** on a provider (or
-  click **Detect**) to get the llama.cpp or LiteLLM extras.
+  loaded and loads or unloads them. Ollama, LM Studio, vLLM and OpenRouter have their own
+  types too: context use against the size the model runs with, and an info icon with what the
+  server reports (load state, GPU memory, quantization, queue and KV cache, prices, credit
+  left). Set **Server type** on a provider (or click **Detect**) to get these extras.
 - **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thought
   process* section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
   expanded only while the model is thinking.

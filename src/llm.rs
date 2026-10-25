@@ -39,11 +39,14 @@ pub fn build_http_client() -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
-fn endpoint(p: &ProviderConfig, path: &str) -> String {
+pub(crate) fn endpoint(p: &ProviderConfig, path: &str) -> String {
     format!("{}/{}", p.base_url.trim().trim_end_matches('/'), path)
 }
 
-fn authorize(mut req: reqwest::RequestBuilder, p: &ProviderConfig) -> reqwest::RequestBuilder {
+pub(crate) fn authorize(
+    mut req: reqwest::RequestBuilder,
+    p: &ProviderConfig,
+) -> reqwest::RequestBuilder {
     if !p.api_key.trim().is_empty() {
         req = req.bearer_auth(p.api_key.trim());
     }
@@ -75,7 +78,7 @@ async fn error_from_response(resp: reqwest::Response) -> anyhow::Error {
 }
 
 /// Server root, without the trailing `/v1` (where llama.cpp and LiteLLM serve extra endpoints).
-fn origin(p: &ProviderConfig) -> String {
+pub(crate) fn origin(p: &ProviderConfig) -> String {
     let base = p.base_url.trim().trim_end_matches('/');
     base.strip_suffix("/v1").unwrap_or(base).to_owned()
 }
@@ -523,6 +526,9 @@ pub async fn detect_kind(http: &reqwest::Client, p: &ProviderConfig) -> Provider
     if llama_cpp_props(http, p).await.is_some() {
         return ProviderKind::LlamaCpp;
     }
+    if let Some(kind) = crate::servers::detect(http, p).await {
+        return kind;
+    }
     // LiteLLM tags its responses with `x-litellm-*` headers and has a liveness endpoint.
     let litellm_headers = authorize(http.get(endpoint(p, "models")), p)
         .timeout(std::time::Duration::from_secs(5))
@@ -760,6 +766,10 @@ pub async fn chat_completion(
     }
     // llama.cpp reports how far it has got reading the prompt, which can take minutes on
     // a long one. Other servers may refuse fields they don't know, so only for llama.cpp.
+    // OpenRouter reports the cost and cached tokens when asked to account for usage.
+    if p.kind == ProviderKind::OpenRouter {
+        body["usage"] = json!({"include": true});
+    }
     if p.stream && p.kind == ProviderKind::LlamaCpp {
         body["return_progress"] = json!(true);
         // Its own prefill/decode speeds in every chunk, for the live readout.
@@ -1325,6 +1335,36 @@ mod server_tests {
         let log = log.lock().unwrap();
         let chat = log.iter().find(|r| r.method == "POST").unwrap();
         assert_eq!(chat.header("authorization"), Some("Bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn open_router_usage_and_provider() {
+        let (base, log) = serve(|_| {
+            Response::sse(&[
+                json!({"provider": "Anthropic", "choices": [{"delta": {"content": "a"}}]}),
+                json!({"provider": "Anthropic", "choices": [],
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.0001}}),
+            ])
+        })
+        .await;
+        let http = build_http_client();
+        let s = chat_completion(
+            &http,
+            &provider(&base, ProviderKind::OpenRouter),
+            vec![],
+            &[],
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap()
+        .stats;
+        assert_eq!(s.upstream.as_deref(), Some("Anthropic"));
+        assert_eq!(s.cost_usd, Some(0.0001));
+        assert_eq!(
+            log.lock().unwrap()[0].json()["usage"],
+            json!({"include": true})
+        );
     }
 
     #[tokio::test]

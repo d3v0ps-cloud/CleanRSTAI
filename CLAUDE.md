@@ -127,9 +127,12 @@ for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers
 keychain through the `secrets::SecretStore` trait (tests use the in-memory store), with
 plain-text fallback when the keychain is off or unavailable.
 
-**Providers**: `ProviderKind` (generic OpenAI-compatible, llama.cpp, LiteLLM) is detected by
-`llm::detect_kind` and decides which stats are read (`stats.rs`: server timings vs. measured
-prefill/decode, cost, served model).
+**Providers**: `ProviderKind` (generic OpenAI-compatible, llama.cpp, LiteLLM, Ollama,
+LM Studio, vLLM, OpenRouter) is detected by `llm::detect_kind` and decides which stats are
+read (`stats.rs`: server timings vs. measured prefill/decode, cost, served model, context
+size). llama.cpp and LiteLLM extras live in `llm.rs`; the other four in `servers.rs`
+(detection, context size, and label/value rows for the info icon beside the model picker,
+which `ChatApp::server_status` refreshes in the background as an `AppEvent::ServerInfo`).
 
 ## UI conventions
 

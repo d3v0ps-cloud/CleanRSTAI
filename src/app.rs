@@ -113,6 +113,8 @@ struct ServerInfoState {
     /// For a LiteLLM provider: the model as the proxy lists it, and the key's spend.
     litellm: Option<crate::llm::LiteLlmModel>,
     litellm_key: Option<crate::llm::LiteLlmKey>,
+    /// Ollama, LM Studio, vLLM and OpenRouter: what the server reports, as rows.
+    details: Option<crate::servers::ServerDetails>,
 }
 
 impl ServerInfoState {
@@ -731,12 +733,14 @@ impl ChatApp {
                         router,
                         litellm,
                         litellm_key,
+                        details,
                     } = *report;
                     if let Some(state) = self.server_info.as_mut().filter(|s| s.key == key) {
                         state.info = info;
                         state.router = router;
                         state.litellm = litellm;
                         state.litellm_key = litellm_key;
+                        state.details = details;
                         state.pending = false;
                         state.fetched = Some(std::time::Instant::now());
                     }
@@ -1791,9 +1795,7 @@ impl ChatApp {
         use crate::llm::LlamaStatus;
         let provider = self.settings.provider().clone();
         let kind = provider.kind;
-        if !matches!(kind, ProviderKind::LlamaCpp | ProviderKind::LiteLlm)
-            || provider.model.trim().is_empty()
-        {
+        if kind == ProviderKind::Generic || provider.model.trim().is_empty() {
             return;
         }
         let key = (provider.id.clone(), provider.model.trim().to_owned());
@@ -1812,6 +1814,7 @@ impl ChatApp {
                 router,
                 litellm: None,
                 litellm_key: None,
+                details: None,
             });
         }
         let Some(state) = self.server_info.as_mut() else {
@@ -1827,7 +1830,7 @@ impl ChatApp {
                 .flatten()
                 .any(|m| matches!(m.status.as_str(), "loading" | "downloading"));
         let every = std::time::Duration::from_secs(match (kind, loading) {
-            (ProviderKind::LiteLlm, _) => 60,
+            (ProviderKind::LiteLlm | ProviderKind::OpenRouter, _) => 60,
             (_, true) => 3,
             _ => 15,
         });
@@ -1835,30 +1838,36 @@ impl ChatApp {
             state.pending = true;
             let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), ui.ctx().clone());
             self.rt.spawn(async move {
-                let report = if kind == ProviderKind::LiteLlm {
-                    let (litellm, litellm_key) = tokio::join!(
-                        crate::llm::litellm_model_info(&http, &provider),
-                        crate::llm::litellm_key_info(&http, &provider),
-                    );
-                    crate::agent::ServerReport {
-                        key,
-                        info: None,
-                        router: None,
-                        litellm,
-                        litellm_key,
+                let report = match kind {
+                    ProviderKind::LiteLlm => {
+                        let (litellm, litellm_key) = tokio::join!(
+                            crate::llm::litellm_model_info(&http, &provider),
+                            crate::llm::litellm_key_info(&http, &provider),
+                        );
+                        crate::agent::ServerReport {
+                            key,
+                            litellm,
+                            litellm_key,
+                            ..Default::default()
+                        }
                     }
-                } else {
-                    let (info, router) = tokio::join!(
-                        crate::llm::llama_cpp_server_info(&http, &provider),
-                        crate::llm::llama_cpp_router_models(&http, &provider),
-                    );
-                    crate::agent::ServerReport {
-                        key,
-                        info,
-                        router,
-                        litellm: None,
-                        litellm_key: None,
+                    ProviderKind::LlamaCpp => {
+                        let (info, router) = tokio::join!(
+                            crate::llm::llama_cpp_server_info(&http, &provider),
+                            crate::llm::llama_cpp_router_models(&http, &provider),
+                        );
+                        crate::agent::ServerReport {
+                            key,
+                            info,
+                            router,
+                            ..Default::default()
+                        }
                     }
+                    _ => crate::agent::ServerReport {
+                        key,
+                        details: crate::servers::details(&http, &provider).await,
+                        ..Default::default()
+                    },
                 };
                 let _ = tx.send(AppEvent::ServerInfo(Box::new(report)));
                 ctx.request_repaint();
@@ -1867,6 +1876,20 @@ impl ChatApp {
         ui.ctx().request_repaint_after(every);
 
         let p = theme::palette(ui.visuals().dark_mode);
+        if !matches!(kind, ProviderKind::LlamaCpp | ProviderKind::LiteLlm) {
+            if let Some(d) = &state.details {
+                if let Some(status) = &d.status {
+                    ui.label(RichText::new(status).small().color(p.pencil))
+                        .on_hover_text("The server loads it when you send a message.");
+                }
+                ui.add(
+                    egui::Label::new(RichText::new(icon::INFO).size(13.0).color(p.pencil))
+                        .sense(egui::Sense::hover()),
+                )
+                .on_hover_ui(|ui| super::ui::stats_view::server_rows(ui, d));
+            }
+            return;
+        }
         if kind == ProviderKind::LiteLlm {
             if state.litellm.is_some() || state.litellm_key.is_some() {
                 let (model, key) = (state.litellm.as_ref(), state.litellm_key.as_ref());
