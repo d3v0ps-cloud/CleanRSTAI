@@ -248,34 +248,38 @@ pub fn show(
                 kind,
                 source,
                 raw,
-                artifact,
-            } => drawing(
-                ui,
-                drawings,
-                kind,
-                &source,
-                raw,
-                artifact.map(open_in_panel),
-                actions,
-            ),
-            Segment::Artifact(a) => {
+                artifact: None,
+            } => drawing(ui, drawings, kind, &source, raw, actions),
+            Segment::Drawing {
+                artifact: Some(a), ..
+            }
+            | Segment::Artifact(a) => {
                 let c = cards.expect("artifacts come from cards");
                 let artifact = c.list[a];
                 let open = c.open == Some((artifact.message, artifact.index));
                 ui.add_space(4.0);
-                super::artifact_panel::card(ui, artifact, open, actions, open_in_panel(a));
+                super::artifact_panel::card(
+                    ui,
+                    drawings,
+                    artifact,
+                    open,
+                    actions,
+                    open_in_panel(a),
+                );
                 ui.add_space(4.0);
             }
         }
     }
 }
 
-/// A drawing on its own, scaled to fit the width (the artifact panel's preview).
+/// A drawing on its own, scaled to fit the width and `max_height`: full size in the artifact
+/// panel, a thumbnail in a reply's artifact card.
 pub fn drawing_preview(
     ui: &mut egui::Ui,
     cache: &mut DrawingCache,
     kind: DrawingKind,
     source: &str,
+    max_height: f32,
 ) {
     match cache.get(kind, source) {
         Ok(d) => {
@@ -288,7 +292,8 @@ pub fn drawing_preview(
                     ui.add(
                         egui::Image::from_bytes(d.uri, d.svg)
                             .fit_to_original_size(1.0)
-                            .max_width(ui.available_width()),
+                            .max_width(ui.available_width())
+                            .max_height(max_height),
                     );
                 });
         }
@@ -327,7 +332,6 @@ fn drawing(
     kind: DrawingKind,
     source: &str,
     raw: &str,
-    open_in_panel: Option<Action>,
     actions: &mut Vec<Action>,
 ) {
     let what = match kind {
@@ -364,17 +368,15 @@ fn drawing(
                     format!("{what}.svg"),
                 ));
             }
-            let mut items = vec![
-                (icon::COPY, "Copy source"),
-                (icon::DOWNLOAD, "Save as SVG…"),
-            ];
-            if open_in_panel.is_some() {
-                items.push((icon::SIDEBAR, "Open in the panel"));
-            }
-            match quiet_icons(ui, &items) {
+            match quiet_icons(
+                ui,
+                &[
+                    (icon::COPY, "Copy source"),
+                    (icon::DOWNLOAD, "Save as SVG…"),
+                ],
+            ) {
                 Some(0) => actions.push(Action::Copy(source.to_owned())),
                 Some(1) => actions.push(Action::SaveSvg(d.svg.to_vec())),
-                Some(2) => actions.extend(open_in_panel),
                 _ => {}
             }
         }

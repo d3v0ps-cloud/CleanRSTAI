@@ -161,8 +161,9 @@ tables and images.
 
 ## Artifacts
 
-Web pages, drawings, documents and longer code in a reply are *artifacts*: they show as a card
-in the reply and open in a panel beside the chat.
+Web pages, drawings, documents and longer code in a reply are *artifacts*: the reply keeps a
+collapsed preview (the name, then the first six lines or a thumbnail of the drawing), and the
+panel beside the chat shows them in full. Click a preview to open it there.
 
 - **What counts**: closed top-level code blocks marked ```` ```html ````, ```` ```svg ````,
   ```` ```mermaid ```` or ```` ```markdown ````, and other code blocks of 10 lines or more.
@@ -177,10 +178,9 @@ in the reply and open in a panel beside the chat.
 - **Web pages** don't run inside the app: **Open in browser** writes the page to a temporary
   file and opens it in your default browser, where its scripts run as in any local file. SVGs
   can open there too.
-- Drawings stay drawn in the reply, with an extra button to open them in the panel.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
-  panel** in [General](../settings/general.html#artifacts); the cards still open it.
+  panel** in [General](../settings/general.html#artifacts); the previews still open it.
 
 ## Attachments
 

@@ -84,9 +84,19 @@ fn kind_label(a: &Artifact) -> String {
     format!("{what} · {lines} line{}", if lines == 1 { "" } else { "s" })
 }
 
-/// A card in a reply that stands in for an artifact; clicking it sends `open`.
+/// Lines of source a reply's artifact card shows.
+const PREVIEW_LINES: usize = 6;
+/// Characters per line in that preview; the card is narrower than the panel.
+const PREVIEW_COLUMNS: usize = 100;
+/// Height of a drawing's thumbnail in the card.
+const THUMBNAIL_HEIGHT: f32 = 140.0;
+
+/// A collapsed preview in a reply that stands in for an artifact: its name, then the first
+/// lines of its source or a thumbnail of the drawing. Clicking it sends `open`, which shows
+/// the artifact in full in the panel.
 pub fn card(
     ui: &mut egui::Ui,
+    drawings: &mut DrawingCache,
     a: &Artifact,
     is_open: bool,
     actions: &mut Vec<Action>,
@@ -102,14 +112,36 @@ pub fn card(
         .corner_radius(10)
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width().min(420.0));
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new(kind_icon(a.kind)).size(22.0).color(p.signal));
                 ui.vertical(|ui| {
                     ui.add(egui::Label::new(RichText::new(&a.title).strong()).truncate());
                     ui.label(RichText::new(kind_label(a)).small().color(p.pencil));
                 });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let hint = if is_open { "In the panel" } else { "Open" };
+                    ui.label(RichText::new(hint).small().color(p.pencil));
+                });
             });
+            ui.add_space(6.0);
+            match a.kind {
+                Kind::Svg => markdown::drawing_preview(
+                    ui,
+                    drawings,
+                    DrawingKind::Svg,
+                    &a.source,
+                    THUMBNAIL_HEIGHT,
+                ),
+                Kind::Mermaid => markdown::drawing_preview(
+                    ui,
+                    drawings,
+                    DrawingKind::Mermaid,
+                    &a.source,
+                    THUMBNAIL_HEIGHT,
+                ),
+                _ => source_peek(ui, a),
+            }
         });
     let resp = ui
         .interact(
@@ -130,6 +162,51 @@ pub fn card(
     if resp.clicked() {
         actions.push(open);
     }
+}
+
+/// The first lines of an artifact's source, muted, with how many more there are.
+fn source_peek(ui: &mut egui::Ui, a: &Artifact) {
+    let p = theme::palette(ui.visuals().dark_mode);
+    let total = a.lines();
+    let peek: Vec<String> = a
+        .source
+        .lines()
+        .take(PREVIEW_LINES)
+        .map(|l| {
+            let mut line: String = l.chars().take(PREVIEW_COLUMNS).collect();
+            if l.chars().count() > PREVIEW_COLUMNS {
+                line.push('…');
+            }
+            line
+        })
+        .collect();
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for line in &peek {
+                // One label per line, so long lines are cut rather than wrapped.
+                ui.add(
+                    egui::Label::new(RichText::new(line).monospace().size(12.0).color(p.pencil))
+                        .selectable(false)
+                        .truncate(),
+                );
+            }
+            if total > PREVIEW_LINES {
+                let more = total - PREVIEW_LINES;
+                ui.label(
+                    RichText::new(format!(
+                        "… {more} more line{}",
+                        if more == 1 { "" } else { "s" }
+                    ))
+                    .small()
+                    .color(p.pencil),
+                );
+            }
+        });
 }
 
 /// The panel's contents. Asks to close the panel when the chat has no artifacts left.
@@ -263,11 +340,15 @@ pub fn show(
         .auto_shrink(false)
         .show(ui, |ui| match (view.tab, a.kind) {
             (Tab::Preview, Kind::Svg) => {
-                markdown::drawing_preview(ui, drawings, DrawingKind::Svg, &a.source)
+                markdown::drawing_preview(ui, drawings, DrawingKind::Svg, &a.source, f32::INFINITY)
             }
-            (Tab::Preview, Kind::Mermaid) => {
-                markdown::drawing_preview(ui, drawings, DrawingKind::Mermaid, &a.source)
-            }
+            (Tab::Preview, Kind::Mermaid) => markdown::drawing_preview(
+                ui,
+                drawings,
+                DrawingKind::Mermaid,
+                &a.source,
+                f32::INFINITY,
+            ),
             (Tab::Preview, Kind::Markdown) => markdown::show(
                 ui,
                 md_cache,
