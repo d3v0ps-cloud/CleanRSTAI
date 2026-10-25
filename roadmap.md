@@ -54,18 +54,19 @@ source):
 
 - [x] **llama.cpp server**: context use (`prompt_n + cache_n + predicted_n` against `n_ctx`)
   under each reply and in the chat's totals, in the warning colour from 80%
-- [ ] **llama.cpp server**: model details from `/props` and `/v1/models`: the loaded file
+- [x] **llama.cpp server**: model details from `/props` and `/v1/models`: the loaded file
   (`model_path`), size, parameter count, trained context (`n_ctx_train`), vision support
-  (`modalities`) and server build (`build_info`)
+  (`modalities`) and server build (`build_info`), in the hover of an info icon beside the
+  model picker
 - [x] **llama.cpp server**: prompt processing progress while a long prompt is read
   (`return_progress` → `prompt_progress`), as a bar above the message box with tokens read,
   cached tokens, time so far and time left
-- [ ] **llama.cpp server**: "Model loading" from `/health` (503) and "Model asleep" from
+- [x] **llama.cpp server**: "Model loading" from `/health` (503) and "Model asleep" from
   `/props` `is_sleeping`
-- [ ] **llama.cpp server**: live speeds while streaming (`timings_per_token`)
+- [x] **llama.cpp server**: live speeds while streaming (`timings_per_token`)
 - [ ] **llama.cpp server**: router mode: load state of each model in the model picker
   (`/models` `status`), with load and unload (`/models/load`, `/models/unload`)
-- [ ] **llama.cpp server**: optional `/metrics` readout (queued requests, speculative
+- [x] **llama.cpp server**: optional `/metrics` readout (queued requests, speculative
   decoding acceptance) when the server runs with `--metrics`
 - [ ] **LiteLLM proxy**: the deployment that served the request (`x-litellm-model-name`,
   `-model-id`, `-model-api-base`), and retries or fallbacks

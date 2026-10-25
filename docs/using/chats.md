@@ -61,6 +61,28 @@ message box shows how far it has got: tokens read out of the prompt, how many ca
 server's cache, the time so far and an estimate of the time left. It gives way to the reply
 when the first words arrive, and shows even with stats turned off.
 
+#### llama.cpp server details
+
+With a llama.cpp provider, an info icon appears beside the model picker under the message
+box. Hover over it for what the server reports about the model:
+
+- **Status**: ready, loading the model, or asleep;
+- **Model file**, **Parameters** and **Size**;
+- **Context**: per slot, with the number of slots when it serves several requests at once,
+  and **Trained context**, the most the model was trained for;
+- **Images**: whether the model can read them;
+- **Requests** being processed and queued, and **Draft acceptance** with speculative
+  decoding, when the server runs with `--metrics`;
+- **Build** of the server.
+
+While the server loads the model, *Loading model…* shows beside the picker. *Asleep* means
+the server unloaded it after idling (`--sleep-idle-seconds`); your next message reloads it,
+so its reply starts later. The details refresh every 15 seconds, and every 3 seconds while
+the model loads.
+
+While a reply streams in, the live readout above the message box shows the server's own
+prefill and decode speeds.
+
 #### Context use
 
 With a llama.cpp server, including one running several models in router mode, the stats
