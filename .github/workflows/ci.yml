@@ -1,7 +1,7 @@
 name: CI
 
-# Runs on the self-hosted runners: the Gentoo box (Linux x64) and the Mac mini (macOS
-# ARM64). Windows is disabled for now; see the commented matrix entry below.
+# Runs on the self-hosted runners: the Gentoo box (Linux x64), the Mac mini (macOS ARM64)
+# and DARKBASE (Windows x64).
 on:
   push:
     branches: [main]
@@ -35,17 +35,29 @@ jobs:
             runner: [self-hosted, Linux, X64, gentoo]
           - name: macos-arm64
             runner: [self-hosted, macOS, ARM64]
-          # Disabled until there is a Windows runner (GitHub-hosted would use Actions minutes):
-          # - name: windows-x64
-          #   runner: windows-latest
+          - name: windows-x64
+            runner: [self-hosted, Windows, X64]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - name: Use Git Bash for bash steps
+        # On Windows, a plain `bash` is System32's WSL launcher, which fails without a Linux
+        # distribution. Put Git for Windows' bash first for the rest of the job.
+        # cmd, not PowerShell: the runner's execution policy may block PowerShell scripts.
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          if not exist "%ProgramFiles%\Git\bin\bash.exe" (
+            echo ::error::Git for Windows is not installed in %ProgramFiles%\Git
+            exit /b 1
+          )
+          echo %ProgramFiles%\Git\bin>>"%GITHUB_PATH%"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - name: Put the rustup toolchain ahead of any system Rust
         # The Gentoo box also has a system Rust earlier on PATH, which would otherwise win.
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"

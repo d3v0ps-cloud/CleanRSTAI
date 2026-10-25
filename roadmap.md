@@ -177,6 +177,6 @@ back.
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
 - [x] Run CI and releases on self-hosted runners (Linux x64 and macOS ARM64)
-- [ ] A Windows runner, so CI and releases build Windows again
+- [x] A Windows runner (DARKBASE, self-hosted), so CI and releases build Windows again
 - [x] Turn on "Automatically delete head branches" in the repository settings, and delete the
   merged `claude/*` branches

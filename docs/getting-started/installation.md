@@ -21,6 +21,8 @@ has these files:
 | `CleanRSTAI-macos-universal.zip` | the same `.app`, zipped |
 | `CleanRSTAI-linux-x86_64.tar.gz` | Linux x86_64 |
 | `CleanRSTAI-linux-aarch64.tar.gz` | Linux ARM64 |
+| `CleanRSTAI-windows-x86_64.msi` | Windows x86_64 installer |
+| `CleanRSTAI-windows-x86_64.zip` | Windows x86_64 portable `.exe` |
 | `SHA256SUMS.txt` | checksums of every file |
 
 To check a download against the checksums:
@@ -70,9 +72,20 @@ Keyring or KWallet), and save dialogs use the desktop portal (`xdg-desktop-porta
 
 ## Windows
 
-There is no Windows release yet. Build it from source (below); `cargo build --release`
-produces `target/release/cleanrstai.exe`, which doesn't open a console window. On Windows,
-`npx` resolves to `npx.cmd` automatically for MCP servers.
+- **Installer**: run `CleanRSTAI-windows-x86_64.msi`. It installs to Program Files and adds
+  a Start menu shortcut; a newer installer upgrades it in place.
+- **Portable**: unzip `CleanRSTAI-windows-x86_64.zip` and run `cleanrstai.exe` from
+  anywhere.
+
+{: .note }
+> Unless a release is signed, Windows SmartScreen warns on first launch. Choose
+> **More info → Run anyway**.
+
+The in-app updater doesn't install updates on Windows yet: **Download vX.Y.Z** opens the
+release page instead. `npx` resolves to `npx.cmd` automatically for MCP servers.
+
+To build it yourself, see below: `cargo build --release` produces
+`target/release/cleanrstai.exe`, which doesn't open a console window.
 
 ## Build from source
 

@@ -19,8 +19,10 @@ cargo test -- --ignored                      # e2e: mock LLM + `npx -y @modelcon
 ```
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy, `cargo test` and the ignored e2e tests on
-self-hosted runners (Gentoo Linux x64, Mac mini ARM64); Windows is intentionally disabled. A
-step puts `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust.
+self-hosted runners (Gentoo Linux x64, Mac mini ARM64, DARKBASE Windows x64). A step puts
+`$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust (skipped on
+Windows). The runners are persistent machines, so the release workflow installs tools once
+(WiX into the runner's tool cache) and removes signing certificates in always-run steps.
 The repository is public, so CI skips pull requests from forks (they would run on those
 machines); keep "Require approval for all external contributors" on in Settings → Actions, since
 a fork's PR could edit that check.
@@ -30,8 +32,8 @@ a fork's PR could edit that check.
 - The release tag must equal `v` + the `Cargo.toml` version (the workflow checks it), so
   bump `version` in `Cargo.toml` (and `Cargo.lock`, via `cargo build`) in a PR first.
 - Then run `.github/workflows/release.yml` by `workflow_dispatch` with `version: vX.Y.Z`
-  (or push the tag). It builds a universal macOS `.app`/`.dmg`/`.zip` on the Mac and
-  cross-builds both Linux tarballs with `cargo-zigbuild` against glibc 2.28, then creates the
+  (or push the tag). It builds a universal macOS `.app`/`.dmg`/`.zip` on the Mac, the
+  Windows `.zip` and `.msi` on DARKBASE, and cross-builds both Linux tarballs with `cargo-zigbuild` against glibc 2.28, then creates the
   GitHub Release with the files and `SHA256SUMS.txt`.
 - `scripts/release-local.sh [--publish] [--skip-tests]` does the same from a local machine.
 - The repository name is hard-coded in `src/update.rs` (the `repo!` macro, used for
