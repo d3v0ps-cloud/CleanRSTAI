@@ -112,7 +112,9 @@ source):
 - [x] Configurable update source ("Update from"), kept in the settings once changed
 - [x] A proper app icon, with light and dark variants, for the window, taskbar/dock and the
   macOS `.app`
-- [ ] Use the app icon (`assets/icon/icon.ico`) for the Windows `.exe` and `.msi`
+- [x] Use the app icon (`assets/icon/icon.ico`) for the Windows `.exe` and `.msi`
+- [x] Install updates in the app on Windows: the portable `.exe` in place, an installed copy
+  by running the new `.msi`
 
 ## 7. Richer chat input and output
 

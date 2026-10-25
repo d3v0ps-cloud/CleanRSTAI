@@ -81,8 +81,9 @@ Keyring or KWallet), and save dialogs use the desktop portal (`xdg-desktop-porta
 > Unless a release is signed, Windows SmartScreen warns on first launch. Choose
 > **More info → Run anyway**.
 
-The in-app updater doesn't install updates on Windows yet: **Download vX.Y.Z** opens the
-release page instead. `npx` resolves to `npx.cmd` automatically for MCP servers.
+Both update themselves from the app: the portable `.exe` in place (keep it in a folder you
+can write to), and the installed one by running the new installer. See
+[Updates](../using/updates.html). `npx` resolves to `npx.cmd` automatically for MCP servers.
 
 To build it yourself, see below: `cargo build --release` produces
 `target/release/cleanrstai.exe`, which doesn't open a console window.

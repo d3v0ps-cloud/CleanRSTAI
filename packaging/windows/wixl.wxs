@@ -2,7 +2,7 @@
 <!--
   Windows installer for local builds with wixl (msitools), which reads the WiX 3 schema:
     wixl -a x64 -D Version=0.4.0 -D Exe=target/x86_64-pc-windows-gnu/release/cleanrstai.exe \
-         -o CleanRSTAI.msi packaging/windows/wixl.wxs
+         -D Icon=assets/icon/icon.ico -o CleanRSTAI.msi packaging/windows/wixl.wxs
   Keep it equivalent to main.wxs (WiX 5, used by the release workflow). The UpgradeCode must
   match main.wxs and never change: it is how newer installers find and replace older ones.
 -->
@@ -16,6 +16,10 @@
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of CleanRSTAI is already installed." />
     <Media Id="1" Cabinet="cleanrstai.cab" EmbedCab="yes" />
+
+    <!-- The app icon for the Start menu shortcut and Settings → Apps. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -31,7 +35,8 @@
                     Name="CleanRSTAI"
                     Description="AI chat client"
                     Target="[INSTALLFOLDER]cleanrstai.exe"
-                    WorkingDirectory="INSTALLFOLDER" />
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="AppIcon.ico" />
           <RegistryValue Root="HKCU" Key="Software\CleanRSTAI" Name="StartMenuShortcut"
                          Type="integer" Value="1" KeyPath="yes" />
         </Component>

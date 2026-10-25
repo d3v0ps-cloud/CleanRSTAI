@@ -14,14 +14,19 @@ choose **Check for updates** in the command palette.
 
 When a new version is out, the top bar shows **Update to vX.Y.Z**:
 
-- **macOS and Linux**: click it to download the release, check it against the release's
-  `SHA256SUMS.txt` and replace the installed app. The app keeps working while it downloads;
-  then click **Restart to finish updating**.
-- **Elsewhere**: the link reads **Download vX.Y.Z** and opens the release page.
+- **macOS, Linux and portable Windows**: click it to download the release, check it against
+  the release's `SHA256SUMS.txt` and replace the installed app. The app keeps working while
+  it downloads; then click **Restart to finish updating**.
+- **Windows, installed with the `.msi`**: click it to download and check the new installer,
+  then **Install vX.Y.Z** closes CleanRSTAI and runs it. Windows asks for permission, and the
+  installer replaces the installed version; open CleanRSTAI again when it finishes.
+- **When the app can't replace itself**: the link reads **Download vX.Y.Z** and opens the
+  release page.
 
-On macOS the app must run from its `.app` bundle to update itself. On Linux the `cleanrstai`
-binary is replaced where it is, so keep it in a folder your user can write to, such as
-`~/.local/bin`.
+On macOS the app must run from its `.app` bundle to update itself. On Linux, and for the
+portable Windows `cleanrstai.exe`, the program is replaced where it is, so keep it in a
+folder your user can write to, such as `~/.local/bin`; otherwise the link opens the release
+page instead.
 
 ## Update source
 
