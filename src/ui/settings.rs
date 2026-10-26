@@ -1350,7 +1350,7 @@ impl SettingsUi {
                             ui.radio_value(
                                 &mut sb.network,
                                 SandboxNetwork::Bridge,
-                                "Normal network",
+                                "Normal network (can reach this computer, your local network and the internet)",
                             );
                         });
                         ui.end_row();
@@ -1409,7 +1409,7 @@ impl SettingsUi {
                             ui.horizontal(|ui| {
                                 if ui.add_enabled(!busy, egui::Button::new("Test")).clicked() {
                                     self.sandbox_status = None;
-                                    actions.push(SettingsAction::CheckSandbox(sb.clone()));
+                                    actions.push(SettingsAction::CheckSandbox(sb.normalized()));
                                 }
                                 let prepare = match sb.source {
                                     SandboxImageSource::Image => "Pull now",
@@ -1417,7 +1417,7 @@ impl SettingsUi {
                                 };
                                 if ui.add_enabled(!busy, egui::Button::new(prepare)).clicked() {
                                     self.sandbox_status = None;
-                                    actions.push(SettingsAction::PrepareSandbox(sb.clone()));
+                                    actions.push(SettingsAction::PrepareSandbox(sb.normalized()));
                                 }
                                 if busy {
                                     ui.spinner();

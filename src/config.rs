@@ -515,6 +515,14 @@ pub enum SandboxNetwork {
 /// Image used when the sandbox image is unset.
 pub const DEFAULT_SANDBOX_IMAGE: &str = "python:3.13-slim";
 
+/// Whether `image` can be passed to `docker` as an image reference: not empty, no leading `-`
+/// (it would read as an option), and no whitespace or control characters.
+pub fn valid_sandbox_image(image: &str) -> bool {
+    !image.is_empty()
+        && !image.starts_with('-')
+        && !image.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 /// Dockerfile offered as the example for a custom sandbox image.
 pub const DEFAULT_SANDBOX_DOCKERFILE: &str = "FROM python:3.13-slim\n\
 RUN apt-get update \\\n && apt-get install -y --no-install-recommends git curl ca-certificates \\\n && rm -rf /var/lib/apt/lists/*\n";
@@ -545,6 +553,28 @@ pub struct SandboxSettings {
     pub read_only: bool,
     /// Path to the `docker` program. Empty finds `docker` on PATH.
     pub docker: String,
+}
+
+impl SandboxSettings {
+    /// A copy with the values clamped or filled in the way [`Settings::normalize`] does: the
+    /// settings the sandbox actually uses, and the ones Settings → Docker sends to Docker.
+    pub fn normalized(&self) -> Self {
+        let mut sb = self.clone();
+        sb.cpus = if sb.cpus.is_finite() {
+            sb.cpus.clamp(0.25, 64.0)
+        } else {
+            2.0
+        };
+        sb.memory_mb = sb.memory_mb.clamp(256, 262_144);
+        sb.pids = sb.pids.clamp(32, 65_536);
+        let image = sb.image.trim().to_owned();
+        sb.image = if valid_sandbox_image(&image) {
+            image
+        } else {
+            DEFAULT_SANDBOX_IMAGE.into()
+        };
+        sb
+    }
 }
 
 impl Default for SandboxSettings {
@@ -714,17 +744,7 @@ impl Settings {
         sa.max_tasks = sa.max_tasks.clamp(1, 32);
         sa.max_rounds = sa.max_rounds.clamp(1, 100);
         sa.timeout_secs = sa.timeout_secs.clamp(10, 3600);
-        let sb = &mut self.sandbox;
-        sb.cpus = if sb.cpus.is_finite() {
-            sb.cpus.clamp(0.25, 64.0)
-        } else {
-            2.0
-        };
-        sb.memory_mb = sb.memory_mb.clamp(256, 262_144);
-        sb.pids = sb.pids.clamp(32, 65_536);
-        if sb.image.trim().is_empty() {
-            sb.image = DEFAULT_SANDBOX_IMAGE.into();
-        }
+        self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
         }
@@ -1006,6 +1026,65 @@ mod tests {
         assert_eq!(s.sandbox.cpus, 64.0);
         assert_eq!(s.sandbox.memory_mb, 262_144);
         assert_eq!(s.sandbox.pids, 32);
+    }
+
+    #[test]
+    fn valid_sandbox_image_rejects_empty_option_like_and_control_text() {
+        for ok in [
+            "python:3.13-slim",
+            "ghcr.io/me/tools:1.2",
+            "registry:5000/app@sha256:abc",
+            "cleanrstai-sandbox:0123456789ab",
+        ] {
+            assert!(valid_sandbox_image(ok), "{ok}");
+        }
+        for bad in ["", "-x", "--privileged", "a b", "a\tb", "a\nb", "a\u{7}b"] {
+            assert!(!valid_sandbox_image(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn sandbox_normalize_resets_an_invalid_image_after_trim() {
+        for bad in ["-x", "a b", "a\nb", "   "] {
+            let sb = SandboxSettings {
+                image: bad.into(),
+                ..SandboxSettings::default()
+            };
+            assert_eq!(sb.normalized().image, DEFAULT_SANDBOX_IMAGE, "{bad:?}");
+        }
+        let padded = SandboxSettings {
+            image: "  ghcr.io/me/tools:1.2 \n".into(),
+            ..SandboxSettings::default()
+        };
+        assert_eq!(padded.normalized().image, "ghcr.io/me/tools:1.2");
+        let mut s = Settings::default();
+        s.sandbox.image = "--entrypoint".into();
+        s.normalize();
+        assert_eq!(s.sandbox.image, DEFAULT_SANDBOX_IMAGE);
+    }
+
+    #[test]
+    fn sandbox_normalized_returns_a_clamped_copy_and_keeps_the_draft() {
+        let draft = SandboxSettings {
+            cpus: 500.0,
+            memory_mb: 1,
+            pids: 1_000_000,
+            image: " ".into(),
+            ..SandboxSettings::default()
+        };
+        let clean = draft.normalized();
+        assert_eq!(clean.cpus, 64.0);
+        assert_eq!(clean.memory_mb, 256);
+        assert_eq!(clean.pids, 65_536);
+        assert_eq!(clean.image, DEFAULT_SANDBOX_IMAGE);
+        // The draft itself is untouched.
+        assert_eq!(draft.cpus, 500.0);
+        assert_eq!(draft.image, " ");
+        let nan = SandboxSettings {
+            cpus: f32::NAN,
+            ..SandboxSettings::default()
+        };
+        assert_eq!(nan.normalized().cpus, 2.0);
     }
 
     #[test]

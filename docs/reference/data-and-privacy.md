@@ -39,7 +39,7 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   shell commands in containers. Docker may download images from a registry (Docker Hub unless
   the image names another one), and a custom Dockerfile's `FROM` and `RUN` lines download what
   they name. Containers get only the chat's workspace folder, not the rest of your files, and no
-  API keys or other secrets. With **Normal network** on, commands can reach the internet
+  API keys or other secrets. With **Normal network (can reach this computer, your local network and the internet)** on, commands can reach the internet
   ([Docker sandbox](../settings/docker.html)).
 - **Remote access**: while it is on, a browser that has logged in receives your chats, replies,
   tool calls and their results, approval prompts, chat titles, the model and provider names,

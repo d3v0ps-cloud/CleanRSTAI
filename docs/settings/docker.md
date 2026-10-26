@@ -54,7 +54,7 @@ present.
 | **Image name** | `python:3.13-slim` | Shown for **Docker image**. Any image name and tag. An empty name is replaced by the default. |
 | **Get the image** | Pull when missing | Shown for **Docker image**. **Pull when missing**, **Pull every time the app starts**, or **Only use an image already on this computer**. |
 | **Dockerfile** | An example | Shown for **Custom Dockerfile**. The Dockerfile text, with **Reset to example** to put back the default. |
-| **Network** | None (no network) | **None (no network)** or **Normal network**. See [Limits and hardening](#limits-and-hardening). |
+| **Network** | None (no network) | **None (no network)** or **Normal network (can reach this computer, your local network and the internet)**. See [Limits and hardening](#limits-and-hardening). |
 | **CPUs** | 2 | How many CPUs a container may use, from 0.25 to 64. |
 | **Memory** | 2048 MB | How much memory a container may use, from 256 to 262144 MB. |
 | **Processes** | 512 | How many processes a container may run at once, from 32 to 65536. |
@@ -81,7 +81,8 @@ the image as typed, so it can be:
 - **Pull when missing** (default): the app uses the image if it is on this computer, and pulls
   it when it is not.
 - **Pull every time the app starts**: the app pulls the image before the first command after
-  the app starts.
+  the app starts. If that pull fails (for example, when you are offline) and the image is
+  already on this computer, the app uses that copy.
 - **Only use an image already on this computer**: the app never pulls. If the image is missing,
   commands are refused until you pull it yourself.
 
@@ -116,7 +117,7 @@ update an old base image.
 
 In plain words, each container:
 
-- has **no network access** by default. With **Normal network** it can reach the internet;
+- has **no network access** by default. With **Normal network (can reach this computer, your local network and the internet)** it can reach the internet;
 - is limited to the **CPUs**, **Memory** and **Processes** you set. Swap is not extra: the
   memory limit is also the swap limit;
 - has no Linux capabilities (`--cap-drop ALL`), and cannot gain privileges through `setuid`
@@ -177,7 +178,7 @@ The sandbox limits what a command can reach. It does not make an untrusted comma
 
 - files inside the workspace folder. Commands can read and change them, unless **Mount
   read-only** is ticked;
-- your network, when **Normal network** is on. Commands can reach anything your computer can;
+- your network, when **Normal network (can reach this computer, your local network and the internet)** is on. Commands can reach anything your computer can;
 - what the image itself contains. Use images you trust;
 - bugs in Docker or the Linux kernel that let a program escape a container;
 - the other tools. The file tools, MCP servers and web fetch still run on your computer and are
