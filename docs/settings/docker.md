@@ -109,8 +109,25 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 ```
 
-**Reset to example** puts back the default Dockerfile, which adds `git`, `curl` and
-`ca-certificates` to `python:3.13-slim`. **Build now** builds the image again from scratch,
+Two examples are a click away under the editor:
+
+- **Small example**: the default, which adds `git`, `curl` and `ca-certificates` to
+  `python:3.13-slim`.
+- **Full example**: Ubuntu 24.04 with `bash`, Python 3 (with `requests`, `httpx`, `pyyaml`,
+  `numpy` and `pandas` in a virtual environment), Node.js and npm, build tools (`gcc`, `make`,
+  `cmake`, `ninja`, autotools, `gdb` and common `-dev` libraries), everyday tools (`git`, `curl`,
+  `wget`, `jq`, `zip`, `sqlite3`, `rsync`, `ssh`, …) and network tools (`ping`, `traceroute`,
+  `nmap`, `dig`, `nc`, `socat`, `ip`, `whois`). The image is about 1.5 GB, and its first build
+  takes a few minutes. The same file is in the repository as
+  [`assets/sandbox/full.Dockerfile`](https://github.com/d3v0ps-cloud/CleanRSTAI/blob/main/assets/sandbox/full.Dockerfile).
+
+In the full example, `pip install` and `npm install -g` work as the sandbox user: they install
+into `/opt/venv` and `/opt/npm`, which anyone in the container can write. `apt-get install`
+doesn't work at run time (on Linux commands run as your user), so add system packages to the
+Dockerfile. Because commands run without Linux capabilities, `nmap` can only do connect scans
+(`-sT`, with `-Pn` to skip its ping) and `tcpdump` can't capture.
+
+**Build now** builds the image again from scratch,
 pulling the base image and ignoring the cache (`docker build --pull --no-cache`). Use it to
 update an old base image.
 
@@ -166,8 +183,10 @@ Limits:
 
 - IPv4 only. IPv6 is blocked, and domains resolve to IPv4 addresses only.
 - `ping` works without extra permissions in the container (Docker allows unprivileged ICMP),
-  but the image must have it: `python:3.13-slim` doesn't, so install `iputils-ping` (in a
-  [custom Dockerfile](#custom-dockerfile), or with apt while a rule allows the Debian mirrors).
+  but the image must have it: `python:3.13-slim` doesn't. The **Full example** Dockerfile
+  includes it. In your own Dockerfile, install `iputils-ping` and then run
+  `setcap -r /usr/bin/ping` (from `libcap2-bin`): a program with file capabilities can't start
+  in the sandbox, which runs with none.
 - Rules work on addresses, not names. A domain served from a shared address (a CDN, for
   example) also lets commands reach other sites on that same address.
 - A domain resolves through your computer's DNS servers, as Docker sets them up.

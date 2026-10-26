@@ -6,10 +6,10 @@ use eframe::egui;
 use super::theme::icon;
 use super::widgets::{code_block, icon_button, kv_editor, list_editor, optional_value};
 use crate::config::{
-    DEFAULT_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig, McpTransportConfig,
-    NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls, SandboxImageSource,
-    SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings, Settings, Theme, TunnelMode,
-    import_mcp_json,
+    DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
+    McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
+    SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings, Settings,
+    Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
@@ -1419,9 +1419,26 @@ impl SettingsUi {
                                          build context, so COPY and ADD of local files don't work.",
                                         crate::sandbox::image_ref(sb)
                                     ));
-                                    if ui.button("Reset to example").clicked() {
-                                        sb.dockerfile = DEFAULT_SANDBOX_DOCKERFILE.into();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button("Small example")
+                                            .on_hover_text("python:3.13-slim with git and curl")
+                                            .clicked()
+                                        {
+                                            sb.dockerfile = DEFAULT_SANDBOX_DOCKERFILE.into();
+                                        }
+                                        if ui
+                                            .button("Full example")
+                                            .on_hover_text(
+                                                "Ubuntu with Python, Node.js, build tools and \
+                                                 network tools (ping, nmap, dig, traceroute); \
+                                                 about 1.5 GB",
+                                            )
+                                            .clicked()
+                                        {
+                                            sb.dockerfile = FULL_SANDBOX_DOCKERFILE.into();
+                                        }
+                                    });
                                 });
                                 ui.end_row();
                             }

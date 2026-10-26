@@ -493,3 +493,58 @@ PY"#
     assert_removed(&main.container);
     assert_removed(&gateway);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "builds the full example image (minutes); set CLEANRSTAI_DOCKER_TESTS=1 and CLEANRSTAI_DOCKER_FULL=1"]
+async fn full_example_image_tools_work_in_the_sandbox() {
+    use crate::config::{FULL_SANDBOX_DOCKERFILE, NetProtocol, SandboxImageSource, SandboxNetRule};
+    if !enabled() || std::env::var("CLEANRSTAI_DOCKER_FULL").as_deref() != Ok("1") {
+        eprintln!("skipped: also set CLEANRSTAI_DOCKER_FULL=1");
+        return;
+    }
+    let out = Command::new("docker")
+        .args([
+            "network",
+            "inspect",
+            "bridge",
+            "-f",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ])
+        .output()
+        .expect("run docker network inspect");
+    let host = text(&out.stdout).trim().to_owned();
+    let open = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = open.local_addr().unwrap().port();
+    let ws = Scratch::new("full");
+    let sandbox = Sandbox::new(SandboxSettings {
+        source: SandboxImageSource::Dockerfile,
+        dockerfile: FULL_SANDBOX_DOCKERFILE.into(),
+        rules: vec![
+            SandboxNetRule {
+                host: host.clone(),
+                protocol: NetProtocol::Icmp,
+                ports: String::new(),
+            },
+            SandboxNetRule {
+                host: host.clone(),
+                protocol: NetProtocol::Tcp,
+                ports: port.to_string(),
+            },
+        ],
+        ..settings(SandboxNetwork::Custom, false)
+    });
+    let script = format!(
+        "set -e; ping -c1 -W3 {host} >/dev/null && echo ping ok; \
+         nmap -sT -Pn -p {port} {host} | grep -q '^{port}/tcp open' && echo nmap ok; \
+         printf 'int main(){{return 0;}}' > /tmp/a.c && cc /tmp/a.c -o /tmp/a && /tmp/a && echo cc ok; \
+         python -c 'import numpy, requests' && echo python ok; node -e 'process.exit(0)' && echo node ok; \
+         touch /opt/venv/x && echo venv ok"
+    );
+    let run = exec(&sandbox, Uuid::new_v4(), &ws.0, &script).await;
+    assert_eq!(
+        text(&run.stdout),
+        "ping ok\nnmap ok\ncc ok\npython ok\nnode ok\nvenv ok\n",
+        "{}",
+        text(&run.stderr)
+    );
+}

@@ -562,6 +562,9 @@ pub fn valid_sandbox_image(image: &str) -> bool {
 pub const DEFAULT_SANDBOX_DOCKERFILE: &str = "FROM python:3.13-slim\n\
 RUN apt-get update \\\n && apt-get install -y --no-install-recommends git curl ca-certificates \\\n && rm -rf /var/lib/apt/lists/*\n";
 
+/// The larger example: Ubuntu with Python, Node.js, build tools and network tools.
+pub const FULL_SANDBOX_DOCKERFILE: &str = include_str!("../assets/sandbox/full.Dockerfile");
+
 /// Docker sandbox for the workspace shell tool.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
