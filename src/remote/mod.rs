@@ -3,8 +3,10 @@
 //! the types both sides share; the server itself lives in `server.rs`.
 
 mod auth;
+mod cloudflare;
 mod server;
 mod tls;
+mod tunnel;
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
@@ -21,6 +23,10 @@ use crate::config::{REMOTE_DEFAULT_PORT, RemoteBind, RemoteSettings, RemoteTls};
 use crate::types::Role;
 
 use auth::Auth;
+pub use tunnel::{
+    MIN_PASSWORD_CHARS as MIN_TUNNEL_PASSWORD_CHARS, PublishStatus, TunnelHandle, TunnelHosts,
+    TunnelStatus, service_url as tunnel_service_url, start as start_tunnel,
+};
 
 /// A request from a browser, sent to the app as `AppEvent::Remote`. Each carries a oneshot
 /// sender for the answer.
@@ -246,12 +252,14 @@ impl Drop for RemoteHandle {
 
 /// Starts the server for `cfg` and returns once it is listening, so a busy port or a bad
 /// certificate is reported at once. The server runs as a task on `rt`. `tx` carries browser
-/// requests to the app; `repaint` wakes the UI thread for each one.
+/// requests to the app; `repaint` wakes the UI thread for each one. `tunnel_hosts` are the
+/// public hostnames of a running Cloudflare Tunnel, which the server also answers.
 pub fn start(
     rt: &tokio::runtime::Handle,
     cfg: &RemoteSettings,
     tx: EventSender,
     repaint: Arc<dyn Fn() + Send + Sync>,
+    tunnel_hosts: TunnelHosts,
 ) -> Result<RemoteHandle, String> {
     if cfg.password.trim().is_empty() {
         return Err("Set a password to start the server".into());
@@ -286,8 +294,18 @@ pub fn start(
         repaint,
         events.clone(),
         hsts,
+        tunnel_hosts,
     ));
     Ok(RemoteHandle::new(cfg.clone(), urls, events, task))
+}
+
+/// The settings the web server itself depends on: everything but the tunnel, which can start
+/// and stop without restarting the server (and logging browsers out).
+pub fn server_settings(cfg: &RemoteSettings) -> RemoteSettings {
+    RemoteSettings {
+        tunnel: Default::default(),
+        ..cfg.clone()
+    }
 }
 
 /// Binds the port. A server that was just stopped (its handle dropped) releases the port only

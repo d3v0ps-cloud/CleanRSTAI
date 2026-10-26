@@ -15,6 +15,11 @@ const SESSION_IDLE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_FAILURES: usize = 5;
 const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 const BLOCK_FOR: Duration = Duration::from_secs(60);
+/// Through a Cloudflare Tunnel anyone on the internet can try, from many addresses: this many
+/// failed logins through the tunnel within `FAILURE_WINDOW` pause all tunnel logins for
+/// `TUNNEL_BLOCK_FOR`. Logins on the local network are not affected.
+const TUNNEL_MAX_FAILURES: usize = 20;
+const TUNNEL_BLOCK_FOR: Duration = Duration::from_secs(5 * 60);
 
 struct Session {
     created: Instant,
@@ -36,6 +41,8 @@ pub struct Auth {
     secure_cookie: bool,
     sessions: Mutex<HashMap<String, Session>>,
     failures: Mutex<HashMap<IpAddr, Failures>>,
+    /// Failed logins through the tunnel, from any address.
+    tunnel_failures: Mutex<Failures>,
 }
 
 impl Auth {
@@ -45,6 +52,7 @@ impl Auth {
             secure_cookie,
             sessions: Mutex::new(HashMap::new()),
             failures: Mutex::new(HashMap::new()),
+            tunnel_failures: Mutex::new(Failures::default()),
         }
     }
 
@@ -129,6 +137,32 @@ impl Auth {
 
     fn secure_attr(&self) -> &'static str {
         if self.secure_cookie { "; Secure" } else { "" }
+    }
+
+    /// True while tunnel logins are paused after too many failures through the tunnel.
+    pub fn tunnel_throttled(&self) -> bool {
+        self.tunnel_throttled_at(Instant::now())
+    }
+
+    pub fn record_tunnel_failure(&self) {
+        self.record_tunnel_failure_at(Instant::now());
+    }
+
+    fn tunnel_throttled_at(&self, now: Instant) -> bool {
+        lock(&self.tunnel_failures)
+            .blocked_until
+            .is_some_and(|until| now < until)
+    }
+
+    fn record_tunnel_failure_at(&self, now: Instant) {
+        let mut f = lock(&self.tunnel_failures);
+        f.times
+            .retain(|t| now.saturating_duration_since(*t) < FAILURE_WINDOW);
+        f.times.push(now);
+        if f.times.len() >= TUNNEL_MAX_FAILURES {
+            f.times.clear();
+            f.blocked_until = Some(now + TUNNEL_BLOCK_FOR);
+        }
     }
 
     fn throttled_at(&self, ip: IpAddr, now: Instant) -> bool {
@@ -377,6 +411,21 @@ mod tests {
         assert!(a.throttled_at(ip(), t0));
         a.clear_failures(ip());
         assert!(!a.throttled_at(ip(), t0));
+    }
+
+    #[test]
+    fn tunnel_logins_pause_after_twenty_failures_then_resume() {
+        let a = auth(false);
+        let t0 = Instant::now();
+        for _ in 0..TUNNEL_MAX_FAILURES - 1 {
+            a.record_tunnel_failure_at(t0);
+        }
+        assert!(!a.tunnel_throttled_at(t0));
+        a.record_tunnel_failure_at(t0);
+        assert!(a.tunnel_throttled_at(t0));
+        // Local-network logins keep their own, per-address count.
+        assert!(!a.throttled_at(ip(), t0));
+        assert!(!a.tunnel_throttled_at(t0 + TUNNEL_BLOCK_FOR));
     }
 
     #[test]

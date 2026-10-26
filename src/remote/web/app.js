@@ -466,10 +466,28 @@
 
   // ---- Events (SSE) ------------------------------------------------------------
 
+  // The server sends "hello" as soon as a stream opens. Without it in this long, something on
+  // the way (a Cloudflare quick tunnel buffers event streams) holds the stream back: poll.
+  var HELLO_WAIT_MS = 5000;
+  var POLL_RUNNING_MS = 1000;
+  var POLL_IDLE_MS = 3000;
+  var POLL_HIDDEN_MS = 15000;
+
   function connectStream() {
-    if (state.es || !state.loggedIn) return;
+    if (state.es || state.pollTimer || !state.loggedIn) return;
+    // Quick tunnels never pass event streams through, so don't hold a connection open.
+    if (/\.trycloudflare\.com$/i.test(location.hostname)) { startPolling(); return; }
     var es = new EventSource("/api/events");
     state.es = es;
+    // Counted from the request, not from "open": a buffering proxy may hold back even the
+    // response headers, and then "open" never comes.
+    clearTimeout(state.helloTimer);
+    state.helloTimer = setTimeout(function () {
+      if (state.es !== es) return;
+      es.close();
+      state.es = null;
+      startPolling();
+    }, HELLO_WAIT_MS);
     es.onopen = function () {
       state.retryDelay = 1000;
       refreshState();
@@ -478,6 +496,7 @@
     es.onmessage = function (ev) {
       var msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === "hello") { clearTimeout(state.helloTimer); return; }
       // "list" also means the browser fell behind, so the open chat is refetched as well.
       if (msg.type === "list") { refreshState(); refreshChat(); }
       else if (msg.type === "chat" && msg.id === state.openId) refreshChat();
@@ -502,9 +521,26 @@
     }, wait);
   }
 
+  // Asks for the state and the open chat on a timer: often while a reply is written, rarely
+  // while the page is hidden.
+  function startPolling() {
+    if (state.pollTimer || !state.loggedIn) return;
+    var tick = function () {
+      refreshState();
+      refreshChat();
+      var wait = document.hidden ? POLL_HIDDEN_MS
+        : (state.chat && state.chat.running) ? POLL_RUNNING_MS : POLL_IDLE_MS;
+      state.pollTimer = setTimeout(tick, wait);
+    };
+    state.pollTimer = setTimeout(tick, POLL_RUNNING_MS);
+  }
+
   function closeStream() {
     if (state.es) state.es.close();
     state.es = null;
+    clearTimeout(state.helloTimer);
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
     clearTimeout(state.retryTimer);
     state.retryTimer = null;
     state.retryDelay = 1000;

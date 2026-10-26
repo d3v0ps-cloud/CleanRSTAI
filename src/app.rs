@@ -118,6 +118,12 @@ pub struct ChatApp {
     remote: Option<crate::remote::RemoteHandle>,
     /// Whether the remote-access server runs, and where.
     pub(crate) remote_status: RemoteStatus,
+    /// The Cloudflare Tunnel's cloudflared, while it runs.
+    tunnel: Option<crate::remote::TunnelHandle>,
+    /// Why the tunnel did not start, when it didn't.
+    tunnel_error: Option<String>,
+    /// The tunnel's public hostnames, shared with the server (which also answers them).
+    tunnel_hosts: crate::remote::TunnelHosts,
     /// Fingerprints of each chat as last sent to the browsers (see `chat_fingerprint`).
     remote_seen: HashMap<Uuid, u64>,
     /// Fingerprint of the chat list and models as last sent (see `list_fingerprint`).
@@ -318,6 +324,9 @@ impl ChatApp {
             keyboard_nav: false,
             remote: None,
             remote_status: RemoteStatus::Off,
+            tunnel: None,
+            tunnel_error: None,
+            tunnel_hosts: Default::default(),
             remote_seen: HashMap::new(),
             remote_list_seen: 0,
             remote_sent: HashMap::new(),
@@ -2610,11 +2619,22 @@ impl ChatApp {
 }
 
 impl ChatApp {
-    /// Starts, restarts or stops the remote-access server to match the settings. A running
-    /// server with the same settings is left alone.
+    /// Starts, restarts or stops the remote-access server and its Cloudflare Tunnel to match
+    /// the settings. A running server or tunnel with the same settings is left alone; a
+    /// change to the tunnel alone doesn't restart the server.
     fn sync_remote(&mut self) {
+        self.sync_server();
+        self.sync_tunnel();
+    }
+
+    fn sync_server(&mut self) {
         let cfg = &self.settings.general.remote;
-        if self.remote.as_ref().is_some_and(|h| h.config() == cfg) {
+        let server = crate::remote::server_settings(cfg);
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|h| crate::remote::server_settings(h.config()) == server)
+        {
             return;
         }
         // Stop the old server first, so its port is free for the new one.
@@ -2627,7 +2647,8 @@ impl ChatApp {
         }
         let ctx = self.repaint_ctx.clone();
         let repaint = Arc::new(move || ctx.request_repaint());
-        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint) {
+        let hosts = self.tunnel_hosts.clone();
+        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint, hosts) {
             Ok(handle) => {
                 self.remote_status = RemoteStatus::Running {
                     urls: handle.urls().to_vec(),
@@ -2639,6 +2660,63 @@ impl ChatApp {
                 log::warn!("remote access did not start: {e}");
                 self.remote_status = RemoteStatus::Failed(e);
             }
+        }
+    }
+
+    fn sync_tunnel(&mut self) {
+        let cfg = &self.settings.general.remote;
+        let wanted = cfg.enabled && cfg.tunnel.enabled;
+        let password_ok =
+            cfg.password.trim().chars().count() >= crate::remote::MIN_TUNNEL_PASSWORD_CHARS;
+        let service = crate::remote::tunnel_service_url(cfg);
+        if wanted
+            && password_ok
+            && self.remote.is_some()
+            && self
+                .tunnel
+                .as_ref()
+                .is_some_and(|t| *t.config() == cfg.tunnel && t.service() == service)
+        {
+            return;
+        }
+        self.tunnel = None;
+        self.tunnel_error = None;
+        if !wanted {
+            return;
+        }
+        if self.remote.is_none() {
+            self.tunnel_error = Some("The tunnel starts once the server is running".into());
+            return;
+        }
+        let ctx = self.repaint_ctx.clone();
+        let repaint = Arc::new(move || ctx.request_repaint());
+        match crate::remote::start_tunnel(
+            &self.rt,
+            self.http.clone(),
+            cfg,
+            self.tunnel_hosts.clone(),
+            repaint,
+        ) {
+            Ok(handle) => self.tunnel = Some(handle),
+            Err(e) => {
+                log::warn!("the Cloudflare Tunnel did not start: {e}");
+                self.tunnel_error = Some(e);
+            }
+        }
+    }
+
+    /// The tunnel's state, and its hostname's publishing, for the settings page.
+    fn tunnel_status(&self) -> (crate::remote::TunnelStatus, crate::remote::PublishStatus) {
+        match (&self.tunnel, &self.tunnel_error) {
+            (Some(t), _) => (t.status(), t.publish_status()),
+            (None, Some(e)) => (
+                crate::remote::TunnelStatus::Failed {
+                    error: e.clone(),
+                    retrying: false,
+                },
+                crate::remote::PublishStatus::Off,
+            ),
+            (None, None) => Default::default(),
         }
     }
 
@@ -3164,13 +3242,21 @@ impl eframe::App for ChatApp {
 
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
+            let (tunnel, publish) = self.tunnel_status();
             let mut keep = true;
             let mut actions = sui.take_queued();
             actions.extend(
                 egui::CentralPanel::no_frame()
                     .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
                     .show(ui, |ui| {
-                        sui.show(ui, &self.settings, &views, &self.remote_status)
+                        sui.show(
+                            ui,
+                            &self.settings,
+                            &views,
+                            &self.remote_status,
+                            &tunnel,
+                            &publish,
+                        )
                     })
                     .inner,
             );
@@ -3178,7 +3264,7 @@ impl eframe::App for ChatApp {
             for action in actions {
                 match action {
                     SettingsAction::Apply(s) => {
-                        self.apply_settings(s, &ctx);
+                        self.apply_settings(*s, &ctx);
                         // Keep fields the user is still editing, but pick up normalisation.
                         sui.draft.active_provider = self.settings.active_provider;
                     }

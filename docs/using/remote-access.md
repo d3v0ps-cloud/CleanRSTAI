@@ -94,14 +94,20 @@ its attachments, but you can't add files from the browser.
   for 60 seconds. Each wrong password also takes about half a second to answer.
 - **What never leaves the computer.** API keys, MCP secrets and settings are not sent to the
   browser. Model requests, tools and approvals stay on this computer.
-- **Network.** Use remote access on a network you trust. Do not forward the port from your
+- **Network.** Use remote access on a network you trust. To reach it from outside, use the
+  [Cloudflare Tunnel](cloudflare-tunnel.html). Do not forward the port from your
   router to the internet.
 
-### Reaching it from outside your network
+## Reaching it from outside your network
 
-Remote access is meant for your own network. A tunnel integration to reach CleanRSTAI from
-outside is planned (see the [roadmap](https://github.com/d3v0ps-cloud/CleanRSTAI/blob/main/roadmap.md)).
-Until it is available, do not open the port to the internet.
+To use your chats from anywhere, turn on a **Cloudflare Tunnel** in the same settings. The app
+runs Cloudflare's `cloudflared` for you, without opening a port on your router:
+
+- a **quick tunnel** gives a random `trycloudflare.com` address with no Cloudflare account;
+- a **named tunnel** uses your own domain, such as `https://chat.example.com`.
+
+See [Cloudflare Tunnel](cloudflare-tunnel.html) for setup, what the status means and how
+logins work through the tunnel.
 
 ## Limits
 

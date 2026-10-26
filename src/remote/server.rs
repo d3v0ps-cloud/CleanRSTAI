@@ -29,7 +29,7 @@ use tokio_rustls::server::TlsStream;
 use uuid::Uuid;
 
 use super::auth::Auth;
-use super::{RemoteCommand, RemoteEvent};
+use super::{RemoteCommand, RemoteEvent, TunnelHosts};
 use crate::agent::{AppEvent, EventSender};
 use crate::approval::Approval;
 use crate::config::{RemoteSettings, RemoteTls};
@@ -66,6 +66,8 @@ pub(crate) struct AppState {
     hsts: bool,
     /// This computer's host name, lowercase, read once at start.
     machine_host: Option<String>,
+    /// Public hostnames of the running Cloudflare Tunnel; empty without one.
+    tunnel_hosts: TunnelHosts,
 }
 
 /// Whether responses carry `Strict-Transport-Security`. Only for certificate files the user
@@ -77,6 +79,7 @@ pub(crate) fn hsts_enabled(cfg: &RemoteSettings) -> bool {
 
 /// Serves the browser client and API on `listener` until the task is aborted. With `tls`,
 /// every connection is wrapped in TLS first.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     listener: TcpListener,
     tls: Option<Arc<rustls::ServerConfig>>,
@@ -85,6 +88,7 @@ pub(crate) async fn serve(
     repaint: Arc<dyn Fn() + Send + Sync>,
     events: broadcast::Sender<RemoteEvent>,
     hsts: bool,
+    tunnel_hosts: TunnelHosts,
 ) {
     let state = Arc::new(AppState {
         auth,
@@ -94,6 +98,7 @@ pub(crate) async fn serve(
         tls: tls.is_some(),
         hsts,
         machine_host: machine_host(),
+        tunnel_hosts,
     });
     let app = router(state).into_make_service_with_connect_info::<Peer>();
     let result = match tls {
@@ -158,18 +163,76 @@ async fn csrf_guard(req: Request, next: Next) -> Response {
     }
 }
 
-/// Rejects requests whose `Host` is not this computer, which stops DNS rebinding: a page on
-/// another site that resolves to 127.0.0.1 still sends its own host name.
+/// Rejects requests whose `Host` is not this computer or the tunnel's public hostname, which
+/// stops DNS rebinding: a page on another site that resolves to 127.0.0.1 still sends its own
+/// host name.
 async fn host_guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let allowed = req
         .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|host| host_allowed(host, state.machine_host.as_deref()));
+        .is_some_and(|host| {
+            host_allowed(host, state.machine_host.as_deref()) || tunnel_host(&state, host)
+        });
     if allowed {
         next.run(req).await
     } else {
         ApiError::new(StatusCode::MISDIRECTED_REQUEST, "unknown host").into_response()
+    }
+}
+
+/// True when `host` is one of the running tunnel's public hostnames.
+fn tunnel_host(state: &AppState, host: &str) -> bool {
+    let Some(name) = host_name(host) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    state.tunnel_hosts.read().unwrap().contains(&name)
+}
+
+/// Who is asking, for the login throttle.
+struct Client {
+    ip: IpAddr,
+    /// The request came through the Cloudflare Tunnel.
+    tunnel: bool,
+}
+
+/// Requests through the tunnel reach the server from cloudflared on this computer, so for
+/// those the visitor's address is Cloudflare's `Cf-Connecting-IP`. The header is trusted only
+/// on a loopback connection addressed to the tunnel's hostname, where only cloudflared (or
+/// another program on this computer) can have set it.
+fn client(state: &AppState, peer: SocketAddr, headers: &HeaderMap) -> Client {
+    let via_tunnel = peer.ip().is_loopback()
+        && headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|host| tunnel_host(state, host));
+    if !via_tunnel {
+        return Client {
+            ip: peer.ip(),
+            tunnel: false,
+        };
+    }
+    let visitor = headers
+        .get("cf-connecting-ip")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse().ok());
+    Client {
+        ip: visitor.unwrap_or(peer.ip()),
+        tunnel: true,
+    }
+}
+
+impl AppState {
+    fn throttled(&self, client: &Client) -> bool {
+        self.auth.throttled(client.ip) || (client.tunnel && self.auth.tunnel_throttled())
+    }
+
+    fn record_failure(&self, client: &Client) {
+        self.auth.record_failure(client.ip);
+        if client.tunnel {
+            self.auth.record_tunnel_failure();
+        }
     }
 }
 
@@ -275,13 +338,14 @@ async fn require_login(
     else {
         return ApiError::new(StatusCode::UNAUTHORIZED, "login required").into_response();
     };
-    if state.auth.throttled(addr.ip()) {
+    let who = client(&state, addr, headers);
+    if state.throttled(&who) {
         return too_many_failures();
     }
     if state.auth.check_bearer(bearer) {
         return next.run(req).await;
     }
-    state.auth.record_failure(addr.ip());
+    state.record_failure(&who);
     tokio::time::sleep(FAILURE_DELAY).await;
     ApiError::new(StatusCode::UNAUTHORIZED, "login required").into_response()
 }
@@ -363,10 +427,16 @@ async fn font(Path(file): Path<String>) -> Response {
 
 /// Only the session cookie counts here. A bearer password is checked by `require_login`, which
 /// throttles failures; answering it here would be an unthrottled password oracle.
-async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
+async fn session(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(Peer(addr)): ConnectInfo<Peer>,
+    headers: HeaderMap,
+) -> Json<Value> {
+    // Visitors through the tunnel reach Cloudflare over HTTPS whatever this server speaks.
+    let tunnel = client(&state, addr, &headers).tunnel;
     Json(json!({
         "logged_in": session_valid(&state, &headers),
-        "plain_http": !state.tls,
+        "plain_http": !state.tls && !tunnel,
     }))
 }
 
@@ -378,19 +448,20 @@ struct LoginBody {
 async fn login(
     State(state): State<Arc<AppState>>,
     ConnectInfo(Peer(addr)): ConnectInfo<Peer>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let ip = addr.ip();
-    if state.auth.throttled(ip) {
+    let who = client(&state, addr, &headers);
+    if state.throttled(&who) {
         return Ok(too_many_failures());
     }
     let body: LoginBody = parse_body(&body)?;
     if !state.auth.check_password(&body.password) {
-        state.auth.record_failure(ip);
+        state.record_failure(&who);
         tokio::time::sleep(FAILURE_DELAY).await;
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "wrong password"));
     }
-    state.auth.clear_failures(ip);
+    state.auth.clear_failures(who.ip);
     let token = state.auth.create_session();
     Ok((
         [(header::SET_COOKIE, state.auth.session_cookie(&token))],
@@ -581,6 +652,8 @@ async fn set_model(
 
 /// The state of one open event stream.
 struct Watch {
+    /// The `hello` event is still to be sent.
+    hello: bool,
     rx: broadcast::Receiver<RemoteEvent>,
     ticker: tokio::time::Interval,
     state: Arc<AppState>,
@@ -600,12 +673,19 @@ async fn events(
         .filter(|token| state.auth.session_alive(token))
         .map(str::to_owned);
     let watch = Watch {
+        hello: true,
         rx: state.events.subscribe(),
         ticker: tokio::time::interval(SESSION_CHECK),
         state: state.clone(),
         token,
     };
     let stream = futures_util::stream::unfold(watch, |mut w| async move {
+        if std::mem::take(&mut w.hello) {
+            // Sent at once, so a browser can tell when a proxy holds the stream back (quick
+            // tunnels buffer event streams) and poll instead.
+            let event = Event::default().data(r#"{"type":"hello"}"#);
+            return Some((Ok::<Event, Infallible>(event), w));
+        }
         loop {
             let received = tokio::select! {
                 received = w.rx.recv() => Some(received),
@@ -916,6 +996,13 @@ mod tests {
 
     /// Starts the server with a fake app loop that answers its commands.
     fn start_test(cfg: &RemoteSettings) -> Result<RemoteHandle, String> {
+        start_test_with_tunnel(cfg, TunnelHosts::default())
+    }
+
+    fn start_test_with_tunnel(
+        cfg: &RemoteSettings,
+        tunnel_hosts: TunnelHosts,
+    ) -> Result<RemoteHandle, String> {
         let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -924,7 +1011,7 @@ mod tests {
                 }
             }
         });
-        start(&Handle::current(), cfg, tx, Arc::new(|| {}))
+        start(&Handle::current(), cfg, tx, Arc::new(|| {}), tunnel_hosts)
     }
 
     fn expect_err(result: Result<RemoteHandle, String>) -> String {
@@ -1623,6 +1710,85 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status(), 200, "{host}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tunnel_hostnames_are_served_only_while_the_tunnel_runs() {
+        let hosts = TunnelHosts::default();
+        let handle = start_test_with_tunnel(&settings(RemoteTls::Off), hosts.clone()).unwrap();
+        let base = handle.urls()[0].clone();
+        let session = |host: &'static str| {
+            client()
+                .get(format!("{base}api/session"))
+                .header(header::HOST, host)
+                .send()
+        };
+        assert_eq!(session("chat.example.com").await.unwrap().status(), 421);
+
+        hosts.write().unwrap().push("chat.example.com".into());
+        let resp = session("Chat.Example.com").await.unwrap();
+        assert_eq!(resp.status(), 200);
+        // Cloudflare serves visitors over HTTPS, so no plain-HTTP warning for them.
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body, json!({ "logged_in": false, "plain_http": false }));
+
+        hosts.write().unwrap().clear();
+        assert_eq!(session("chat.example.com").await.unwrap().status(), 421);
+    }
+
+    /// Five wrong passwords from one visitor through the tunnel block that visitor only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tunnel_logins_are_throttled_by_the_visitor_address() {
+        let hosts: TunnelHosts = Arc::new(std::sync::RwLock::new(vec!["chat.example.com".into()]));
+        let handle = start_test_with_tunnel(&settings(RemoteTls::Off), hosts).unwrap();
+        let base = handle.urls()[0].clone();
+        let attempt = |visitor: &'static str, password: &'static str| {
+            client()
+                .post(format!("{base}api/login"))
+                .header(header::HOST, "chat.example.com")
+                .header("Cf-Connecting-IP", visitor)
+                .header("X-CleanRSTAI", "1")
+                .json(&json!({ "password": password }))
+                .send()
+        };
+        for _ in 0..5 {
+            assert_eq!(attempt("203.0.113.7", "wrong").await.unwrap().status(), 401);
+        }
+        assert_eq!(
+            attempt("203.0.113.7", PASSWORD).await.unwrap().status(),
+            429
+        );
+        assert_eq!(
+            attempt("198.51.100.9", PASSWORD).await.unwrap().status(),
+            200
+        );
+    }
+
+    /// Off the tunnel, `Cf-Connecting-IP` is just a header anyone can send: it is ignored.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cf_connecting_ip_is_ignored_off_the_tunnel() {
+        let handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        for i in 0..5 {
+            let resp = client()
+                .post(format!("{base}api/login"))
+                .header("Cf-Connecting-IP", format!("203.0.113.{i}"))
+                .header("X-CleanRSTAI", "1")
+                .json(&json!({ "password": "wrong" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 401);
+        }
+        let blocked = client()
+            .post(format!("{base}api/login"))
+            .header("Cf-Connecting-IP", "198.51.100.9")
+            .header("X-CleanRSTAI", "1")
+            .json(&json!({ "password": PASSWORD }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(blocked.status(), 429);
     }
 
     #[tokio::test(flavor = "multi_thread")]
