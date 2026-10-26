@@ -289,6 +289,10 @@ pub struct SubagentSettings {
     pub builtin_tools: bool,
     /// Subagents may use the chat's MCP tools. Their calls run without asking.
     pub mcp_tools: bool,
+    /// Subagents may use the chat's workspace tools, with shell commands in their own
+    /// container of the Docker sandbox (only while the sandbox is on). Their calls run
+    /// without asking.
+    pub workspace: bool,
     /// MCP servers (by id) subagents may not use, even when on in the chat.
     pub excluded_servers: Vec<String>,
     /// How many subagents run at the same time.
@@ -314,6 +318,7 @@ impl Default for SubagentSettings {
             allow_provider_choice: true,
             builtin_tools: true,
             mcp_tools: false,
+            workspace: false,
             excluded_servers: Vec::new(),
             max_parallel: 3,
             max_tasks: 8,
@@ -477,6 +482,166 @@ impl Default for GeneralSettings {
     }
 }
 
+/// Where the sandbox image comes from.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxImageSource {
+    /// An image named in `SandboxSettings::image`, pulled or found on this computer.
+    #[default]
+    Image,
+    /// A Dockerfile in `SandboxSettings::dockerfile`, built by the app.
+    Dockerfile,
+}
+
+/// When the app pulls the sandbox image.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxPull {
+    /// Pull only when the image isn't on this computer.
+    #[default]
+    Missing,
+    /// Pull before the first container of each app session.
+    Always,
+    /// Use only an image already on this computer.
+    Never,
+}
+
+/// Network access for sandbox containers.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxNetwork {
+    /// No network access.
+    #[default]
+    None,
+    /// Normal Docker bridge network.
+    Bridge,
+    /// Only the outbound connections that `SandboxSettings::rules` allow.
+    Custom,
+}
+
+/// The protocol a sandbox network rule allows.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetProtocol {
+    #[default]
+    Tcp,
+    Udp,
+    /// ICMP (ping, traceroute replies); takes no ports.
+    Icmp,
+    /// TCP and UDP on the rule's ports, or every protocol (ICMP too) when it has no ports.
+    Any,
+}
+
+/// One outbound connection a custom sandbox network allows.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SandboxNetRule {
+    /// A domain (its subdomains included; `*.` is optional), an IPv4 address or CIDR range,
+    /// or `*` for any address.
+    pub host: String,
+    pub protocol: NetProtocol,
+    /// Ports and ranges separated by commas, such as `80, 443, 8000-8100`. Empty allows all.
+    pub ports: String,
+}
+
+/// Most rules a custom sandbox network takes.
+pub const MAX_SANDBOX_NET_RULES: usize = 256;
+
+/// Image used when the sandbox image is unset.
+pub const DEFAULT_SANDBOX_IMAGE: &str = "python:3.13-slim";
+
+/// Whether `image` can be passed to `docker` as an image reference: not empty, no leading `-`
+/// (it would read as an option), and no whitespace or control characters.
+pub fn valid_sandbox_image(image: &str) -> bool {
+    !image.is_empty()
+        && !image.starts_with('-')
+        && !image.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Dockerfile offered as the example for a custom sandbox image.
+pub const DEFAULT_SANDBOX_DOCKERFILE: &str = "FROM python:3.13-slim\n\
+RUN apt-get update \\\n && apt-get install -y --no-install-recommends git curl ca-certificates \\\n && rm -rf /var/lib/apt/lists/*\n";
+
+/// The larger example: Ubuntu with Python, Node.js, build tools and network tools.
+pub const FULL_SANDBOX_DOCKERFILE: &str = include_str!("../assets/sandbox/full.Dockerfile");
+
+/// Docker sandbox for the workspace shell tool.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SandboxSettings {
+    /// Run shell commands in a Docker container instead of on this computer.
+    pub enabled: bool,
+    /// Whether `image` or `dockerfile` provides the container image.
+    pub source: SandboxImageSource,
+    /// Image name and tag used when `source` is `Image`.
+    pub image: String,
+    /// Dockerfile built when `source` is `Dockerfile`.
+    pub dockerfile: String,
+    /// When to pull the image (`Image` source only).
+    pub pull: SandboxPull,
+    /// Network access for the container.
+    pub network: SandboxNetwork,
+    /// The outbound connections allowed when `network` is `Custom`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<SandboxNetRule>,
+    /// CPU limit per container, in CPUs.
+    pub cpus: f32,
+    /// Memory limit per container, in MB.
+    pub memory_mb: u32,
+    /// Maximum number of processes per container.
+    pub pids: u32,
+    /// Mount the workspace folder read-only.
+    pub read_only: bool,
+    /// Path to the `docker` program. Empty finds `docker` on PATH.
+    pub docker: String,
+}
+
+impl SandboxSettings {
+    /// A copy with the values clamped or filled in the way [`Settings::normalize`] does: the
+    /// settings the sandbox actually uses, and the ones Settings → Docker sends to Docker.
+    pub fn normalized(&self) -> Self {
+        let mut sb = self.clone();
+        sb.cpus = if sb.cpus.is_finite() {
+            sb.cpus.clamp(0.25, 64.0)
+        } else {
+            2.0
+        };
+        sb.memory_mb = sb.memory_mb.clamp(256, 262_144);
+        sb.pids = sb.pids.clamp(32, 65_536);
+        let image = sb.image.trim().to_owned();
+        sb.image = if valid_sandbox_image(&image) {
+            image
+        } else {
+            DEFAULT_SANDBOX_IMAGE.into()
+        };
+        sb.rules.truncate(MAX_SANDBOX_NET_RULES);
+        for rule in &mut sb.rules {
+            rule.host = rule.host.trim().to_ascii_lowercase();
+            rule.ports = rule.ports.trim().to_owned();
+        }
+        sb
+    }
+}
+
+impl Default for SandboxSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source: SandboxImageSource::Image,
+            image: DEFAULT_SANDBOX_IMAGE.into(),
+            dockerfile: DEFAULT_SANDBOX_DOCKERFILE.into(),
+            pull: SandboxPull::Missing,
+            network: SandboxNetwork::None,
+            rules: Vec::new(),
+            cpus: 2.0,
+            memory_mb: 2048,
+            pids: 512,
+            read_only: false,
+            docker: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -485,6 +650,8 @@ pub struct Settings {
     pub mcp_servers: Vec<McpServerConfig>,
     pub general: GeneralSettings,
     pub subagents: SubagentSettings,
+    /// Docker sandbox for the workspace shell tool.
+    pub sandbox: SandboxSettings,
 }
 
 impl Default for Settings {
@@ -495,6 +662,7 @@ impl Default for Settings {
             mcp_servers: Vec::new(),
             general: GeneralSettings::default(),
             subagents: SubagentSettings::default(),
+            sandbox: SandboxSettings::default(),
         }
     }
 }
@@ -623,6 +791,7 @@ impl Settings {
         sa.max_tasks = sa.max_tasks.clamp(1, 32);
         sa.max_rounds = sa.max_rounds.clamp(1, 100);
         sa.timeout_secs = sa.timeout_secs.clamp(10, 3600);
+        self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
         }
@@ -868,6 +1037,117 @@ mod tests {
         assert!(s.general.send_with_enter);
         assert_eq!(s.providers.len(), 1);
         assert_eq!(s.general.update_url, crate::update::LATEST_RELEASE_URL);
+    }
+
+    #[test]
+    fn settings_without_sandbox_load_defaults() {
+        let s: Settings = serde_json::from_str(r#"{"general": {"zoom": 1.5}}"#).unwrap();
+        assert_eq!(s.sandbox, SandboxSettings::default());
+        assert!(!s.sandbox.enabled);
+        assert_eq!(s.sandbox.image, "python:3.13-slim");
+        assert_eq!(s.sandbox.pull, SandboxPull::Missing);
+        assert_eq!(s.sandbox.network, SandboxNetwork::None);
+    }
+
+    #[test]
+    fn sandbox_normalize_clamps_and_fills_image() {
+        let mut s = Settings::default();
+        s.sandbox.cpus = 0.0;
+        s.sandbox.memory_mb = 1;
+        s.sandbox.pids = 1_000_000;
+        s.sandbox.image = "  ".into();
+        s.normalize();
+        assert_eq!(s.sandbox.cpus, 0.25);
+        assert_eq!(s.sandbox.memory_mb, 256);
+        assert_eq!(s.sandbox.pids, 65_536);
+        assert_eq!(s.sandbox.image, "python:3.13-slim");
+
+        s.sandbox.cpus = 500.0;
+        s.sandbox.memory_mb = 10_000_000;
+        s.sandbox.pids = 1;
+        s.sandbox.cpus = f32::NAN;
+        s.normalize();
+        assert_eq!(s.sandbox.cpus, 2.0);
+        s.sandbox.cpus = 500.0;
+        s.normalize();
+        assert_eq!(s.sandbox.cpus, 64.0);
+        assert_eq!(s.sandbox.memory_mb, 262_144);
+        assert_eq!(s.sandbox.pids, 32);
+    }
+
+    #[test]
+    fn valid_sandbox_image_rejects_empty_option_like_and_control_text() {
+        for ok in [
+            "python:3.13-slim",
+            "ghcr.io/me/tools:1.2",
+            "registry:5000/app@sha256:abc",
+            "cleanrstai-sandbox:0123456789ab",
+        ] {
+            assert!(valid_sandbox_image(ok), "{ok}");
+        }
+        for bad in ["", "-x", "--privileged", "a b", "a\tb", "a\nb", "a\u{7}b"] {
+            assert!(!valid_sandbox_image(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn sandbox_normalize_resets_an_invalid_image_after_trim() {
+        for bad in ["-x", "a b", "a\nb", "   "] {
+            let sb = SandboxSettings {
+                image: bad.into(),
+                ..SandboxSettings::default()
+            };
+            assert_eq!(sb.normalized().image, DEFAULT_SANDBOX_IMAGE, "{bad:?}");
+        }
+        let padded = SandboxSettings {
+            image: "  ghcr.io/me/tools:1.2 \n".into(),
+            ..SandboxSettings::default()
+        };
+        assert_eq!(padded.normalized().image, "ghcr.io/me/tools:1.2");
+        let mut s = Settings::default();
+        s.sandbox.image = "--entrypoint".into();
+        s.normalize();
+        assert_eq!(s.sandbox.image, DEFAULT_SANDBOX_IMAGE);
+    }
+
+    #[test]
+    fn sandbox_normalized_returns_a_clamped_copy_and_keeps_the_draft() {
+        let draft = SandboxSettings {
+            cpus: 500.0,
+            memory_mb: 1,
+            pids: 1_000_000,
+            image: " ".into(),
+            ..SandboxSettings::default()
+        };
+        let clean = draft.normalized();
+        assert_eq!(clean.cpus, 64.0);
+        assert_eq!(clean.memory_mb, 256);
+        assert_eq!(clean.pids, 65_536);
+        assert_eq!(clean.image, DEFAULT_SANDBOX_IMAGE);
+        // The draft itself is untouched.
+        assert_eq!(draft.cpus, 500.0);
+        assert_eq!(draft.image, " ");
+        let nan = SandboxSettings {
+            cpus: f32::NAN,
+            ..SandboxSettings::default()
+        };
+        assert_eq!(nan.normalized().cpus, 2.0);
+    }
+
+    #[test]
+    fn sandbox_settings_roundtrip_snake_case() {
+        let sb = SandboxSettings {
+            source: SandboxImageSource::Dockerfile,
+            network: SandboxNetwork::Bridge,
+            pull: SandboxPull::Never,
+            ..SandboxSettings::default()
+        };
+        let json = serde_json::to_string(&sb).unwrap();
+        assert!(json.contains(r#""source":"dockerfile""#));
+        assert!(json.contains(r#""network":"bridge""#));
+        assert!(json.contains(r#""pull":"never""#));
+        let back: SandboxSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, sb);
     }
 
     #[test]

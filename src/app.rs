@@ -114,6 +114,10 @@ pub struct ChatApp {
     /// Focus is being moved with the keyboard, so the focused widget gets a visible ring
     /// (until the next pointer press).
     keyboard_nav: bool,
+    /// The Docker sandbox for the workspace shell tool, while it's on.
+    sandbox: Option<crate::sandbox::Sandbox>,
+    /// When idle sandbox containers were last removed.
+    sandbox_reaped: Instant,
     /// The browser remote-access server, while it runs.
     remote: Option<crate::remote::RemoteHandle>,
     /// Whether the remote-access server runs, and where.
@@ -283,6 +287,15 @@ impl ChatApp {
 
         let conversations = Conversation::load_all();
         let current = conversations.first().map(|c| c.id);
+        let sandbox = settings
+            .sandbox
+            .enabled
+            .then(|| crate::sandbox::Sandbox::new(settings.sandbox.clone()));
+        if settings.sandbox.enabled {
+            // Containers left by an earlier run of the app. Docker isn't touched when it's off.
+            let cfg = settings.sandbox.clone();
+            rt.spawn_blocking(move || crate::sandbox::reap_orphans(&cfg));
+        }
         let mut app = Self {
             rt,
             http,
@@ -322,6 +335,8 @@ impl ChatApp {
             server_info: None,
             input_focused_once: false,
             keyboard_nav: false,
+            sandbox,
+            sandbox_reaped: Instant::now(),
             remote: None,
             remote_status: RemoteStatus::Off,
             tunnel: None,
@@ -603,6 +618,9 @@ impl ChatApp {
     fn delete_chat(&mut self, id: Uuid) {
         self.stop(id);
         Conversation::delete(id);
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.remove_chat(id);
+        }
         self.conversations.retain(|c| c.id != id);
         self.errors.remove(&id);
         self.always_allow.remove(&id);
@@ -676,6 +694,7 @@ impl ChatApp {
             delegation: Delegation::new(&self.settings, &selection),
             selection,
             workspace: conv.workspace.clone(),
+            sandbox: self.sandbox.clone(),
         };
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
@@ -795,6 +814,12 @@ impl ChatApp {
                         Ok(UpdateCheck::Available(r)) => self.update = Some(r),
                         Ok(UpdateCheck::UpToDate) => self.update = None,
                         Err(e) => log::info!("update check failed: {e}"),
+                    }
+                }
+                AppEvent::SandboxChecked(result) => {
+                    if let Some(ui) = &mut self.settings_ui {
+                        ui.sandbox_busy = false;
+                        ui.sandbox_status = Some(result);
                     }
                 }
                 AppEvent::UpdateProgress { done, total } => {
@@ -1047,8 +1072,17 @@ impl ChatApp {
     }
 
     fn apply_settings(&mut self, new: Settings, ctx: &egui::Context) {
+        let sandbox_before = self.settings.sandbox.clone();
         self.settings = new;
         self.settings.normalize();
+        if self.settings.sandbox != sandbox_before {
+            // Dropping the old sandbox removes its containers.
+            self.sandbox = self
+                .settings
+                .sandbox
+                .enabled
+                .then(|| crate::sandbox::Sandbox::new(self.settings.sandbox.clone()));
+        }
         apply_appearance(ctx, &self.settings);
         self.mcp.sync(&self.settings.mcp_servers);
         self.save_settings();
@@ -1348,6 +1382,18 @@ impl ChatApp {
             0 => format!("Imported {added} conversation(s)."),
             n => format!("Imported {added} conversation(s); skipped {n} already present."),
         }
+    }
+
+    /// Runs a Docker test, pull or build on the runtime and reports it as `SandboxChecked`.
+    fn spawn_sandbox<F>(&self, work: F)
+    where
+        F: std::future::Future<Output = Result<String, String>> + Send + 'static,
+    {
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            let _ = tx.send(AppEvent::SandboxChecked(work.await));
+            ctx.request_repaint();
+        });
     }
 
     fn spawn_update_check(&self, explicit: bool, setting: String) {
@@ -3031,6 +3077,7 @@ fn message_view(m: &ChatMessage) -> MessageView {
             })
             .collect(),
         stats: m.stats.as_ref().map(crate::ui::stats_view::summary),
+        sandbox: m.sandbox.as_ref().map(|s| s.image.clone()),
     }
 }
 
@@ -3121,6 +3168,14 @@ impl eframe::App for ChatApp {
         self.publish_remote();
         self.handle_shortcuts(ctx);
         self.handle_dropped_files(ctx);
+        if let Some(sandbox) = &self.sandbox {
+            // Wake once a minute even with no input, so idle containers are reaped on time.
+            ctx.request_repaint_after(Duration::from_secs(60));
+            if self.sandbox_reaped.elapsed() >= Duration::from_secs(60) {
+                self.sandbox_reaped = Instant::now();
+                sandbox.reap_idle(Duration::from_secs(15 * 60));
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -3255,6 +3310,16 @@ impl eframe::App for ChatApp {
                     SettingsAction::Close => keep = false,
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,
+                    SettingsAction::CheckSandbox(cfg) => {
+                        sui.sandbox_busy = true;
+                        sui.sandbox_status = None;
+                        self.spawn_sandbox(async move { crate::sandbox::check(&cfg).await });
+                    }
+                    SettingsAction::PrepareSandbox(cfg) => {
+                        sui.sandbox_busy = true;
+                        sui.sandbox_status = None;
+                        self.spawn_sandbox(async move { crate::sandbox::prepare(&cfg).await });
+                    }
                     SettingsAction::ExportSettings { include_secrets } => {
                         let doc = export::settings_document(&self.settings, include_secrets);
                         sui.export_status = run_export("settings", &doc);

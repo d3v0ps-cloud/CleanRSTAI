@@ -35,6 +35,14 @@ when the server restarts ([Remote access](../using/remote-access.html)).
 - **Update checks** ask the [update source](../using/updates.html#update-source) for its latest
   release, at startup if enabled and when you check by hand.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
+- **Docker sandbox**: while it is on, the app runs the `docker` command on your computer to run
+  shell commands in containers. Docker may download images from a registry (Docker Hub unless
+  the image names another one), and a custom Dockerfile's `FROM` and `RUN` lines download what
+  they name. Containers get only the chat's workspace folder, not the rest of your files, and no
+  API keys or other secrets. With **Normal network (can reach this computer, your local network and the internet)** on, commands can reach the internet;
+  with **Only the hosts and ports below**, only the hosts and ports you list, and the domains in
+  those rules are looked up through your computer's DNS servers
+  ([Docker sandbox](../settings/docker.html)).
 - **Remote access**: while it is on, a browser that has logged in receives your chats, replies,
   tool calls and their results, approval prompts, chat titles, the model and provider names,
   and your name if you set one. It never receives API keys,

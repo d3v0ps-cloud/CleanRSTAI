@@ -8,8 +8,13 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
+use uuid::Uuid;
+
+use crate::config::SandboxNetwork;
 use crate::llm::ToolSpec;
 use crate::mcp::ToolOutput;
+use crate::sandbox::{Place, Sandbox};
+use crate::types::SandboxInfo;
 
 pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "file_glob_search";
@@ -52,6 +57,10 @@ const MAX_LISTING: usize = 200;
 pub struct Workspace {
     /// Canonical path of the folder.
     root: PathBuf,
+    /// The Docker sandbox container that runs shell commands.
+    sandbox: Option<Place>,
+    /// A subagent's workspace: its writes and commands run without asking.
+    subagent: bool,
 }
 
 impl Workspace {
@@ -62,7 +71,35 @@ impl Workspace {
         if !root.is_dir() {
             bail!("the workspace {} isn't a folder", root.display());
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            sandbox: None,
+            subagent: false,
+        })
+    }
+
+    /// Run shell commands in the Docker `sandbox`, in the container of `chat`.
+    pub fn with_sandbox(mut self, sandbox: Sandbox, chat: Uuid) -> Self {
+        self.sandbox = Some(Place::Chat(sandbox, chat));
+        self
+    }
+
+    /// This workspace for a subagent: shell commands run in the subagent's own container,
+    /// which shares the chat's network. `None` without a sandbox (subagents never run
+    /// commands on this computer). The container is removed when the last clone is dropped.
+    pub fn for_subagent(&self) -> Option<Self> {
+        Some(Self {
+            root: self.root.clone(),
+            sandbox: Some(self.sandbox.as_ref()?.for_subagent()),
+            subagent: true,
+        })
+    }
+
+    /// Whether shell commands run in a sandbox with the folder mounted read-only.
+    pub fn read_only(&self) -> bool {
+        self.sandbox
+            .as_ref()
+            .is_some_and(|p| p.sandbox().config().read_only)
     }
 
     #[cfg(test)]
@@ -72,14 +109,36 @@ impl Workspace {
 
     /// A note for the system prompt, so the model knows where it is working.
     pub fn prompt_note(&self) -> String {
-        format!(
+        let mut note = format!(
             "You are working in the local folder {} (the workspace). Use the workspace tools \
              to look around before changing anything: get_info, file_glob_search, \
              grep_search and read_file. Paths are relative to the workspace. Make changes \
              with edit_file (exact string replacement) or write_file, and run commands with \
-             exec_shell_command; the user approves each of those.",
-            self.root.display()
-        )
+             exec_shell_command{}.",
+            self.root.display(),
+            if self.subagent {
+                ""
+            } else {
+                "; the user approves each of those"
+            }
+        );
+        if let Some(place) = &self.sandbox {
+            note.push_str(&format!(
+                " Shell commands run in a Linux container (image {}) with this folder at /workspace.",
+                place.sandbox().image()
+            ));
+        }
+        note
+    }
+
+    /// The spec offered to the model for `name`. The shell tool's description says where its
+    /// commands run when this workspace runs them in a sandbox.
+    pub fn spec(&self, name: &str) -> ToolSpec {
+        let mut spec = base_spec(name);
+        if let (SHELL, Some(place)) = (name, &self.sandbox) {
+            spec.description = sandbox_shell_description(place.sandbox());
+        }
+        spec
     }
 
     /// `rel` (relative to the workspace, or absolute inside it) as a path that must exist.
@@ -210,6 +269,7 @@ impl Workspace {
                     mime.into(),
                     &bytes,
                 )],
+                sandbox: None,
             });
         }
         if is_binary(&bytes) {
@@ -478,6 +538,9 @@ impl Workspace {
             .as_u64()
             .unwrap_or(DEFAULT_SHELL_SECS.max(timeout.as_secs()))
             .clamp(1, MAX_SHELL_SECS);
+        if let Some(place) = &self.sandbox {
+            return self.sandboxed_shell(place, command, secs).await;
+        }
         let mut cmd = if cfg!(windows) {
             let mut c = tokio::process::Command::new("cmd");
             c.arg("/C").arg(command);
@@ -507,22 +570,115 @@ impl Workspace {
                     bail!("the command didn't finish within {secs} s and was stopped")
                 }
             };
-        let code = output
-            .status
-            .code()
-            .map_or_else(|| "killed by a signal".to_owned(), |c| c.to_string());
-        let mut out = format!("Exit code: {code}\n");
-        for (name, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
-            let text = String::from_utf8_lossy(bytes);
-            if !text.trim().is_empty() {
-                out.push_str(&format!("--- {name} ---\n{}\n", keep_ends(&text)));
-            }
-        }
         Ok(ToolOutput {
-            text: out,
+            text: shell_output(
+                output.status.code(),
+                (output.stdout.as_slice(), 0),
+                (output.stderr.as_slice(), 0),
+            ),
             is_error: !output.status.success(),
             images: Vec::new(),
+            sandbox: None,
         })
+    }
+
+    /// Runs the command in the chat's sandbox container. A Docker error is returned as is:
+    /// the command never runs on this computer instead.
+    async fn sandboxed_shell(&self, place: &Place, command: &str, secs: u64) -> Result<ToolOutput> {
+        let run = place
+            .exec(&self.root, command, Duration::from_secs(secs))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if run.timed_out {
+            bail!(
+                "the command didn't finish within {secs} s; its container was stopped and removed"
+            );
+        }
+        Ok(ToolOutput {
+            text: shell_output(
+                run.exit_code,
+                (run.stdout.as_slice(), run.stdout_cut),
+                (run.stderr.as_slice(), run.stderr_cut),
+            ),
+            is_error: run.exit_code != Some(0),
+            images: Vec::new(),
+            sandbox: Some(SandboxInfo {
+                image: run.image,
+                container: run.container,
+            }),
+        })
+    }
+}
+
+/// The shell tool's result text: the exit code, then stdout and stderr when not empty. Each
+/// stream is given with the number of bytes the sandbox dropped from its middle; that count
+/// goes after the kept text, because [`keep_ends`] would cut a note placed in the middle.
+fn shell_output(code: Option<i32>, stdout: (&[u8], usize), stderr: (&[u8], usize)) -> String {
+    let code = code.map_or_else(|| "killed by a signal".to_owned(), |c| c.to_string());
+    let mut out = format!("Exit code: {code}\n");
+    for (name, (bytes, cut)) in [("stdout", stdout), ("stderr", stderr)] {
+        let text = String::from_utf8_lossy(bytes);
+        if !text.trim().is_empty() {
+            let mut body = keep_ends(&text);
+            if cut > 0 {
+                body.push_str(&format!("\n[… {cut} bytes of output dropped …]"));
+            }
+            out.push_str(&format!("--- {name} ---\n{body}\n"));
+        }
+    }
+    out
+}
+
+/// The shell tool's description when its commands run in the sandbox `sandbox`.
+fn sandbox_shell_description(sandbox: &Sandbox) -> String {
+    let cfg = sandbox.config();
+    let read_only = if cfg.read_only { " (read-only)" } else { "" };
+    let network = match cfg.network {
+        SandboxNetwork::None => "The container has no network access.".to_owned(),
+        SandboxNetwork::Bridge => "The container has network access.".to_owned(),
+        SandboxNetwork::Custom => custom_network_note(&cfg.rules),
+    };
+    format!(
+        "Run a shell command (sh) in a Linux container from the image {}, with the workspace \
+         folder at /workspace{read_only}. {network} Packages you install stay for later \
+         commands in this chat until the container is removed. Return its exit code, stdout \
+         and stderr. Commands run without a terminal or input; use non-interactive flags.",
+        sandbox.image()
+    )
+}
+
+/// The shell tool's sentence about a custom sandbox network: what it may reach.
+fn custom_network_note(rules: &[crate::config::SandboxNetRule]) -> String {
+    use crate::config::NetProtocol;
+    let allowed: Vec<String> = rules
+        .iter()
+        .map(|r| {
+            let protocol = match r.protocol {
+                NetProtocol::Tcp => "TCP",
+                NetProtocol::Udp => "UDP",
+                NetProtocol::Icmp => "ICMP, such as ping",
+                NetProtocol::Any => "any protocol",
+            };
+            let host = if r.host == "*" {
+                "any address"
+            } else {
+                &r.host
+            };
+            if r.ports.is_empty() {
+                format!("{host} ({protocol})")
+            } else {
+                format!("{host} port {} ({protocol})", r.ports)
+            }
+        })
+        .collect();
+    if allowed.is_empty() {
+        "The container has no network access.".to_owned()
+    } else {
+        format!(
+            "The container's network allows only outbound connections to: {}; everything else \
+             is refused, and other domains don't resolve.",
+            allowed.join(", ")
+        )
     }
 }
 
@@ -627,8 +783,8 @@ fn git_branch(root: &Path) -> Option<String> {
     ))
 }
 
-/// The specs offered to the model when a chat has a workspace.
-pub fn spec(name: &str) -> ToolSpec {
+/// The spec of a workspace tool as it runs on this computer.
+fn base_spec(name: &str) -> ToolSpec {
     let (description, parameters) = match name {
         READ_FILE => (
             "Read a text file in the workspace, with line numbers. Long files are read in \
@@ -978,11 +1134,142 @@ mod tests {
         assert!(!ws.root().join("late").exists());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sandboxed_output_over_the_cap_says_how_much_was_dropped() {
+        use crate::sandbox::fake_docker::Fake;
+        let fake = Fake::new();
+        let (_d, ws) = temp_workspace();
+        let ws = sandboxed(ws, &fake);
+        // 4.5 MB against the 4 MiB cap (4 194 304 bytes kept): 305 696 bytes are dropped.
+        let cmd = "head -c 4500000 /dev/zero | tr '\\0' a";
+        let out = call(&ws, SHELL, json!({"command": cmd})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("--- stdout ---\n"), "{}", out.text);
+        assert!(
+            out.text.contains("\n[… 305696 bytes of output dropped …]"),
+            "{}",
+            out.text
+        );
+    }
+
     #[test]
     fn long_output_keeps_both_ends() {
         let text = format!("START{}END", "x".repeat(MAX_OUTPUT_CHARS * 2));
         let kept = keep_ends(&text);
         assert!(kept.starts_with("START") && kept.ends_with("END"));
         assert!(kept.contains("characters cut"));
+    }
+
+    #[cfg(unix)]
+    fn sandboxed(ws: Workspace, fake: &crate::sandbox::fake_docker::Fake) -> Workspace {
+        let sandbox = Sandbox::new(fake.settings());
+        ws.with_sandbox(sandbox, Uuid::new_v4())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_shell_runs_in_the_container_and_reports_it() {
+        use crate::sandbox::fake_docker::Fake;
+        let fake = Fake::new();
+        let (_d, ws) = temp_workspace();
+        let ws = sandboxed(ws, &fake);
+        let out = call(&ws, SHELL, json!({"command": "echo inside"})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("Exit code: 0\n"), "{}", out.text);
+        assert!(out.text.contains("--- stdout ---\ninside"), "{}", out.text);
+        let info = out.sandbox.expect("the sandbox is reported");
+        assert_eq!(info.image, "python:3.13-slim");
+        assert!(info.container.starts_with("cleanrstai-"), "{info:?}");
+        assert!(fake.count_prefix("exec ") >= 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_sandboxed_command_is_an_error_with_its_exit_code() {
+        use crate::sandbox::fake_docker::Fake;
+        let fake = Fake::new();
+        let (_d, ws) = temp_workspace();
+        let ws = sandboxed(ws, &fake);
+        let out = call(&ws, SHELL, json!({"command": "exit 3"})).await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("Exit code: 3"), "{}", out.text);
+        assert!(out.sandbox.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_shell_never_runs_on_the_host_when_docker_is_down() {
+        use crate::sandbox::fake_docker::Fake;
+        let fake = Fake::new();
+        fake.mark("down");
+        let (_d, ws) = temp_workspace();
+        let ws = sandboxed(ws, &fake);
+        let out = call(&ws, SHELL, json!({"command": "touch host_ran"})).await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("Docker isn't running"), "{}", out.text);
+        assert!(out.sandbox.is_none());
+        assert!(!ws.root().join("host_ran").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sandboxed_timeout_says_the_container_was_removed() {
+        use crate::sandbox::fake_docker::Fake;
+        let fake = Fake::new();
+        let (_d, ws) = temp_workspace();
+        let ws = sandboxed(ws, &fake);
+        let out = call(&ws, SHELL, json!({"command": "sleep 5", "timeout_secs": 1})).await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("didn't finish within 1 s; its container was stopped and removed"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn sandboxed_shell_spec_names_the_image_and_the_container_rules() {
+        let (_d, ws) = temp_workspace();
+        let sandbox = Sandbox::new(crate::config::SandboxSettings::default());
+        let ws = ws.with_sandbox(sandbox, Uuid::new_v4());
+        let desc = ws.spec(SHELL).description;
+        assert!(desc.contains("python:3.13-slim"), "{desc}");
+        assert!(desc.contains("/workspace"), "{desc}");
+        assert!(desc.contains("no network access"), "{desc}");
+        assert!(!desc.contains("(read-only)"), "{desc}");
+        assert!(
+            ws.prompt_note()
+                .contains("Shell commands run in a Linux container (image python:3.13-slim) with this folder at /workspace."),
+            "{}",
+            ws.prompt_note()
+        );
+    }
+
+    #[test]
+    fn sandboxed_shell_spec_follows_read_only_and_network_settings() {
+        let (_d, ws) = temp_workspace();
+        let cfg = crate::config::SandboxSettings {
+            read_only: true,
+            network: SandboxNetwork::Bridge,
+            ..Default::default()
+        };
+        let ws = ws.with_sandbox(Sandbox::new(cfg), Uuid::new_v4());
+        let desc = ws.spec(SHELL).description;
+        assert!(desc.contains("/workspace (read-only)."), "{desc}");
+        assert!(desc.contains("has network access"), "{desc}");
+    }
+
+    #[test]
+    fn unsandboxed_shell_spec_is_unchanged() {
+        let (_d, ws) = temp_workspace();
+        assert_eq!(
+            ws.spec(SHELL).description,
+            "Run a shell command in the workspace folder (sh on macOS and Linux, cmd on \
+             Windows) and return its exit code, stdout and stderr. Commands run without a \
+             terminal or input; use non-interactive flags."
+        );
+        assert!(!ws.prompt_note().contains("Linux container"));
     }
 }

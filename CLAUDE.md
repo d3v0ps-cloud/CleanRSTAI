@@ -23,6 +23,10 @@ self-hosted runners (Gentoo Linux x64, Mac mini ARM64, DARKBASE Windows x64). A 
 `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust (skipped on
 Windows). The runners are persistent machines, so the release workflow installs tools once
 (WiX into the runner's tool cache) and removes signing certificates in always-run steps.
+`.github/workflows/sandbox-image.yml` builds `assets/sandbox/full.Dockerfile` (amd64 + arm64 via
+QEMU, on any self-hosted Linux x64 runner with Docker) and pushes
+`ghcr.io/<owner>/cleanrstai-sandbox` (`full`/`latest` from main, `full-dev` from dev, plus
+`full-<sha256-12>` and `sha-<commit>`); it runs only when that file changes, or by hand.
 The repository is public, so CI skips pull requests from forks (they would run on those
 machines); keep "Require approval for all external contributors" on in Settings → Actions, since
 a fork's PR could edit that check.
@@ -59,7 +63,7 @@ The user docs live in `docs/` (Just the Docs remote theme, built by GitHub Pages
 range or shortcut, update the matching page in the same PR:
 
 - settings (labels, defaults and ranges in `ui/settings.rs` / `config.rs`) →
-  `docs/settings/<tab>.md`;
+  `docs/settings/<tab>.md` (the Docker tab is `docs/settings/docker.md`);
 - chats, attachments, tools and approvals, MCP, subagents, updates → `docs/using/*.md`;
 - shortcuts → `docs/reference/keyboard-shortcuts.md`; storage, secrets or anything that
   leaves the computer → `docs/reference/data-and-privacy.md`;
@@ -106,8 +110,11 @@ them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` lis
 server id and MCP tool name (not the routed function name), so it survives renames.
 
 **Subagents** (`subagent.rs`): the `delegate` tool runs tasks in parallel, each with its own
-model/tool loop and a derived `ToolSelection` (never the task list, `delegate` or workspace
-tools; time/calculator/fetch only when allowed for subagents). Progress streams back as
+model/tool loop and a derived `ToolSelection` (never the task list or `delegate`;
+time/calculator/fetch only when allowed for subagents). Workspace tools only with
+`subagents.workspace` and the sandbox on (`Delegation::with_workspace`): each subagent gets
+`Workspace::for_subagent`, whose shell runs in its own container (`sandbox::Subagent`, removed on
+drop). Subagent tool calls never ask for approval. Progress streams back as
 `SubagentProgress` events.
 
 **MCP** (`mcp/`): stdio and Streamable HTTP transports, OAuth (PKCE, dynamic registration,
@@ -121,6 +128,19 @@ for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers
 `.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
 `tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
 `AppEvent::FileAttached`.
+
+**Docker sandbox** (`sandbox/`): only `exec_shell_command` is sandboxed. `docker.rs` talks to
+Docker only through the `docker` CLI; its argument builders (`run_args`, `exec_args`) are pure, and
+spawns retry `ExecutableFileBusy`. `Sandbox` keeps one container per chat, named `cleanrstai-<chat>` (subagents get
+`cleanrstai-<chat>-s<id>`; containers are keyed by name)
+and labelled `net.bukn.cleanrstai.sandbox=1`, reused via `docker exec`. It removes them with
+`rm -f` on timeout, cancel (a drop guard), 15 idle minutes, chat delete, settings change, last-clone
+drop, and at startup for leftovers. Images are a named image with a pull policy, or a Dockerfile
+built as `cleanrstai-sandbox:<sha256-12>` with no build context. A custom network (`network.rs`)
+runs one gateway container per chat, `cleanrstai-<chat>-net`, shared by its containers (image `cleanrstai-sandbox-net:<hash>` built from
+`GATEWAY_DOCKERFILE`; iptables, ipset and dnsmasq set up by `gateway_script`) whose network the
+sandbox joins with `--network container:`; only the allowed domains resolve, into per-rule ipsets. Errors are returned as the
+command's error; nothing falls back to the host. `ChatMessage.sandbox` records the image for the badge.
 
 **Remote access** (`remote/`): an axum server, started by `ChatApp::sync_remote` when
 `general.remote` is on, serves the browser client in `remote/web/` (plain JS embedded with

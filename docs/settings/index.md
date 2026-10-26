@@ -15,6 +15,7 @@ opens on **General** and takes over the main window.
 | [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
 | [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
 | [Subagents](subagents.html) | Delegation on or off; provider and model; tools; parallelism and limits; system prompt |
+| [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or custom Dockerfile, network, CPU, memory and process limits, read-only folder |
 
 ## Finding a setting
 

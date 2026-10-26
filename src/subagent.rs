@@ -13,6 +13,7 @@ use crate::llm;
 use crate::mcp::ToolOutput;
 use crate::mcp::manager::{McpManager, ToolRouter};
 use crate::stats::RequestStats;
+use crate::tools::workspace::{self as ws_tools, Workspace};
 use crate::tools::{self, ToolOverrides, ToolSelection, Toolbox};
 use crate::types::{ChatMessage, Role, ToolCall};
 
@@ -67,6 +68,9 @@ pub struct Delegation {
     /// Tools subagents may use: derived from the chat's selection.
     selection: ToolSelection,
     tool_timeout: Duration,
+    /// The chat's workspace, when subagents may use it: only with the Docker sandbox on, so
+    /// their commands run in containers of their own.
+    workspace: Option<Workspace>,
 }
 
 impl Delegation {
@@ -100,7 +104,28 @@ impl Delegation {
             default_provider: settings.subagent_provider(),
             selection,
             tool_timeout: Duration::from_secs(settings.general.tool_timeout_secs.max(5)),
+            workspace: None,
         })
+    }
+
+    /// Lets subagents use the chat's workspace `ws` when that is allowed: the setting is on
+    /// and `ws` runs commands in the Docker sandbox. A read-only folder leaves out the tools
+    /// that write files (they work on this computer, not in the container).
+    pub fn with_workspace(mut self, ws: Option<&Workspace>) -> Self {
+        let Some(ws) = ws.filter(|ws| self.settings.workspace && ws.for_subagent().is_some())
+        else {
+            return self;
+        };
+        if ws.read_only() {
+            for key in [ws_tools::WRITE_FILE, ws_tools::EDIT_FILE] {
+                self.selection
+                    .overrides
+                    .0
+                    .insert(ToolOverrides::builtin_key(key), false);
+            }
+        }
+        self.workspace = Some(ws.clone());
+        self
     }
 
     #[cfg(test)]
@@ -131,6 +156,12 @@ impl Delegation {
         if sa.mcp_tools {
             abilities.push("this chat's MCP tools");
         }
+        if self.workspace.is_some() {
+            abilities.push(
+                "the workspace tools, running shell commands in a Linux container of their own \
+                 that has the workspace folder at /workspace",
+            );
+        }
         let abilities = if abilities.is_empty() {
             "no tools".to_owned()
         } else {
@@ -145,6 +176,13 @@ impl Delegation {
              self-contained. At most {} tasks per call; {} run at a time.",
             sa.max_tasks, sa.max_parallel
         );
+        if self.workspace.is_some() {
+            d.push_str(
+                " Subagents share the workspace folder and work at the same time, so give each \
+                 its own files to change; they start from a fresh container, without packages \
+                 installed by you or other subagents.",
+            );
+        }
         if sa.allow_provider_choice && self.providers.len() > 1 {
             let list: Vec<String> = self
                 .providers
@@ -291,6 +329,16 @@ impl Delegation {
         publish: &Publish<'_>,
     ) -> Result<String> {
         let mut history = vec![ChatMessage::new(Role::User, task.trim())];
+        // The subagent's own container; dropped (and removed) when this loop ends.
+        let workspace = self.workspace.as_ref().and_then(Workspace::for_subagent);
+        let system_prompt = match &workspace {
+            Some(ws) => format!(
+                "{}\n\n{}",
+                self.settings.system_prompt.trim(),
+                ws.prompt_note()
+            ),
+            None => self.settings.system_prompt.clone(),
+        };
         let max_rounds = self.settings.max_rounds.max(1);
         // As in the main chat: LiteLLM reports no cost for streamed replies.
         let prices = if provider.kind == crate::config::ProviderKind::LiteLlm {
@@ -307,12 +355,16 @@ impl Delegation {
                 } else {
                     ToolRouter::default()
                 };
-                Toolbox::new(router, &self.selection, None).with_http(http.clone())
+                let toolbox = Toolbox::new(router, &self.selection, None).with_http(http.clone());
+                match &workspace {
+                    Some(ws) => toolbox.with_workspace(ws.clone(), &self.selection),
+                    None => toolbox,
+                }
             } else {
                 Toolbox::default()
             };
             publish(&|r| r[i].activity = "Thinking…".into());
-            let messages = llm::to_api_messages(&self.settings.system_prompt, &history);
+            let messages = llm::to_api_messages(&system_prompt, &history);
             let mut turn =
                 llm::chat_completion(http, provider, messages, &toolbox.specs, |_| {}, |_| {})
                     .await?;
@@ -404,6 +456,7 @@ fn summarize(reports: &[SubagentReport]) -> ToolOutput {
         text: text.trim_end().to_owned(),
         is_error: reports.iter().all(|r| r.state != SubagentState::Done),
         images: Vec::new(),
+        sandbox: None,
     }
 }
 
@@ -538,6 +591,138 @@ mod tests {
                     .iter()
                     .any(|t| t == tools::TASKS || t == tools::DELEGATE)
             );
+        }
+    }
+
+    #[cfg(unix)]
+    fn tool_names(req: &crate::testutil::Request) -> Vec<String> {
+        req.json()["tools"]
+            .as_array()
+            .map(|t| {
+                t.iter()
+                    .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn subagents_get_the_workspace_only_with_the_setting_and_a_sandbox() {
+        let dir = std::env::temp_dir();
+        let plain = Workspace::open(&dir).unwrap();
+        let mut s = Settings::default();
+        let sel = ToolSelection::new(&s, &ToolOverrides::default());
+        let sandboxed = plain.clone().with_sandbox(
+            crate::sandbox::Sandbox::new(s.sandbox.clone()),
+            uuid::Uuid::new_v4(),
+        );
+        let d = |s: &Settings, ws: &Workspace| {
+            Delegation::new(s, &sel)
+                .unwrap()
+                .with_workspace(Some(ws))
+                .workspace
+                .is_some()
+        };
+        assert!(!d(&s, &sandboxed), "the setting is off");
+        s.subagents.workspace = true;
+        assert!(!d(&s, &plain), "no sandbox: never on this computer");
+        assert!(d(&s, &sandboxed));
+
+        s.sandbox.read_only = true;
+        let read_only = plain.with_sandbox(
+            crate::sandbox::Sandbox::new(s.sandbox.clone()),
+            uuid::Uuid::new_v4(),
+        );
+        let del = Delegation::new(&s, &sel)
+            .unwrap()
+            .with_workspace(Some(&read_only));
+        assert!(!del.selection.builtin_on(ws_tools::WRITE_FILE));
+        assert!(!del.selection.builtin_on(ws_tools::EDIT_FILE));
+        assert!(del.selection.builtin_on(ws_tools::SHELL));
+        assert!(del.tool_description().contains("container of their own"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagents_run_commands_in_their_own_containers() {
+        use crate::sandbox::fake_docker::Fake;
+        let (base, log) = serve(|req| {
+            let body = req.json();
+            let messages = body["messages"].as_array().cloned().unwrap_or_default();
+            let task = messages
+                .iter()
+                .find(|m| m["role"] == "user")
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or_default()
+                .to_owned();
+            match messages.iter().find(|m| m["role"] == "tool") {
+                None => Response::json(json!({
+                    "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {
+                            "name": ws_tools::SHELL,
+                            "arguments": json!({"command": format!("echo {task}")}).to_string()
+                        }}
+                    ]}, "finish_reason": "tool_calls"}]
+                })),
+                Some(tool) => reply(tool["content"].as_str().unwrap_or_default()),
+            }
+        })
+        .await;
+        let fake = Fake::new();
+        let mut s = settings_with(&format!("{base}/v1"));
+        s.subagents.workspace = true;
+        let ws = Workspace::open(&fake.dir).unwrap().with_sandbox(
+            crate::sandbox::Sandbox::new(fake.settings()),
+            uuid::Uuid::new_v4(),
+        );
+        let d = Delegation::new(&s, &ToolSelection::new(&s, &ToolOverrides::default()))
+            .unwrap()
+            .with_workspace(Some(&ws));
+
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let args = json!({"tasks": [{"task": "alpha"}, {"task": "beta"}]}).to_string();
+        let (out, reports) = d.run(&http, &mcp, &args, &|_| {}).await;
+
+        assert!(!out.is_error, "{}", out.text);
+        for (r, word) in reports.iter().zip(["alpha", "beta"]) {
+            assert_eq!(r.state, SubagentState::Done, "{}", r.result);
+            assert!(r.result.contains(word), "{}", r.result);
+        }
+        for req in log.lock().unwrap().iter() {
+            assert!(tool_names(req).iter().any(|t| t == ws_tools::SHELL));
+        }
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(system.contains("/workspace"), "{system}");
+        assert!(!system.contains("the user approves"), "{system}");
+
+        // Two containers of their own, each removed when its subagent finished.
+        let subs: Vec<String> = fake
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("run -d "))
+            .filter_map(|c| {
+                c.split(" --name ")
+                    .nth(1)?
+                    .split(' ')
+                    .next()
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(subs.len(), 2, "{subs:?}");
+        assert_ne!(subs[0], subs[1]);
+        for sub in &subs {
+            assert!(sub.contains("-s"), "{sub}");
+            for _ in 0..200 {
+                if fake.count_eq(&format!("rm -f {sub}")) == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(fake.count_eq(&format!("rm -f {sub}")), 2, "{sub}");
         }
     }
 

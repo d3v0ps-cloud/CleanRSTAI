@@ -4,13 +4,101 @@
 use eframe::egui;
 
 use super::theme::icon;
-use super::widgets::{code_block, kv_editor, list_editor, optional_value};
+use super::widgets::{code_block, icon_button, kv_editor, list_editor, optional_value};
 use crate::config::{
-    McpServerConfig, McpTransportConfig, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    Settings, Theme, TunnelMode, import_mcp_json,
+    DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
+    McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
+    SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings, Settings,
+    Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
+
+/// The rows of a custom sandbox network: host, protocol, ports and a remove button, with
+/// each rule's error under it.
+fn net_rules_editor(ui: &mut egui::Ui, rules: &mut Vec<SandboxNetRule>) {
+    ui.push_id("net-rules", |ui| {
+        let mut remove = None;
+        for (i, rule) in rules.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut rule.host)
+                            .hint_text("pypi.org, 10.0.0.0/8 or *")
+                            .desired_width(200.0),
+                    );
+                    egui::ComboBox::from_id_salt("protocol")
+                        .width(70.0)
+                        .selected_text(protocol_label(rule.protocol))
+                        .show_ui(ui, |ui| {
+                            for p in [
+                                NetProtocol::Tcp,
+                                NetProtocol::Udp,
+                                NetProtocol::Icmp,
+                                NetProtocol::Any,
+                            ] {
+                                ui.selectable_value(&mut rule.protocol, p, protocol_label(p));
+                            }
+                        });
+                    if rule.protocol == NetProtocol::Icmp {
+                        // ICMP has no ports.
+                        rule.ports.clear();
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut rule.ports)
+                                .hint_text("no ports")
+                                .desired_width(110.0),
+                        );
+                    } else {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut rule.ports)
+                                .hint_text("all ports")
+                                .desired_width(110.0),
+                        );
+                    }
+                    if icon_button(ui, icon::CLOSE, "Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                let check = SandboxNetRule {
+                    host: rule.host.trim().to_ascii_lowercase(),
+                    ..rule.clone()
+                };
+                if let Err(e) = crate::sandbox::check_rule(&check) {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            rules.remove(i);
+        }
+        if rules.len() < MAX_SANDBOX_NET_RULES
+            && ui
+                .small_button(format!("{}  Add rule", icon::PLUS))
+                .clicked()
+        {
+            rules.push(SandboxNetRule {
+                ports: "443".into(),
+                ..SandboxNetRule::default()
+            });
+        }
+        ui.weak(
+            "Host: a domain (its subdomains too), an IPv4 address or range such as \
+             192.168.1.0/24, or * for any address. Ports: such as 80, 443, 8000-8100; empty \
+             allows all. ICMP allows ping and takes no ports. Everything else is refused, and \
+             only the domains listed resolve.",
+        );
+    });
+}
+
+fn protocol_label(protocol: NetProtocol) -> &'static str {
+    match protocol {
+        NetProtocol::Tcp => "TCP",
+        NetProtocol::Udp => "UDP",
+        NetProtocol::Icmp => "ICMP",
+        NetProtocol::Any => "Any",
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -18,6 +106,7 @@ pub enum Tab {
     Providers,
     Mcp,
     Tools,
+    Docker,
     Subagents,
 }
 
@@ -39,6 +128,10 @@ pub enum SettingsAction {
     /// Check the given "Update from" setting (the draft's, so it works before saving).
     CheckForUpdates(String),
     InstallUpdate,
+    /// Test Docker and the sandbox image with these settings (Settings → Docker "Test").
+    CheckSandbox(SandboxSettings),
+    /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
+    PrepareSandbox(SandboxSettings),
 }
 
 pub struct SettingsUi {
@@ -67,6 +160,10 @@ pub struct SettingsUi {
     pub update_status: Option<Result<String, String>>,
     /// The last check found a release this build can install itself.
     pub update_available: bool,
+    /// A Docker test, pull or build is running.
+    pub sandbox_busy: bool,
+    /// Outcome of the last Docker test, pull or build: Ok(message) or Err(error).
+    pub sandbox_status: Option<Result<String, String>>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -438,6 +535,8 @@ impl SettingsUi {
             checking_update: false,
             update_status: None,
             update_available: false,
+            sandbox_busy: false,
+            sandbox_status: None,
         }
     }
 
@@ -495,6 +594,7 @@ impl SettingsUi {
                         (Tab::Providers, "Providers"),
                         (Tab::Mcp, "MCP servers"),
                         (Tab::Tools, "Built-in tools"),
+                        (Tab::Docker, "Docker sandbox"),
                         (Tab::Subagents, "Subagents"),
                     ] {
                         if ui
@@ -564,6 +664,7 @@ impl SettingsUi {
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
                 Tab::Tools => "Built-in Tools",
+                Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
                 Tab::General => "General",
             });
@@ -571,6 +672,7 @@ impl SettingsUi {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
+                Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
             });
@@ -579,6 +681,7 @@ impl SettingsUi {
                 Tab::Providers => self.providers_tab(ui, &mut actions),
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
+                Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
             }
@@ -1243,6 +1346,218 @@ impl SettingsUi {
             });
     }
 
+    fn docker_tab(&mut self, ui: &mut egui::Ui, actions: &mut Vec<SettingsAction>) {
+        let busy = self.sandbox_busy;
+        let sb = &mut self.draft.sandbox;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("docker-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Sandbox");
+                        ui.checkbox(&mut sb.enabled, "Run shell commands in a Docker container");
+                        ui.end_row();
+
+                        ui.label("Image");
+                        ui.vertical(|ui| {
+                            ui.radio_value(
+                                &mut sb.source,
+                                SandboxImageSource::Image,
+                                "Docker image",
+                            );
+                            ui.radio_value(
+                                &mut sb.source,
+                                SandboxImageSource::Dockerfile,
+                                "Custom Dockerfile",
+                            );
+                        });
+                        ui.end_row();
+
+                        match sb.source {
+                            SandboxImageSource::Image => {
+                                ui.label("Image name");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut sb.image)
+                                        .hint_text("python:3.13-slim")
+                                        .desired_width(FIELD_WIDTH),
+                                );
+                                ui.end_row();
+
+                                ui.label("Get the image");
+                                ui.vertical(|ui| {
+                                    ui.radio_value(
+                                        &mut sb.pull,
+                                        SandboxPull::Missing,
+                                        "Pull when missing",
+                                    );
+                                    ui.radio_value(
+                                        &mut sb.pull,
+                                        SandboxPull::Always,
+                                        "Pull every time the app starts",
+                                    );
+                                    ui.radio_value(
+                                        &mut sb.pull,
+                                        SandboxPull::Never,
+                                        "Only use an image already on this computer",
+                                    );
+                                });
+                                ui.end_row();
+                            }
+                            SandboxImageSource::Dockerfile => {
+                                ui.label("Dockerfile");
+                                ui.vertical(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut sb.dockerfile)
+                                            .code_editor()
+                                            .desired_rows(10)
+                                            .desired_width(FIELD_WIDTH),
+                                    );
+                                    ui.weak(format!(
+                                        "Built by the app as {} when it changes. There is no \
+                                         build context, so COPY and ADD of local files don't work.",
+                                        crate::sandbox::image_ref(sb)
+                                    ));
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button("Small example")
+                                            .on_hover_text("python:3.13-slim with git and curl")
+                                            .clicked()
+                                        {
+                                            sb.dockerfile = DEFAULT_SANDBOX_DOCKERFILE.into();
+                                        }
+                                        if ui
+                                            .button("Full example")
+                                            .on_hover_text(
+                                                "Ubuntu with Python, Node.js, build tools and \
+                                                 network tools (ping, nmap, dig, traceroute); \
+                                                 Python data, document, PDF, image, chart \
+                                                 and NLP packages; about 3 GB",
+                                            )
+                                            .clicked()
+                                        {
+                                            sb.dockerfile = FULL_SANDBOX_DOCKERFILE.into();
+                                        }
+                                    });
+                                });
+                                ui.end_row();
+                            }
+                        }
+
+                        ui.label("Network");
+                        ui.vertical(|ui| {
+                            ui.radio_value(
+                                &mut sb.network,
+                                SandboxNetwork::None,
+                                "None (no network)",
+                            );
+                            ui.radio_value(
+                                &mut sb.network,
+                                SandboxNetwork::Bridge,
+                                "Normal network (can reach this computer, your local network and the internet)",
+                            );
+                            ui.radio_value(
+                                &mut sb.network,
+                                SandboxNetwork::Custom,
+                                "Only the hosts and ports below",
+                            );
+                        });
+                        ui.end_row();
+
+                        if sb.network == SandboxNetwork::Custom {
+                            ui.label("Allowed outbound");
+                            ui.vertical(|ui| net_rules_editor(ui, &mut sb.rules));
+                            ui.end_row();
+                        }
+
+                        ui.label("CPUs");
+                        ui.add(
+                            egui::DragValue::new(&mut sb.cpus)
+                                .range(0.25..=64.0)
+                                .speed(0.25),
+                        );
+                        ui.end_row();
+
+                        ui.label("Memory");
+                        ui.add(
+                            egui::DragValue::new(&mut sb.memory_mb)
+                                .range(256..=262_144)
+                                .speed(64)
+                                .suffix(" MB"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Processes");
+                        ui.add(
+                            egui::DragValue::new(&mut sb.pids)
+                                .range(32..=65_536)
+                                .speed(16),
+                        );
+                        ui.end_row();
+
+                        ui.label("Workspace folder");
+                        ui.checkbox(
+                            &mut sb.read_only,
+                            "Mount read-only (commands can't change files)",
+                        );
+                        ui.end_row();
+
+                        ui.label("docker");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut sb.docker)
+                                    .hint_text("found on PATH")
+                                    .desired_width(FIELD_WIDTH - 100.0),
+                            );
+                            if ui.button("Browse…").clicked()
+                                && let Some(file) = rfd::FileDialog::new()
+                                    .set_title("Choose the docker program")
+                                    .pick_file()
+                            {
+                                sb.docker = file.display().to_string();
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Status");
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui.add_enabled(!busy, egui::Button::new("Test")).clicked() {
+                                    self.sandbox_status = None;
+                                    actions.push(SettingsAction::CheckSandbox(sb.normalized()));
+                                }
+                                let prepare = match sb.source {
+                                    SandboxImageSource::Image => "Pull now",
+                                    SandboxImageSource::Dockerfile => "Build now",
+                                };
+                                if ui.add_enabled(!busy, egui::Button::new(prepare)).clicked() {
+                                    self.sandbox_status = None;
+                                    actions.push(SettingsAction::PrepareSandbox(sb.normalized()));
+                                }
+                                if busy {
+                                    ui.spinner();
+                                }
+                            });
+                            match &self.sandbox_status {
+                                Some(Ok(m)) => {
+                                    ui.weak(m);
+                                }
+                                Some(Err(e)) => {
+                                    ui.colored_label(ui.visuals().error_fg_color, e);
+                                }
+                                None => {}
+                            }
+                            ui.weak(
+                                "The sandbox applies to new commands; settings changes remove the \
+                                 running containers.",
+                            );
+                        });
+                        ui.end_row();
+                    });
+            });
+    }
+
     fn subagents_tab(&mut self, ui: &mut egui::Ui) {
         let providers: Vec<(String, String, Vec<String>)> = self
             .draft
@@ -1364,6 +1679,25 @@ impl SettingsUi {
                                         ui.visuals().warn_fg_color,
                                         format!(
                                             "{}  Subagents call MCP tools without asking for approval.",
+                                            icon::WARNING
+                                        ),
+                                    );
+                                }
+                                ui.checkbox(
+                                    &mut sa.workspace,
+                                    "The workspace tools, with commands in their own sandbox container",
+                                )
+                                .on_hover_text(
+                                    "Only while the Docker sandbox is on. Each subagent gets its \
+                                     own container with the chat's folder at /workspace, sharing \
+                                     the chat's network rules. It is removed when the subagent \
+                                     finishes.",
+                                );
+                                if sa.workspace {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        format!(
+                                            "{}  Subagents read, write and run commands without asking for approval; approving the delegate call allows it.",
                                             icon::WARNING
                                         ),
                                     );
@@ -1800,8 +2134,26 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Subagents",
         "Enable subagents (delegate tool)",
     ),
+    (Tab::Docker, "Docker sandbox", "Docker sandbox"),
+    (Tab::Docker, "Docker sandbox", "Sandbox image"),
+    (Tab::Docker, "Docker sandbox", "Custom Dockerfile"),
+    (Tab::Docker, "Docker sandbox", "Sandbox network"),
+    (
+        Tab::Docker,
+        "Docker sandbox",
+        "Allowed hosts, ports and protocols (firewall)",
+    ),
+    (
+        Tab::Docker,
+        "Docker sandbox",
+        "Sandbox CPU and memory limits",
+    ),
     (Tab::Subagents, "Subagents", "Subagent provider and model"),
-    (Tab::Subagents, "Subagents", "Subagent tools and MCP access"),
+    (
+        Tab::Subagents,
+        "Subagents",
+        "Subagent tools, MCP and workspace access",
+    ),
     (
         Tab::Subagents,
         "Subagents",

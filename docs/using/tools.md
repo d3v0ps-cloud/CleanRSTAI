@@ -48,6 +48,18 @@ are refused. Searches skip files ignored by `.gitignore`.
 Hover over the folder name to see the full path; click it to choose another folder, or click
 **×** to stop using it.
 
+## Docker sandbox
+
+With the [Docker sandbox](../settings/docker.html) on, **Run command** (`exec_shell_command`)
+runs in a Docker container with the chat's folder mounted at `/workspace`, not on your computer.
+The model is told the image and what network the container has (with a custom network, the
+hosts and ports it may reach). The time limit and
+the result (exit code, stdout and stderr) are the same as on your computer. A command that ran
+in the sandbox shows **in <image>** after its status in the tool card; hover over it to see the
+container's name. Approval is still asked for each command, as described below. If Docker isn't
+running or the image is missing, the command is refused with a message; it never falls back to
+your computer.
+
 ## Per-chat tool switches
 
 The tools menu (sliders icon) next to the message box lists the built-in tools, the workspace

@@ -72,6 +72,8 @@ pub enum AppEvent {
     },
     /// The update was put in place (the path to relaunch), or why it wasn't.
     UpdateInstalled(Result<std::path::PathBuf, String>),
+    /// Result of a Settings → Docker test, pull or build: a message, or why it failed.
+    SandboxChecked(Result<String, String>),
     Chat {
         conv_id: Uuid,
         event: ChatEvent,
@@ -117,6 +119,8 @@ pub struct AgentRequest {
     pub delegation: Option<Delegation>,
     /// The chat's workspace folder, for the workspace tools.
     pub workspace: Option<std::path::PathBuf>,
+    /// The Docker sandbox that runs the workspace shell tool, while it's on.
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -144,6 +148,11 @@ pub async fn run(
             return;
         }
     };
+    // Shell commands run in the chat's sandbox container, when the sandbox is on.
+    let workspace = match (workspace, &req.sandbox) {
+        (Some(ws), Some(sandbox)) => Some(ws.with_sandbox(sandbox.clone(), req.conv_id)),
+        (ws, _) => ws,
+    };
     let system_prompt = match &workspace {
         Some(ws) => format!(
             "{}\n\n{}",
@@ -152,6 +161,8 @@ pub async fn run(
         ),
         None => req.general.system_prompt.clone(),
     };
+    // Subagents may get the workspace too, with commands in containers of their own.
+    let delegation = req.delegation.map(|d| d.with_workspace(workspace.as_ref()));
     let mut history = req.history;
     let max_rounds = req.general.max_tool_rounds.max(1);
     let tool_timeout = Duration::from_secs(req.general.tool_timeout_secs.max(5));
@@ -186,7 +197,7 @@ pub async fn run(
             let toolbox = Toolbox::new(
                 mcp.router(),
                 &req.selection,
-                req.delegation.as_ref().map(Delegation::tool_description),
+                delegation.as_ref().map(Delegation::tool_description),
             )
             .with_http(http.clone());
             match &workspace {
@@ -280,7 +291,7 @@ pub async fn run(
             let result = if approved {
                 emit(ChatEvent::ToolRunning(call.id.clone()));
                 match (
-                    &req.delegation,
+                    &delegation,
                     call.name == tools::DELEGATE && toolbox.has(&call.name),
                 ) {
                     (Some(delegation), true) => {
@@ -303,6 +314,7 @@ pub async fn run(
                             .await;
                         let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
                         msg.attachments = out.images;
+                        msg.sandbox = out.sandbox;
                         msg
                     }
                 }
@@ -400,6 +412,7 @@ mod tests {
             selection: ToolSelection::default(),
             delegation: None,
             workspace: None,
+            sandbox: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -478,6 +491,7 @@ mod tests {
             delegation: Delegation::new(settings, &selection),
             selection,
             workspace: None,
+            sandbox: None,
         }
     }
 

@@ -13,7 +13,9 @@ accessibility pass in **v0.7.9**, and one macOS Keychain item for all secrets (o
 prompt instead of one per key) in **v0.7.10**, and artifacts (web pages, drawings, documents and
 longer code in a side panel, with a link in the chat) in **v0.7.11**, and remote access in the browser in **v0.8.0**, and the Cloudflare Tunnel (quick tunnels, or
 named tunnels) in **v0.8.1**, with named tunnels needing only the tunnel token (the tunnel and
-its route set up in the Cloudflare dashboard) in **v0.8.2**.
+its route set up in the Cloudflare dashboard) in **v0.8.2**, and the Docker sandbox (custom
+images and Dockerfiles, a custom network with host, protocol and port rules, and subagent
+containers) in **v0.9.0**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -220,18 +222,22 @@ Later, beyond the first version:
 
 Run the commands and code the model triggers inside a local Docker container, not on the host.
 
-- [ ] **Settings → Docker**: turn the sandbox on or off, and choose the container image to run in
-  (for example `python:3.13-slim` or a custom image name and tag)
-- [ ] Choose how the image is obtained: pull it when missing, pull on every start, or use only
+- [x] **Settings → Docker**: turn the sandbox on or off, and choose the container image to run in
+  (for example `python:3.13-slim` or a custom image name and tag, or a custom Dockerfile the app builds)
+- [x] Choose how the image is obtained: pull it when missing, pull on every start, or use only
   an image already on the machine
-- [ ] Run the workspace shell tool (`exec_shell_command`) in a container with the chat's working
+- [x] Run the workspace shell tool (`exec_shell_command`) in a container with the chat's working
   folder mounted, and nothing else from the host
-- [ ] Choose network access for the container (none by default), and resource limits (CPU,
+- [x] Choose network access for the container (none by default), and resource limits (CPU,
   memory, time)
-- [ ] Refuse to run tools in the sandbox, with a clear message, when Docker isn't running or the
+- [x] Subagents can use the workspace, each running commands in a sandbox container of its own
+  on the chat's network
+- [x] A custom network that allows only listed outbound hosts (domains, IPv4 addresses and
+  ranges), protocols (TCP, UDP, ICMP) and ports, through a firewall and DNS companion container
+- [x] Refuse to run tools in the sandbox, with a clear message, when Docker isn't running or the
   image is missing, rather than falling back to the host
-- [ ] Show in the chat which container ran a command, with its exit code and output
-- [ ] Document the Docker settings and what the sandbox does and doesn't protect against
+- [x] Show in the chat which container ran a command, with its exit code and output
+- [x] Document the Docker settings and what the sandbox does and doesn't protect against
 
 ## Maintenance
 

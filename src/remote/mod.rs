@@ -147,6 +147,8 @@ pub struct MessageView {
     pub attachments: Vec<AttachmentView>,
     /// A short one-line summary, or None.
     pub stats: Option<String>,
+    /// The image a sandboxed command ran in.
+    pub sandbox: Option<String>,
 }
 
 /// A tool call the model made, with the name the desktop shows for it.

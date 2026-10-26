@@ -1026,6 +1026,16 @@ details.reasoning > :not(summary) {
   font-size: 12px;
 }
 
+.tool-sandbox {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pencil);
+  font-size: 12px;
+}
+
 .tool-card.error {
   border-color: var(--error);
 }
