@@ -3,6 +3,7 @@
 
 #![allow(dead_code)] // TODO(sandbox): remove once the manager and the app use it.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
@@ -15,6 +16,8 @@ use crate::config::{SandboxImageSource, SandboxNetwork, SandboxPull, SandboxSett
 
 /// Label set on every sandbox container, so leftovers can be found after a crash.
 pub const LABEL: &str = "net.bukn.cleanrstai.sandbox=1";
+/// The part of the error from [`docker`] when the wait ran out; callers match on it.
+pub(crate) const TIMED_OUT: &str = "didn't finish within";
 
 const NOT_INSTALLED: &str = "Docker isn't installed: install Docker Desktop or Docker Engine, or set its location in Settings → Docker.";
 const NOT_RUNNING: &str =
@@ -22,6 +25,9 @@ const NOT_RUNNING: &str =
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Spawn attempts when the executable is busy, and the pause between them.
+const SPAWN_TRIES: u32 = 5;
+const SPAWN_PAUSE: Duration = Duration::from_millis(20);
 
 /// The `docker` program: the configured path if set, otherwise the first `docker` on PATH.
 pub fn program(cfg: &SandboxSettings) -> Result<PathBuf, String> {
@@ -141,7 +147,9 @@ pub(crate) async fn docker(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("Can't run docker: {e}"))?;
+    let mut child = spawn_async(&mut cmd)
+        .await
+        .map_err(|e| format!("Can't run docker: {e}"))?;
     let pipe = child.stdin.take();
     let run = async move {
         if let (Some(mut pipe), Some(text)) = (pipe, stdin) {
@@ -154,7 +162,7 @@ pub(crate) async fn docker(
         Ok(Ok(out)) => Ok(out),
         Ok(Err(e)) => Err(format!("Can't run docker: {e}")),
         Err(_) => Err(format!(
-            "docker {} didn't finish within {} s",
+            "docker {} {TIMED_OUT} {} s",
             args.first().map_or("", String::as_str),
             timeout.as_secs()
         )),
@@ -162,7 +170,7 @@ pub(crate) async fn docker(
 }
 
 /// The last non-empty line docker wrote to stderr, for error messages.
-fn last_line(out: &Output) -> String {
+pub(crate) fn last_line(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr)
         .lines()
         .rev()
@@ -300,9 +308,7 @@ pub async fn prepare(cfg: &SandboxSettings) -> Result<String, String> {
 /// Removes every container labelled [`LABEL`]. Blocking; errors are only logged.
 pub fn reap_orphans(program: &Path) {
     let filter = format!("label={LABEL}");
-    let listed = std_command(program)
-        .args(["ps", "-aq", "--filter", &filter])
-        .output();
+    let listed = output_sync(std_command(program).args(["ps", "-aq", "--filter", &filter]));
     let ids: Vec<String> = match listed {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
@@ -320,7 +326,7 @@ pub fn reap_orphans(program: &Path) {
     if ids.is_empty() {
         return;
     }
-    match std_command(program).arg("rm").arg("-f").args(&ids).output() {
+    match output_sync(std_command(program).arg("rm").arg("-f").args(&ids)) {
         Ok(out) if !out.status.success() => {
             log::debug!("docker rm failed: {}", last_line(&out));
         }
@@ -329,7 +335,42 @@ pub fn reap_orphans(program: &Path) {
     }
 }
 
-fn std_command(program: &Path) -> std::process::Command {
+/// Spawns `cmd`. A freshly written executable can be briefly held open by another process's
+/// fork, which fails the spawn with `ExecutableFileBusy`, so those failures are retried.
+async fn spawn_async(cmd: &mut Command) -> std::io::Result<tokio::process::Child> {
+    for _ in 1..SPAWN_TRIES {
+        match cmd.spawn() {
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy => {
+                tokio::time::sleep(SPAWN_PAUSE).await;
+            }
+            other => return other,
+        }
+    }
+    cmd.spawn()
+}
+
+/// Blocking [`spawn_async`]: retries a busy executable the same way.
+pub(crate) fn spawn_sync(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    for _ in 1..SPAWN_TRIES {
+        match cmd.spawn() {
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(SPAWN_PAUSE);
+            }
+            other => return other,
+        }
+    }
+    cmd.spawn()
+}
+
+/// Runs a std command to the end with its output captured, using [`spawn_sync`].
+fn output_sync(cmd: &mut std::process::Command) -> std::io::Result<Output> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn_sync(cmd)?.wait_with_output()
+}
+
+pub(crate) fn std_command(program: &Path) -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
