@@ -144,7 +144,7 @@ too, as an installer and a portable `.exe`.
 - **Remote access in the browser** (off by default): a built-in web server serves the same chats
   to a browser on a phone or another computer on your network, over HTTPS with a password, or
   from anywhere through a Cloudflare Tunnel that the app runs for you (a quick
-  `trycloudflare.com` address, or your own domain, published for you with an API token). API
+  `trycloudflare.com` address, or your own domain with a tunnel you set up in Cloudflare). API
   keys and MCP secrets stay on this computer, and the app must stay open. See
   [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html) and
   [Cloudflare Tunnel](https://d3v0ps-cloud.github.io/CleanRSTAI/using/cloudflare-tunnel.html).

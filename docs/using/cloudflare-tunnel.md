@@ -31,7 +31,7 @@ Settings, starts it again if it stops, and stops it when you turn the tunnel off
 |---|---|---|
 | Address | random, such as `https://brave-new-words.trycloudflare.com` | your own, such as `https://chat.example.com` |
 | Changes | every time the tunnel starts | never |
-| Needs | nothing but `cloudflared` | a Cloudflare account and a domain on Cloudflare |
+| Needs | nothing but `cloudflared` | a Cloudflare account, a domain on Cloudflare, and a tunnel you create in the dashboard |
 | Updates in the page | every few seconds | live |
 | Meant for | trying it out | keeping it |
 
@@ -73,9 +73,9 @@ again from Settings.
 
 ## Named tunnel
 
-A named tunnel needs three things in your Cloudflare account: the **tunnel**, a **route** that
-sends your hostname to this computer, and a **DNS record** that points the hostname at the
-tunnel. You create the tunnel; the app or you add the route and the DNS record.
+A named tunnel lives in your Cloudflare account. You create the tunnel and its route (the
+hostname it serves) in the Cloudflare dashboard; the app only needs the tunnel's token to run
+it.
 
 ### 1. Create the tunnel
 
@@ -89,65 +89,37 @@ tunnel. You create the tunnel; the app or you add the route and the DNS record.
 
    To find the token later, open the tunnel and select **Add a replica**.
 
-### 2. Enter it in CleanRSTAI
+### 2. Add the route
+
+The route tells Cloudflare which hostname the tunnel serves and where `cloudflared` sends its
+requests. On the tunnel's page, go to **Routes**, select **Add route → Published
+application**, and enter:
+
+- **Hostname**: the address you want, such as `chat` on `example.com`. The domain must be on
+  Cloudflare, in the same account.
+- **Service**: this server. With the self-signed certificate (the default) that is type
+  **HTTPS**, URL `127.0.0.1:8484`; then expand **Additional application settings → TLS** and
+  turn on **No TLS Verify** (the certificate is self-signed). With **HTTPS → Off (plain
+  HTTP)** it is type **HTTP**, URL `127.0.0.1:8484`. Use your port if you changed it. The
+  **Tunnel status** note in Settings shows the exact service to enter.
+
+Select **Add route**. Cloudflare also creates the DNS record that points the hostname at the
+tunnel.
+
+### 3. Enter the token in CleanRSTAI
 
 In **Settings → General → Remote access**, tick **Cloudflare Tunnel**, choose **Named tunnel**,
-then:
+and paste the **Tunnel token**. It is kept in the system keychain.
 
-- **Tunnel token**: paste the `eyJ…` string. It is kept in the system keychain.
-- **Public hostname**: the address you want, such as `chat.example.com`. It must be on a domain
-  in the same Cloudflare account.
-
-### 3. Publish the hostname
-
-The tunnel token only lets `cloudflared` run the tunnel: it can't add routes or DNS records to
-your account. Publish the hostname in one of two ways.
-
-**Let the app publish it (with an API token).** Create a Cloudflare API token that may edit the
-tunnel and your domain's DNS:
-
-1. In the dashboard, open your profile (top right) → **My Profile → API Tokens**, or go to
-   [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens).
-2. Select **Create Token**, then **Create Custom Token → Get started**.
-3. Name it, for example `CleanRSTAI tunnel`, and add three permissions:
-
-   | | | |
-   |---|---|---|
-   | **Account** | **Cloudflare Tunnel** | **Edit** |
-   | **Zone** | **DNS** | **Edit** |
-   | **Zone** | **Zone** | **Read** |
-
-4. Under **Account Resources**, include your account. Under **Zone Resources**, include the
-   domain the hostname is on (**Specific zone**).
-5. Select **Continue to summary → Create Token** and copy the token. Cloudflare shows it only
-   once.
-6. Paste it as the **API token** in CleanRSTAI. It is kept in the system keychain.
-
-When the tunnel starts, the app adds a route for the hostname to the tunnel, keeping any other
-routes the tunnel has, and creates a proxied `CNAME` record from the hostname to
-`<tunnel-id>.cfargotunnel.com`. If the hostname already has a DNS record that points somewhere
-else, the app leaves it alone and says so: remove that record in the dashboard (**DNS →
-Records**) or choose another hostname. Publishing again later changes nothing that is already
-right.
-
-**Or publish it yourself in the dashboard.** Open the tunnel, go to **Routes**, select **Add
-route → Published application**, and enter:
-
-- **Hostname**: your hostname, such as `chat` on `example.com`.
-- **Service**: the one **Tunnel status** shows in Settings. With the self-signed certificate
-  (the default) that is type **HTTPS**, URL `127.0.0.1:8484`; then expand **Additional
-  application settings → TLS** and turn on **No TLS Verify** (the certificate is self-signed).
-  With **HTTPS → Off (plain HTTP)** it is type **HTTP**, URL `127.0.0.1:8484`. Use your port if
-  you changed it.
-
-The dashboard creates the DNS record for you.
+**Public hostname** is optional: the app learns the route's hostname from `cloudflared` once
+the tunnel connects. Fill it in if the status shows *Connected, but the tunnel has no public
+hostname yet* even though the route exists.
 
 ### 4. Apply and connect
 
 Click **Apply**. **Tunnel status** shows *Connecting to Cloudflare…*, then *Online at
-https://chat.example.com/* and the number of connections (usually 4), and with an API token
-*Published https://chat.example.com/ → https://127.0.0.1:8484*. Open the address on any device
-and log in.
+https://chat.example.com/* and the number of connections (usually 4). Open the address on any
+device and log in.
 
 ## What the status means
 
@@ -157,10 +129,7 @@ and log in.
 | *use a password of at least 12 characters* | Choose a longer remote access password. |
 | *Paste the tunnel's token* / *Provided Tunnel token is not valid* | Copy the `eyJ…` token again from the dashboard. The app doesn't retry a refused token. |
 | *Connecting to Cloudflare…* with an error under it | `cloudflared` can't reach Cloudflare yet. Check the internet connection; a firewall must allow outgoing connections on port 7844. It keeps trying. |
-| *Connected, but the tunnel has no public hostname yet* | Publish the hostname (with an API token or in the dashboard). |
-| *Publishing failed: … refused the API token* | Check the token's three permissions and that its zone resources include your domain. |
-| *Publishing failed: … already has a DNS record* | Remove that record in **DNS → Records**, or choose another hostname. |
-| *Publishing failed: No domain on this Cloudflare account matches …* | The hostname must be on a domain in the same account, and the token needs **Zone: Read**. |
+| *Connected, but the tunnel has no public hostname yet* | Add the route in the dashboard (see [Add the route](#2-add-the-route)), or enter its hostname in **Public hostname**. |
 | *Trying again shortly* | `cloudflared` stopped; the app starts it again, waiting longer each time. |
 
 In the browser:
@@ -169,8 +138,8 @@ In the browser:
   **Tunnel status** is *Online*.
 - **502 Bad Gateway**: the route's service is wrong. Use the one **Tunnel status** shows, with
   **No TLS Verify** on for the self-signed certificate.
-- **"unknown host"**: the hostname isn't the one entered in **Public hostname** (or, for a
-  quick tunnel, the tunnel restarted with a new address).
+- **"unknown host"**: the app doesn't know the hostname yet: enter it in **Public hostname**
+  (or, for a quick tunnel, the tunnel restarted with a new address).
 - **"too many failed logins"**: see [Logins through the tunnel](#logins-through-the-tunnel).
 
 ## Logins through the tunnel
@@ -189,8 +158,7 @@ In the browser:
 Cloudflare ends the HTTPS connection to the browser, so everything the page exchanges with the
 app (your chats, replies, tool calls and approvals) passes through Cloudflare's network, in the
 clear inside it, on the way to this computer. API keys, MCP secrets and settings still never
-leave the computer. With an API token, the app also calls Cloudflare's API
-(`api.cloudflare.com`) each time the tunnel starts. See
+leave the computer. See
 [Data and privacy](../reference/data-and-privacy.html).
 
 ## Turning it off
@@ -199,12 +167,9 @@ Untick **Cloudflare Tunnel** (or remote access) and click **Apply**, or quit the
 `cloudflared`, and the address stops working. On Linux `cloudflared` also stops if the app is
 killed.
 
-Turning the tunnel off doesn't change your Cloudflare account. To remove everything for a named
-tunnel:
-
-1. **Networking → Tunnels**: open the tunnel and delete its route, or delete the tunnel.
-2. **DNS → Records**: delete the hostname's `CNAME` record.
-3. **My Profile → API Tokens**: delete the API token if you made one.
+Turning the tunnel off doesn't change your Cloudflare account. To remove a named tunnel, delete
+it (or its route) in **Networking → Tunnels**, and the hostname's `CNAME` record in **DNS →
+Records** if it remains.
 
 Changing the tunnel settings restarts only the tunnel, so browsers on your own network stay
 logged in.

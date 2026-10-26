@@ -2690,13 +2690,7 @@ impl ChatApp {
         }
         let ctx = self.repaint_ctx.clone();
         let repaint = Arc::new(move || ctx.request_repaint());
-        match crate::remote::start_tunnel(
-            &self.rt,
-            self.http.clone(),
-            cfg,
-            self.tunnel_hosts.clone(),
-            repaint,
-        ) {
+        match crate::remote::start_tunnel(&self.rt, cfg, self.tunnel_hosts.clone(), repaint) {
             Ok(handle) => self.tunnel = Some(handle),
             Err(e) => {
                 log::warn!("the Cloudflare Tunnel did not start: {e}");
@@ -2705,18 +2699,15 @@ impl ChatApp {
         }
     }
 
-    /// The tunnel's state, and its hostname's publishing, for the settings page.
-    fn tunnel_status(&self) -> (crate::remote::TunnelStatus, crate::remote::PublishStatus) {
+    /// The tunnel's state for the settings page.
+    fn tunnel_status(&self) -> crate::remote::TunnelStatus {
         match (&self.tunnel, &self.tunnel_error) {
-            (Some(t), _) => (t.status(), t.publish_status()),
-            (None, Some(e)) => (
-                crate::remote::TunnelStatus::Failed {
-                    error: e.clone(),
-                    retrying: false,
-                },
-                crate::remote::PublishStatus::Off,
-            ),
-            (None, None) => Default::default(),
+            (Some(t), _) => t.status(),
+            (None, Some(e)) => crate::remote::TunnelStatus::Failed {
+                error: e.clone(),
+                retrying: false,
+            },
+            (None, None) => crate::remote::TunnelStatus::Off,
         }
     }
 
@@ -3242,21 +3233,14 @@ impl eframe::App for ChatApp {
 
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
-            let (tunnel, publish) = self.tunnel_status();
+            let tunnel = self.tunnel_status();
             let mut keep = true;
             let mut actions = sui.take_queued();
             actions.extend(
                 egui::CentralPanel::no_frame()
                     .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
                     .show(ui, |ui| {
-                        sui.show(
-                            ui,
-                            &self.settings,
-                            &views,
-                            &self.remote_status,
-                            &tunnel,
-                            &publish,
-                        )
+                        sui.show(ui, &self.settings, &views, &self.remote_status, &tunnel)
                     })
                     .inner,
             );
