@@ -816,6 +816,12 @@ impl ChatApp {
                         Err(e) => log::info!("update check failed: {e}"),
                     }
                 }
+                AppEvent::SandboxChecked(result) => {
+                    if let Some(ui) = &mut self.settings_ui {
+                        ui.sandbox_busy = false;
+                        ui.sandbox_status = Some(result);
+                    }
+                }
                 AppEvent::UpdateProgress { done, total } => {
                     if let Some(UpdateInstall::Downloading { .. }) = self.update_install {
                         self.update_install = Some(UpdateInstall::Downloading { done, total });
@@ -1376,6 +1382,18 @@ impl ChatApp {
             0 => format!("Imported {added} conversation(s)."),
             n => format!("Imported {added} conversation(s); skipped {n} already present."),
         }
+    }
+
+    /// Runs a Docker test, pull or build on the runtime and reports it as `SandboxChecked`.
+    fn spawn_sandbox<F>(&self, work: F)
+    where
+        F: std::future::Future<Output = Result<String, String>> + Send + 'static,
+    {
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            let _ = tx.send(AppEvent::SandboxChecked(work.await));
+            ctx.request_repaint();
+        });
     }
 
     fn spawn_update_check(&self, explicit: bool, setting: String) {
@@ -3059,6 +3077,7 @@ fn message_view(m: &ChatMessage) -> MessageView {
             })
             .collect(),
         stats: m.stats.as_ref().map(crate::ui::stats_view::summary),
+        sandbox: m.sandbox.as_ref().map(|s| s.image.clone()),
     }
 }
 
@@ -3289,6 +3308,16 @@ impl eframe::App for ChatApp {
                     SettingsAction::Close => keep = false,
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,
+                    SettingsAction::CheckSandbox(cfg) => {
+                        sui.sandbox_busy = true;
+                        sui.sandbox_status = None;
+                        self.spawn_sandbox(async move { crate::sandbox::check(&cfg).await });
+                    }
+                    SettingsAction::PrepareSandbox(cfg) => {
+                        sui.sandbox_busy = true;
+                        sui.sandbox_status = None;
+                        self.spawn_sandbox(async move { crate::sandbox::prepare(&cfg).await });
+                    }
                     SettingsAction::ExportSettings { include_secrets } => {
                         let doc = export::settings_document(&self.settings, include_secrets);
                         sui.export_status = run_export("settings", &doc);

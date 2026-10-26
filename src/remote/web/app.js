@@ -754,11 +754,15 @@
     else if (approvals.some(function (a) { return a.call_id === call.id; })) status = "Waiting for approval";
     else status = "Queued";
 
+    var sandboxed = results.find(function (r) { return r.sandbox; });
+    var sandboxImage = sandboxed ? sandboxed.sandbox : null;
+
     var d = makeDetails("tool-card" + (failed ? " error" : ""), "m" + i + ":" + call.id);
     d.appendChild(el("summary", null, [
       icon(ICON.TOOL),
       el("span", { cls: "tool-name", text: call.label || call.name }),
-      el("span", { cls: "tool-status", text: status })
+      el("span", { cls: "tool-status", text: status }),
+      sandboxImage ? el("span", { cls: "tool-sandbox", text: "in " + sandboxImage }) : null
     ]));
     d.appendChild(el("pre", { cls: "tool-args", text: prettyJson(call.arguments) }));
     if (results.length) {

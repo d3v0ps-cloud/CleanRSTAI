@@ -6,7 +6,8 @@ use eframe::egui;
 use super::theme::icon;
 use super::widgets::{code_block, kv_editor, list_editor, optional_value};
 use crate::config::{
-    McpServerConfig, McpTransportConfig, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
+    DEFAULT_SANDBOX_DOCKERFILE, McpServerConfig, McpTransportConfig, ProviderConfig, RemoteBind,
+    RemoteSettings, RemoteTls, SandboxImageSource, SandboxNetwork, SandboxPull, SandboxSettings,
     Settings, Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
@@ -18,6 +19,7 @@ pub enum Tab {
     Providers,
     Mcp,
     Tools,
+    Docker,
     Subagents,
 }
 
@@ -39,6 +41,10 @@ pub enum SettingsAction {
     /// Check the given "Update from" setting (the draft's, so it works before saving).
     CheckForUpdates(String),
     InstallUpdate,
+    /// Test Docker and the sandbox image with these settings (Settings → Docker "Test").
+    CheckSandbox(SandboxSettings),
+    /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
+    PrepareSandbox(SandboxSettings),
 }
 
 pub struct SettingsUi {
@@ -67,6 +73,10 @@ pub struct SettingsUi {
     pub update_status: Option<Result<String, String>>,
     /// The last check found a release this build can install itself.
     pub update_available: bool,
+    /// A Docker test, pull or build is running.
+    pub sandbox_busy: bool,
+    /// Outcome of the last Docker test, pull or build: Ok(message) or Err(error).
+    pub sandbox_status: Option<Result<String, String>>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -438,6 +448,8 @@ impl SettingsUi {
             checking_update: false,
             update_status: None,
             update_available: false,
+            sandbox_busy: false,
+            sandbox_status: None,
         }
     }
 
@@ -495,6 +507,7 @@ impl SettingsUi {
                         (Tab::Providers, "Providers"),
                         (Tab::Mcp, "MCP servers"),
                         (Tab::Tools, "Built-in tools"),
+                        (Tab::Docker, "Docker sandbox"),
                         (Tab::Subagents, "Subagents"),
                     ] {
                         if ui
@@ -564,6 +577,7 @@ impl SettingsUi {
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
                 Tab::Tools => "Built-in Tools",
+                Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
                 Tab::General => "General",
             });
@@ -571,6 +585,7 @@ impl SettingsUi {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
+                Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
             });
@@ -579,6 +594,7 @@ impl SettingsUi {
                 Tab::Providers => self.providers_tab(ui, &mut actions),
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
+                Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
             }
@@ -1243,6 +1259,189 @@ impl SettingsUi {
             });
     }
 
+    fn docker_tab(&mut self, ui: &mut egui::Ui, actions: &mut Vec<SettingsAction>) {
+        let busy = self.sandbox_busy;
+        let sb = &mut self.draft.sandbox;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("docker-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Sandbox");
+                        ui.checkbox(&mut sb.enabled, "Run shell commands in a Docker container");
+                        ui.end_row();
+
+                        ui.label("Image");
+                        ui.vertical(|ui| {
+                            ui.radio_value(
+                                &mut sb.source,
+                                SandboxImageSource::Image,
+                                "Docker image",
+                            );
+                            ui.radio_value(
+                                &mut sb.source,
+                                SandboxImageSource::Dockerfile,
+                                "Custom Dockerfile",
+                            );
+                        });
+                        ui.end_row();
+
+                        match sb.source {
+                            SandboxImageSource::Image => {
+                                ui.label("Image name");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut sb.image)
+                                        .hint_text("python:3.13-slim")
+                                        .desired_width(FIELD_WIDTH),
+                                );
+                                ui.end_row();
+
+                                ui.label("Get the image");
+                                ui.vertical(|ui| {
+                                    ui.radio_value(
+                                        &mut sb.pull,
+                                        SandboxPull::Missing,
+                                        "Pull when missing",
+                                    );
+                                    ui.radio_value(
+                                        &mut sb.pull,
+                                        SandboxPull::Always,
+                                        "Pull every time the app starts",
+                                    );
+                                    ui.radio_value(
+                                        &mut sb.pull,
+                                        SandboxPull::Never,
+                                        "Only use an image already on this computer",
+                                    );
+                                });
+                                ui.end_row();
+                            }
+                            SandboxImageSource::Dockerfile => {
+                                ui.label("Dockerfile");
+                                ui.vertical(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut sb.dockerfile)
+                                            .code_editor()
+                                            .desired_rows(10)
+                                            .desired_width(FIELD_WIDTH),
+                                    );
+                                    ui.weak(format!(
+                                        "Built by the app as {} when it changes. There is no \
+                                         build context, so COPY and ADD of local files don't work.",
+                                        crate::sandbox::image_ref(sb)
+                                    ));
+                                    if ui.button("Reset to example").clicked() {
+                                        sb.dockerfile = DEFAULT_SANDBOX_DOCKERFILE.into();
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                        }
+
+                        ui.label("Network");
+                        ui.vertical(|ui| {
+                            ui.radio_value(
+                                &mut sb.network,
+                                SandboxNetwork::None,
+                                "None (no network)",
+                            );
+                            ui.radio_value(
+                                &mut sb.network,
+                                SandboxNetwork::Bridge,
+                                "Normal network",
+                            );
+                        });
+                        ui.end_row();
+
+                        ui.label("CPUs");
+                        ui.add(
+                            egui::DragValue::new(&mut sb.cpus)
+                                .range(0.25..=64.0)
+                                .speed(0.25),
+                        );
+                        ui.end_row();
+
+                        ui.label("Memory");
+                        ui.add(
+                            egui::DragValue::new(&mut sb.memory_mb)
+                                .range(256..=262_144)
+                                .speed(64)
+                                .suffix(" MB"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Processes");
+                        ui.add(
+                            egui::DragValue::new(&mut sb.pids)
+                                .range(32..=65_536)
+                                .speed(16),
+                        );
+                        ui.end_row();
+
+                        ui.label("Workspace folder");
+                        ui.checkbox(
+                            &mut sb.read_only,
+                            "Mount read-only (commands can't change files)",
+                        );
+                        ui.end_row();
+
+                        ui.label("docker");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut sb.docker)
+                                    .hint_text("found on PATH")
+                                    .desired_width(FIELD_WIDTH - 100.0),
+                            );
+                            if ui.button("Browse…").clicked()
+                                && let Some(file) = rfd::FileDialog::new()
+                                    .set_title("Choose the docker program")
+                                    .pick_file()
+                            {
+                                sb.docker = file.display().to_string();
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Status");
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui.add_enabled(!busy, egui::Button::new("Test")).clicked() {
+                                    self.sandbox_status = None;
+                                    actions.push(SettingsAction::CheckSandbox(sb.clone()));
+                                }
+                                let prepare = match sb.source {
+                                    SandboxImageSource::Image => "Pull now",
+                                    SandboxImageSource::Dockerfile => "Build now",
+                                };
+                                if ui.add_enabled(!busy, egui::Button::new(prepare)).clicked() {
+                                    self.sandbox_status = None;
+                                    actions.push(SettingsAction::PrepareSandbox(sb.clone()));
+                                }
+                                if busy {
+                                    ui.spinner();
+                                }
+                            });
+                            match &self.sandbox_status {
+                                Some(Ok(m)) => {
+                                    ui.weak(m);
+                                }
+                                Some(Err(e)) => {
+                                    ui.colored_label(ui.visuals().error_fg_color, e);
+                                }
+                                None => {}
+                            }
+                            ui.weak(
+                                "The sandbox applies to new commands; settings changes remove the \
+                                 running containers.",
+                            );
+                        });
+                        ui.end_row();
+                    });
+            });
+    }
+
     fn subagents_tab(&mut self, ui: &mut egui::Ui) {
         let providers: Vec<(String, String, Vec<String>)> = self
             .draft
@@ -1799,6 +1998,15 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         Tab::Subagents,
         "Subagents",
         "Enable subagents (delegate tool)",
+    ),
+    (Tab::Docker, "Docker sandbox", "Docker sandbox"),
+    (Tab::Docker, "Docker sandbox", "Sandbox image"),
+    (Tab::Docker, "Docker sandbox", "Custom Dockerfile"),
+    (Tab::Docker, "Docker sandbox", "Sandbox network"),
+    (
+        Tab::Docker,
+        "Docker sandbox",
+        "Sandbox CPU and memory limits",
     ),
     (Tab::Subagents, "Subagents", "Subagent provider and model"),
     (Tab::Subagents, "Subagents", "Subagent tools and MCP access"),

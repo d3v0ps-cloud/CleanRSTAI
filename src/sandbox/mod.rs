@@ -13,8 +13,7 @@ use uuid::Uuid;
 
 use crate::config::SandboxSettings;
 
-#[allow(unused_imports)] // TODO(sandbox): remove once the Settings → Docker tab uses them.
-pub use docker::{check, prepare};
+pub use docker::{check, image_ref, prepare};
 
 /// How long `docker run` may take to create a container.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);

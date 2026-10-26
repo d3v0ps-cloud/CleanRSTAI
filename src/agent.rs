@@ -72,6 +72,8 @@ pub enum AppEvent {
     },
     /// The update was put in place (the path to relaunch), or why it wasn't.
     UpdateInstalled(Result<std::path::PathBuf, String>),
+    /// Result of a Settings → Docker test, pull or build: a message, or why it failed.
+    SandboxChecked(Result<String, String>),
     Chat {
         conv_id: Uuid,
         event: ChatEvent,

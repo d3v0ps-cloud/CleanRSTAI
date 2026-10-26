@@ -447,6 +447,10 @@ fn tool_card(
                     ui.label(RichText::new(icon::TOOL).color(p.pencil));
                     ui.label(RichText::new(tools::display_name(&call.name)).color(p.ink));
                     ui.label(RichText::new(status).small().color(color));
+                    if let Some(sb) = result.and_then(|r| r.sandbox.as_ref()) {
+                        ui.label(RichText::new(format!("in {}", sb.image)).small().weak())
+                            .on_hover_text(format!("Ran in the Docker container {}", sb.container));
+                    }
                     let preview = if call.name == tools::DELEGATE {
                         delegate_preview(&call.arguments)
                     } else {

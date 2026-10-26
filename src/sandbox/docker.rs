@@ -276,8 +276,6 @@ pub async fn ensure_image(
 }
 
 /// For Settings → Docker "Test": the Docker version and whether the image is ready.
-// TODO(sandbox): remove once the Settings → Docker tab uses it.
-#[allow(dead_code)]
 pub async fn check(cfg: &SandboxSettings) -> Result<String, String> {
     let program = program(cfg)?;
     let version = server_version(&program).await?;
@@ -294,8 +292,6 @@ pub async fn check(cfg: &SandboxSettings) -> Result<String, String> {
 
 /// For "Pull now" / "Build now": pulls the image or rebuilds the Dockerfile, even when it is
 /// already there.
-// TODO(sandbox): remove once the Settings → Docker tab uses it.
-#[allow(dead_code)]
 pub async fn prepare(cfg: &SandboxSettings) -> Result<String, String> {
     let program = program(cfg)?;
     server_version(&program).await?;
