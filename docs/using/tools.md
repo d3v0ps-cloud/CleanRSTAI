@@ -52,9 +52,12 @@ Hover over the folder name to see the full path; click it to choose another fold
 
 With the [Docker sandbox](../settings/docker.html) on, **Run command** (`exec_shell_command`)
 runs in a Docker container with the chat's folder mounted at `/workspace`, not on your computer.
-A command that ran in the sandbox shows **in <image>** after its status in the tool card.
-Approval is still asked for each command, as described below. If Docker isn't running or the
-image is missing, the command is refused with a message; it never falls back to your computer.
+The model is told the image and whether the container has network access. The time limit and
+the result (exit code, stdout and stderr) are the same as on your computer. A command that ran
+in the sandbox shows **in <image>** after its status in the tool card; hover over it to see the
+container's name. Approval is still asked for each command, as described below. If Docker isn't
+running or the image is missing, the command is refused with a message; it never falls back to
+your computer.
 
 ## Per-chat tool switches
 

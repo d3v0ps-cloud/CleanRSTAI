@@ -59,7 +59,7 @@ The user docs live in `docs/` (Just the Docs remote theme, built by GitHub Pages
 range or shortcut, update the matching page in the same PR:
 
 - settings (labels, defaults and ranges in `ui/settings.rs` / `config.rs`) →
-  `docs/settings/<tab>.md`;
+  `docs/settings/<tab>.md` (the Docker tab is `docs/settings/docker.md`);
 - chats, attachments, tools and approvals, MCP, subagents, updates → `docs/using/*.md`;
 - shortcuts → `docs/reference/keyboard-shortcuts.md`; storage, secrets or anything that
   leaves the computer → `docs/reference/data-and-privacy.md`;
@@ -121,6 +121,15 @@ for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers
 `.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
 `tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
 `AppEvent::FileAttached`.
+
+**Docker sandbox** (`sandbox/`): only `exec_shell_command` is sandboxed. `docker.rs` talks to
+Docker only through the `docker` CLI; its argument builders (`run_args`, `exec_args`) are pure, and
+spawns retry `ExecutableFileBusy`. `Sandbox` keeps one container per chat, named `cleanrstai-<chat>`
+and labelled `net.bukn.cleanrstai.sandbox=1`, reused via `docker exec`. It removes them with
+`rm -f` on timeout, cancel (a drop guard), 15 idle minutes, chat delete, settings change, last-clone
+drop, and at startup for leftovers. Images are a named image with a pull policy, or a Dockerfile
+built as `cleanrstai-sandbox:<sha256-12>` with no build context. Errors are returned as the
+command's error; nothing falls back to the host. `ChatMessage.sandbox` records the image for the badge.
 
 **Remote access** (`remote/`): an axum server, started by `ChatApp::sync_remote` when
 `general.remote` is on, serves the browser client in `remote/web/` (plain JS embedded with
