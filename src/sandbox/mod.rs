@@ -2,6 +2,8 @@
 //! `docker` command line.
 
 mod docker;
+#[cfg(test)]
+mod real_tests;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
