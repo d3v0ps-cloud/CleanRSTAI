@@ -395,12 +395,9 @@ pub struct TunnelSettings {
     pub allowed_emails: String,
     /// Named tunnels: the tunnel's token from the Cloudflare dashboard. Kept in the keychain.
     pub token: String,
-    /// Named tunnels: the public hostname, e.g. `chat.example.com`.
+    /// Named tunnels: the public hostname of the tunnel's route, e.g. `chat.example.com`.
+    /// Optional: cloudflared also reports the tunnel's hostnames once it is connected.
     pub hostname: String,
-    /// Named tunnels: a Cloudflare API token that publishes `hostname` on the tunnel (its route
-    /// and DNS record). Optional; without it the route is set up in the dashboard. Kept in the
-    /// keychain.
-    pub api_token: String,
     /// Path to `cloudflared`; empty finds it on `PATH`.
     pub cloudflared: String,
 }

@@ -16,7 +16,7 @@ nav_order: 2
 |---|---|
 | Settings | `settings.json` (see [Where settings are stored](../settings/#where-settings-are-stored)) |
 | Conversations | one JSON file per chat in the `conversations` folder |
-| API keys, header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token and API token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
+| API keys, header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
 
 On macOS and Linux, settings, export files and the remote access key are created readable only
@@ -42,9 +42,7 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   ([Remote access](../using/remote-access.html)).
 - **Cloudflare Tunnel**: while it is on, `cloudflared` keeps a connection to Cloudflare, and
   everything a browser exchanges with the app through the tunnel passes through Cloudflare's
-  network, which ends the HTTPS connection and so can read it. With an API token, the app also
-  calls Cloudflare's API (`api.cloudflare.com`) when the tunnel starts, to publish the
-  hostname
+  network, which ends the HTTPS connection and so can read it
   ([Cloudflare Tunnel](../using/cloudflare-tunnel.html#privacy)).
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
   system's temporary folder and run in the browser, where a page can load anything it links to.
