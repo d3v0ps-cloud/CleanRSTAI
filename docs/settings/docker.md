@@ -121,6 +121,12 @@ Two examples are a click away under the editor:
   takes a few minutes. The same file is in the repository as
   [`assets/sandbox/full.Dockerfile`](https://github.com/d3v0ps-cloud/CleanRSTAI/blob/main/assets/sandbox/full.Dockerfile).
 
+The full image is also published to GitHub Packages, built for Intel/AMD and ARM (Apple
+Silicon) machines, so you can skip the local build: choose **Docker image** and enter
+`ghcr.io/d3v0ps-cloud/cleanrstai-sandbox:full`, which follows `main`; `:full-dev` follows the
+`dev` branch. Each build is also tagged `full-<hash>`, with the same hash the app uses for its own
+build of that Dockerfile, so you can pin one.
+
 In the full example, `pip install` and `npm install -g` work as the sandbox user: they install
 into `/opt/venv` and `/opt/npm`, which anyone in the container can write. `apt-get install`
 doesn't work at run time (on Linux commands run as your user), so add system packages to the

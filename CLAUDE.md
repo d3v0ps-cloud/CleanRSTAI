@@ -23,6 +23,10 @@ self-hosted runners (Gentoo Linux x64, Mac mini ARM64, DARKBASE Windows x64). A 
 `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust (skipped on
 Windows). The runners are persistent machines, so the release workflow installs tools once
 (WiX into the runner's tool cache) and removes signing certificates in always-run steps.
+`.github/workflows/sandbox-image.yml` builds `assets/sandbox/full.Dockerfile` (amd64 + arm64 via
+QEMU, on any self-hosted Linux x64 runner with Docker) and pushes
+`ghcr.io/<owner>/cleanrstai-sandbox` (`full`/`latest` from main, `full-dev` from dev, plus
+`full-<sha256-12>` and `sha-<commit>`); it runs only when that file changes, or by hand.
 The repository is public, so CI skips pull requests from forks (they would run on those
 machines); keep "Require approval for all external contributors" on in Settings → Actions, since
 a fork's PR could edit that check.
