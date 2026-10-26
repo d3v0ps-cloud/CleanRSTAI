@@ -29,7 +29,6 @@ const PID_KEY: &str = "net.bukn.cleanrstai.sandbox.pid";
 /// How long the blocking `docker ps` and `docker rm` of [`reap_orphans`] may run.
 const REAP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Output cap for [`docker_capped`]: what the app keeps of a command's output.
-#[allow(dead_code)] // Until the sandbox runs commands through it.
 pub(crate) const OUTPUT_CAP: usize = 4 * 1024 * 1024;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -217,7 +216,6 @@ fn timed_out(args: &[String], timeout: Duration) -> String {
 }
 
 /// What [`docker_capped`] got back: each stream keeps its first and last `cap / 2` bytes.
-#[allow(dead_code)] // Until the sandbox runs commands through it.
 #[derive(Debug)]
 pub(crate) struct Capped {
     pub status: ExitStatus,
@@ -231,7 +229,6 @@ pub(crate) struct Capped {
 
 /// Like [`docker`] without stdin, but both output streams are read to the end (so the child
 /// never blocks on a full pipe) and only the first and last `cap / 2` bytes of each are kept.
-#[allow(dead_code)] // Until the sandbox runs commands through it.
 pub(crate) async fn docker_capped(
     program: &Path,
     args: &[String],
@@ -276,7 +273,6 @@ pub(crate) async fn docker_capped(
 
 /// Reads a pipe to its end, keeping the first and last `half` bytes. Returns the kept bytes
 /// and how many were dropped.
-#[allow(dead_code)] // Until the sandbox runs commands through it.
 async fn capture_stream<R: AsyncRead + Unpin>(pipe: Option<R>, half: usize) -> (Vec<u8>, usize) {
     let mut kept = Keep::new(half);
     if let Some(mut pipe) = pipe {
@@ -292,7 +288,6 @@ async fn capture_stream<R: AsyncRead + Unpin>(pipe: Option<R>, half: usize) -> (
 }
 
 /// The head and tail of a byte stream, with a count of what was dropped between them.
-#[allow(dead_code)] // Until the sandbox runs commands through it.
 struct Keep {
     head: Vec<u8>,
     tail: VecDeque<u8>,
@@ -300,7 +295,6 @@ struct Keep {
     cut: usize,
 }
 
-#[allow(dead_code)] // Until the sandbox runs commands through it.
 impl Keep {
     fn new(half: usize) -> Self {
         Self {

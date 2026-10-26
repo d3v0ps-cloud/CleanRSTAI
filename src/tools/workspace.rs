@@ -545,7 +545,11 @@ impl Workspace {
                 }
             };
         Ok(ToolOutput {
-            text: shell_output(output.status.code(), &output.stdout, &output.stderr),
+            text: shell_output(
+                output.status.code(),
+                (output.stdout.as_slice(), 0),
+                (output.stderr.as_slice(), 0),
+            ),
             is_error: !output.status.success(),
             images: Vec::new(),
             sandbox: None,
@@ -571,7 +575,11 @@ impl Workspace {
             );
         }
         Ok(ToolOutput {
-            text: shell_output(run.exit_code, &run.stdout, &run.stderr),
+            text: shell_output(
+                run.exit_code,
+                (run.stdout.as_slice(), run.stdout_cut),
+                (run.stderr.as_slice(), run.stderr_cut),
+            ),
             is_error: run.exit_code != Some(0),
             images: Vec::new(),
             sandbox: Some(SandboxInfo {
@@ -582,14 +590,20 @@ impl Workspace {
     }
 }
 
-/// The shell tool's result text: the exit code, then stdout and stderr when not empty.
-fn shell_output(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
+/// The shell tool's result text: the exit code, then stdout and stderr when not empty. Each
+/// stream is given with the number of bytes the sandbox dropped from its middle; that count
+/// goes after the kept text, because [`keep_ends`] would cut a note placed in the middle.
+fn shell_output(code: Option<i32>, stdout: (&[u8], usize), stderr: (&[u8], usize)) -> String {
     let code = code.map_or_else(|| "killed by a signal".to_owned(), |c| c.to_string());
     let mut out = format!("Exit code: {code}\n");
-    for (name, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+    for (name, (bytes, cut)) in [("stdout", stdout), ("stderr", stderr)] {
         let text = String::from_utf8_lossy(bytes);
         if !text.trim().is_empty() {
-            out.push_str(&format!("--- {name} ---\n{}\n", keep_ends(&text)));
+            let mut body = keep_ends(&text);
+            if cut > 0 {
+                body.push_str(&format!("\n[… {cut} bytes of output dropped …]"));
+            }
+            out.push_str(&format!("--- {name} ---\n{body}\n"));
         }
     }
     out
@@ -1062,6 +1076,25 @@ mod tests {
         assert!(out.is_error, "{}", out.text);
         tokio::time::sleep(Duration::from_millis(2500)).await;
         assert!(!ws.root().join("late").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sandboxed_output_over_the_cap_says_how_much_was_dropped() {
+        use crate::sandbox::fake_docker::Fake;
+        let fake = Fake::new();
+        let (_d, ws) = temp_workspace();
+        let ws = sandboxed(ws, &fake);
+        // 4.5 MB against the 4 MiB cap (4 194 304 bytes kept): 305 696 bytes are dropped.
+        let cmd = "head -c 4500000 /dev/zero | tr '\\0' a";
+        let out = call(&ws, SHELL, json!({"command": cmd})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("--- stdout ---\n"), "{}", out.text);
+        assert!(
+            out.text.contains("\n[… 305696 bytes of output dropped …]"),
+            "{}",
+            out.text
+        );
     }
 
     #[test]

@@ -23,6 +23,8 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long dropping the manager waits for `docker rm`.
 const DROP_WAIT: Duration = Duration::from_secs(5);
+/// How long `docker inspect` or `docker logs` may take.
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runs workspace shell commands in Docker containers, one per chat, reused between
 /// commands. Cheap to clone (Arc inside). Dropping the last clone removes its containers.
@@ -37,6 +39,10 @@ pub struct SandboxRun {
     pub exit_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    /// Bytes dropped from the middle of `stdout` (the output was over the cap).
+    pub stdout_cut: usize,
+    /// Bytes dropped from the middle of `stderr`.
+    pub stderr_cut: usize,
     /// The command ran past its timeout, and its container was killed.
     pub timed_out: bool,
     /// Name of the container the command ran in.
@@ -100,6 +106,19 @@ impl Sandbox {
         command: &str,
         timeout: Duration,
     ) -> Result<SandboxRun, String> {
+        self.exec_capped(chat, root, command, timeout, docker::OUTPUT_CAP)
+            .await
+    }
+
+    /// [`Sandbox::exec`], keeping at most `cap` bytes of each output stream.
+    async fn exec_capped(
+        &self,
+        chat: Uuid,
+        root: &Path,
+        command: &str,
+        timeout: Duration,
+        cap: usize,
+    ) -> Result<SandboxRun, String> {
         let inner = &*self.inner;
         let program = docker::program(&inner.cfg)?;
         docker::server_version(&program).await?;
@@ -107,20 +126,9 @@ impl Sandbox {
         let lock = chat_lock(inner, chat);
         let _turn = lock.lock().await;
         let image = self.image();
-
-        let known = locked(&inner.containers).get(&chat).cloned();
-        let name = match known {
-            Some(c) if c.root.as_path() == root => c.name,
-            Some(c) => {
-                quiet(&program, &["rm", "-f", c.name.as_str()]).await;
-                locked(&inner.containers).remove(&chat);
-                create(inner, &program, chat, root).await?
-            }
-            None => create(inner, &program, chat, root).await?,
-        };
-
-        // Touched before and after the run, so a long command is not reaped as idle.
-        touch(inner, chat, &name);
+        // The name is fixed per chat, so the guard is armed before anything can create the
+        // container: an abandoned or failed call then removes it.
+        let name = container_name(chat);
         let mut guard = Cancel {
             inner: Arc::clone(&self.inner),
             program: program.clone(),
@@ -128,17 +136,38 @@ impl Sandbox {
             name: name.clone(),
             armed: true,
         };
-        let out = docker::docker(&program, &docker::exec_args(&name, command), None, timeout).await;
-        guard.armed = false;
+
+        let known = locked(&inner.containers).get(&chat).cloned();
+        let reuse = match &known {
+            Some(c) if c.root.as_path() == root => is_running(&program, &name).await,
+            _ => false,
+        };
+        if !reuse {
+            if known.is_some() {
+                // Recorded but stopped or removed outside the app, or mounted elsewhere.
+                quiet(&program, &["rm", "-f", name.as_str()]).await;
+                locked(&inner.containers).remove(&chat);
+            }
+            create(inner, &program, chat, root).await?;
+        }
+
+        // Touched before the run too, so the container is not reaped as idle while the
+        // command runs. The touch after a successful run follows below.
+        touch(inner, chat, &name);
+        let out =
+            docker::docker_capped(&program, &docker::exec_args(&name, command), timeout, cap).await;
         let out = match out {
             Ok(out) => out,
             Err(e) if e.contains(docker::TIMED_OUT) => {
+                guard.armed = false;
                 quiet(&program, &["rm", "-f", name.as_str()]).await;
                 forget(inner, chat, &name);
                 return Ok(SandboxRun {
                     exit_code: None,
                     stdout: Vec::new(),
                     stderr: Vec::new(),
+                    stdout_cut: 0,
+                    stderr_cut: 0,
                     timed_out: true,
                     container: name,
                     image,
@@ -146,11 +175,15 @@ impl Sandbox {
             }
             Err(e) => return Err(e),
         };
+        guard.armed = false;
+        // Touched again after a successful run.
         touch(inner, chat, &name);
         Ok(SandboxRun {
             exit_code: out.status.code(),
             stdout: out.stdout,
             stderr: out.stderr,
+            stdout_cut: out.stdout_cut,
+            stderr_cut: out.stderr_cut,
             timed_out: false,
             container: name,
             image,
@@ -160,6 +193,7 @@ impl Sandbox {
     /// Removes the chat's container, if any (the chat was deleted).
     pub fn remove_chat(&self, chat: Uuid) {
         let removed = locked(&self.inner.containers).remove(&chat);
+        prune_lock(&self.inner, chat);
         if let Some(c) = removed {
             remove_in_background(&self.inner.cfg, &[c.name]);
         }
@@ -168,13 +202,18 @@ impl Sandbox {
     /// Removes the containers not used for longer than `idle`.
     pub fn reap_idle(&self, idle: Duration) {
         let mut stale = Vec::new();
-        locked(&self.inner.containers).retain(|_, c| {
+        let mut chats = Vec::new();
+        locked(&self.inner.containers).retain(|chat, c| {
             let keep = c.last_used.elapsed() <= idle;
             if !keep {
                 stale.push(c.name.clone());
+                chats.push(*chat);
             }
             keep
         });
+        for chat in chats {
+            prune_lock(&self.inner, chat);
+        }
         remove_in_background(&self.inner.cfg, &stale);
     }
 }
@@ -206,25 +245,26 @@ impl Drop for Inner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut child = match docker::spawn_sync(&mut cmd) {
-            Ok(child) => child,
-            Err(e) => {
-                log::debug!("can't run docker rm: {e}");
-                return;
+        match docker::spawn_sync(&mut cmd) {
+            Ok(mut child) => reap_within(&mut child, DROP_WAIT),
+            Err(e) => log::debug!("can't run docker rm: {e}"),
+        }
+    }
+}
+
+/// Waits for `child` at most `limit`; a child still running then is killed and reaped.
+fn reap_within(child: &mut std::process::Child, limit: Duration) {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if started.elapsed() < limit => {
+                std::thread::sleep(Duration::from_millis(20));
             }
-        };
-        let started = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) if started.elapsed() < DROP_WAIT => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return;
-                }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
             }
         }
     }
@@ -249,8 +289,9 @@ impl Drop for Cancel {
     }
 }
 
-/// Makes the image ready, creates the chat's container and records it.
-async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Result<String, String> {
+/// Makes the image ready, creates the chat's container and records it. The caller's removal
+/// guard must already be armed: a stopped or failed container is removed here too.
+async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Result<(), String> {
     {
         let mut pulled = inner.pulled.lock().await;
         docker::ensure_image(program, &inner.cfg, false, &mut pulled).await?;
@@ -268,15 +309,53 @@ async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Resul
             docker::last_line(&out)
         ));
     }
+    if !is_running(program, &name).await {
+        let logs = docker::docker(
+            program,
+            &["logs", "--tail", "5", name.as_str()].map(str::to_owned),
+            None,
+            INSPECT_TIMEOUT,
+        )
+        .await;
+        let last = logs.map_or_else(|_| "no log output".to_owned(), |out| last_log_line(&out));
+        quiet(program, &["rm", "-f", name.as_str()]).await;
+        return Err(format!(
+            "The sandbox container stopped right after starting: {last}"
+        ));
+    }
     locked(&inner.containers).insert(
         chat,
         Container {
-            name: name.clone(),
+            name,
             root: root.to_owned(),
             last_used: Instant::now(),
         },
     );
-    Ok(name)
+    Ok(())
+}
+
+/// Whether the container `name` is running, by `docker inspect`. Any failure counts as not.
+async fn is_running(program: &Path, name: &str) -> bool {
+    let args = ["inspect", "-f", "{{.State.Running}}", name].map(str::to_owned);
+    match docker::docker(program, &args, None, INSPECT_TIMEOUT).await {
+        Ok(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true",
+        Err(_) => false,
+    }
+}
+
+/// The last non-empty line of a `docker logs` output (stdout, then stderr).
+fn last_log_line(out: &std::process::Output) -> String {
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("no log output")
+        .to_owned()
 }
 
 fn container_name(chat: Uuid) -> String {
@@ -290,6 +369,17 @@ fn chat_lock(inner: &Inner, chat: Uuid) -> Arc<tokio::sync::Mutex<()>> {
             .entry(chat)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
     )
+}
+
+/// Forgets the chat's lock, unless a command holds it or waits for it.
+fn prune_lock(inner: &Inner, chat: Uuid) {
+    let mut locks = locked(&inner.chat_locks);
+    if locks
+        .get(&chat)
+        .is_some_and(|lock| Arc::strong_count(lock) == 1)
+    {
+        locks.remove(&chat);
+    }
 }
 
 /// Records that the chat's container (if it is still `name`) was just used.
@@ -326,9 +416,7 @@ fn detached(program: &Path, args: &[&str]) {
     let spawned = docker::spawn_sync(&mut cmd);
     match spawned {
         Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
+            std::thread::spawn(move || reap_within(&mut child, REMOVE_TIMEOUT));
         }
         Err(e) => log::debug!("can't run docker {}: {e}", args.first().unwrap_or(&"")),
     }
@@ -368,7 +456,12 @@ version)
   if [ -f "$dir/down" ]; then echo 'Cannot connect to the Docker daemon' >&2; exit 1; fi
   echo 27.3.1 ;;
 image) exit 0 ;;
-run) echo fake-container-id ;;
+run) rm -f "$dir/stopped"
+  if [ -f "$dir/slow" ]; then sleep 5; fi
+  echo fake-container-id
+  if [ -f "$dir/dies" ]; then touch "$dir/stopped"; fi ;;
+inspect) if [ -f "$dir/stopped" ]; then echo false; else echo true; fi ;;
+logs) echo starting; echo 'exec format error' >&2 ;;
 rm|kill) ;;
 exec)
   for last; do :; done
@@ -378,8 +471,9 @@ esac
 "#;
 
     /// A `docker` stand-in in its own temp folder. It logs each call to `log`, and `exec`
-    /// runs its command with `sh -c` in that folder. The marker file `down` makes `version`
-    /// fail.
+    /// runs its command with `sh -c` in that folder. The marker files: `down` makes `version`
+    /// fail; `slow` makes `run` take 5 s; `dies` makes each `run` leave a container that is
+    /// not running; `stopped` marks the container as not running (`run` clears it).
     pub(crate) struct Fake {
         pub(crate) dir: PathBuf,
         program: PathBuf,
@@ -653,5 +747,153 @@ mod tests {
         b.unwrap();
         assert_eq!(fake.count_prefix("run -d "), 1);
         assert_eq!(fake.count_prefix("exec "), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recorded_container_that_stopped_is_replaced_before_use() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(fake.settings());
+        let chat = Uuid::new_v4();
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        assert_eq!(fake.count_prefix("run -d "), 1);
+
+        // Stopped outside the app (Docker restarted, or a prune removed it).
+        fake.mark("stopped");
+        let run = sb.exec(chat, &fake.dir, "echo back", LONG).await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "back\n");
+        assert_eq!(fake.count_prefix("run -d "), 2);
+
+        // A running container is reused: no further run. Inspects: after the first create,
+        // before the stale reuse check, after its create, and before this reuse.
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        assert_eq!(fake.count_prefix("run -d "), 2);
+        assert_eq!(fake.count_prefix("inspect "), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_container_that_stops_right_after_starting_is_an_error_and_removed() {
+        let fake = Fake::new();
+        fake.mark("dies");
+        let sb = Sandbox::new(fake.settings());
+        let chat = Uuid::new_v4();
+        let rm = format!("rm -f {}", container_name(chat));
+
+        let err = sb.exec(chat, &fake.dir, "true", LONG).await.err().unwrap();
+        assert_eq!(
+            err,
+            "The sandbox container stopped right after starting: exec format error"
+        );
+        // Once before `docker run`, once after the container was found stopped.
+        assert!(fake.count_eq(&rm) >= 2, "{:?}", fake.calls());
+        assert_eq!(fake.count_prefix("exec "), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_abandoned_create_removes_the_container_it_started() {
+        let fake = Fake::new();
+        fake.mark("slow");
+        let sb = Sandbox::new(fake.settings());
+        let chat = Uuid::new_v4();
+        let rm = format!("rm -f {}", container_name(chat));
+        let dir = fake.dir.clone();
+        let task = tokio::spawn({
+            let sb = sb.clone();
+            async move { sb.exec(chat, &dir, "true", LONG).await }
+        });
+        // `docker run` is sleeping by now.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        task.abort();
+
+        // Once before `docker run`, once for the abandoned create.
+        within_two_seconds("rm after an abandoned create", || fake.count_eq(&rm) == 2).await;
+        assert_eq!(fake.count_prefix("run -d "), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_over_the_cap_keeps_both_ends_and_counts_the_rest() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(fake.settings());
+        // With a cap of 1000 bytes each stream keeps 500 from each end.
+        let cmd = "head -c 5000 /dev/zero | tr '\\0' x; head -c 300 /dev/zero | tr '\\0' e >&2";
+        let run = sb
+            .exec_capped(Uuid::new_v4(), &fake.dir, cmd, LONG, 1000)
+            .await
+            .unwrap();
+        assert_eq!(run.stdout.len(), 1000);
+        assert_eq!(run.stdout_cut, 4000);
+        assert_eq!(run.stderr.len(), 300);
+        assert_eq!(run.stderr_cut, 0);
+
+        let small = sb
+            .exec(Uuid::new_v4(), &fake.dir, "printf hi", LONG)
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&small.stdout), "hi");
+        assert_eq!((small.stdout_cut, small.stderr_cut), (0, 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reap_idle_spares_a_container_whose_command_is_running() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(fake.settings());
+        let chat = Uuid::new_v4();
+        let rm = format!("rm -f {}", container_name(chat));
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        // Last used more than the idle limit ago when the next command starts.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        let dir = fake.dir.clone();
+        let task = tokio::spawn({
+            let sb = sb.clone();
+            async move { sb.exec(chat, &dir, "sleep 3", LONG).await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        sb.reap_idle(Duration::from_secs(1));
+        // The command is still running: its container must not have been removed.
+        assert!(!task.is_finished());
+        assert_eq!(fake.count_eq(&rm), 1, "{:?}", fake.calls());
+
+        let run = task.await.unwrap().unwrap();
+        assert!(!run.timed_out);
+        assert_eq!(fake.count_eq(&rm), 1, "{:?}", fake.calls());
+    }
+
+    #[test]
+    fn reap_within_kills_a_child_past_its_limit() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        reap_within(&mut child, Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), None, "{status:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn chat_locks_are_pruned_with_their_containers_unless_held() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(fake.settings());
+        let chat = Uuid::new_v4();
+        let has_lock = |sb: &Sandbox| locked(&sb.inner.chat_locks).contains_key(&chat);
+
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        assert!(has_lock(&sb));
+        sb.reap_idle(Duration::ZERO);
+        assert!(!has_lock(&sb));
+
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        sb.remove_chat(chat);
+        assert!(!has_lock(&sb));
+
+        // A lock another call still holds is kept until that call lets go.
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        let held = chat_lock(&sb.inner, chat);
+        sb.remove_chat(chat);
+        assert!(has_lock(&sb));
+        drop(held);
+        sb.remove_chat(chat);
+        assert!(!has_lock(&sb));
     }
 }

@@ -3168,11 +3168,13 @@ impl eframe::App for ChatApp {
         self.publish_remote();
         self.handle_shortcuts(ctx);
         self.handle_dropped_files(ctx);
-        if let Some(sandbox) = &self.sandbox
-            && self.sandbox_reaped.elapsed() >= Duration::from_secs(60)
-        {
-            self.sandbox_reaped = Instant::now();
-            sandbox.reap_idle(Duration::from_secs(15 * 60));
+        if let Some(sandbox) = &self.sandbox {
+            // Wake once a minute even with no input, so idle containers are reaped on time.
+            ctx.request_repaint_after(Duration::from_secs(60));
+            if self.sandbox_reaped.elapsed() >= Duration::from_secs(60) {
+                self.sandbox_reaped = Instant::now();
+                sandbox.reap_idle(Duration::from_secs(15 * 60));
+            }
         }
     }
 
