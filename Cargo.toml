@@ -1,6 +1,6 @@
 [package]
 name = "cleanrstai"
-version = "0.9.0-dev.2"
+version = "0.9.0-dev.3"
 edition = "2024"
 rust-version = "1.95"
 description = "A cross-platform desktop AI chat client for OpenAI-compatible endpoints with MCP support"
