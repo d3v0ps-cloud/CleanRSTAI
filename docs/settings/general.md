@@ -69,16 +69,26 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
   time.
 - **Cloudflare Tunnel**: the checkbox *Reach this computer from outside the network through a
   Cloudflare Tunnel* (off by default). When it is on:
-  - **Tunnel token**: the tunnel's token from the Cloudflare dashboard, with a **Show** toggle.
-    It is kept in the keychain like your API keys.
-  - **Public hostname**: the hostname you gave the tunnel, such as `chat.example.com`.
-    Optional: the app also learns it from `cloudflared` once the tunnel connects.
+  - **Tunnel type**: **Quick tunnel** (the default: a random `trycloudflare.com` address, no
+    account needed) or **Named tunnel** (your own domain, with a Cloudflare account).
+  - **Allowed emails** (quick tunnel): optional email addresses or `*@domain` patterns,
+    separated by commas, that Cloudflare lets through with a one-time PIN. Empty lets anyone
+    with the address reach the login page.
+  - **Tunnel token** (named tunnel): the tunnel's token from the Cloudflare dashboard, with a
+    **Show** toggle. It is kept in the keychain like your API keys.
+  - **Public hostname** (named tunnel): the hostname for the tunnel, such as
+    `chat.example.com`.
+  - **API token** (named tunnel): optional. A Cloudflare API token with *Cloudflare Tunnel:
+    Edit*, *DNS: Edit* and *Zone: Read*, which publishes the hostname for you (its route and
+    DNS record). Kept in the keychain.
   - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
     with **Browse…**.
   - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy
-    button and the number of connections, or the error (*Trying again shortly* when it will).
+    button and the number of connections, or the error (*Trying again shortly* when it will);
+    with an API token, *Publishing the hostname…*, *Published …* or why publishing failed.
     A warning appears while the password is shorter than 12 characters, which the tunnel
-    needs, and a note gives the address to point the tunnel's public hostname at.
+    needs. For a named tunnel without an API token, a note gives the service to point the
+    hostname at in the dashboard.
 
 Changes take effect when you click **Apply** or **Save & Close**. The server restarts, which
 logs browsers out; a change to the tunnel settings alone restarts only the tunnel. See

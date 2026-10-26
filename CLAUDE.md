@@ -133,9 +133,14 @@ fingerprints chats each frame and pushes `RemoteEvent`s over SSE so browsers ref
 `auth.rs` holds password checks, sessions and the login throttle; `tls.rs` the self-signed
 certificate (reissued when the hosts change) or the user's PEM files, with the ring provider
 passed explicitly. Every non-GET needs the `X-CleanRSTAI: 1` header, and the Host must be an
-IP, `localhost`, a `.local` name or the machine's name. `tunnel.rs` runs `cloudflared tunnel
-run` (token in `TUNNEL_TOKEN`, never the arguments) for a Cloudflare Tunnel, follows its log
-for connections and the ingress hostnames, and restarts it with backoff; `sync_remote`
+IP, `localhost`, a `.local` name or the machine's name. `tunnel.rs` runs `cloudflared` for a
+Cloudflare Tunnel: a quick tunnel (`tunnel --url https://127.0.0.1:<port>`, its
+`trycloudflare.com` address read from the banner; quick tunnels buffer SSE, so the server sends
+a `hello` event first and `app.js` polls when it doesn't arrive) or a named one (`tunnel run`,
+token in `TUNNEL_TOKEN`, never the arguments; with an API token `cloudflare.rs` publishes the
+hostname: ingress rule merged into the tunnel config, proxied CNAME to
+`<tunnel>.cfargotunnel.com`). It follows the log for connections and hostnames, and restarts
+cloudflared with backoff; `sync_remote`
 restarts the server only when `server_settings` (everything but the tunnel) changes. The
 tunnel's hostnames (`TunnelHosts`, shared with the server) are accepted as Host while it runs,
 and only on a loopback connection to such a host is `Cf-Connecting-IP` trusted for the login

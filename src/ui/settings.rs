@@ -7,10 +7,10 @@ use super::theme::icon;
 use super::widgets::{code_block, kv_editor, list_editor, optional_value};
 use crate::config::{
     McpServerConfig, McpTransportConfig, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    Settings, Theme, import_mcp_json,
+    Settings, Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
-use crate::remote::{RemoteStatus, TunnelStatus};
+use crate::remote::{PublishStatus, RemoteStatus, TunnelStatus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -207,6 +207,7 @@ fn remote_rows(
 pub struct RemoteUiStatus<'a> {
     pub server: &'a RemoteStatus,
     pub tunnel: &'a TunnelStatus,
+    pub publish: &'a PublishStatus,
     pub server_dirty: bool,
     pub tunnel_dirty: bool,
 }
@@ -227,31 +228,77 @@ fn tunnel_rows(
     if !r.tunnel.enabled {
         return;
     }
+    let service = crate::remote::tunnel_service_url(r);
     let t = &mut r.tunnel;
 
-    ui.label("Tunnel token");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut t.token)
-                .password(!*show_password)
-                .hint_text("from the tunnel's page in the Cloudflare dashboard")
-                .desired_width(FIELD_WIDTH - 100.0),
+    ui.label("Tunnel type");
+    ui.vertical(|ui| {
+        ui.radio_value(
+            &mut t.mode,
+            TunnelMode::Quick,
+            "Quick tunnel: a random trycloudflare.com address, no account needed",
         );
-        ui.checkbox(show_password, "Show");
+        ui.radio_value(
+            &mut t.mode,
+            TunnelMode::Named,
+            "Named tunnel: your own domain, with a Cloudflare account",
+        );
     });
     ui.end_row();
 
-    ui.label("Public hostname");
-    ui.add(
-        egui::TextEdit::singleline(&mut t.hostname)
-            .hint_text("chat.example.com")
-            .desired_width(FIELD_WIDTH - 100.0),
-    )
-    .on_hover_text(
-        "The hostname you gave the tunnel in the Cloudflare dashboard. Optional: the app also \
-         learns it from cloudflared once the tunnel connects.",
-    );
-    ui.end_row();
+    let secret = |ui: &mut egui::Ui, value: &mut String, hint: &str, show: &mut bool| {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .password(!*show)
+                    .hint_text(hint)
+                    .desired_width(FIELD_WIDTH - 100.0),
+            );
+            ui.checkbox(show, "Show");
+        });
+    };
+    match t.mode {
+        TunnelMode::Quick => {
+            ui.label("Allowed emails");
+            ui.add(
+                egui::TextEdit::singleline(&mut t.allowed_emails)
+                    .hint_text("optional: me@example.com, *@example.org")
+                    .desired_width(FIELD_WIDTH - 100.0),
+            )
+            .on_hover_text(
+                "Cloudflare asks visitors for a one-time PIN sent to one of these addresses \
+                 before the login page. Empty: anyone with the address reaches the login page.",
+            );
+            ui.end_row();
+        }
+        TunnelMode::Named => {
+            ui.label("Tunnel token");
+            secret(
+                ui,
+                &mut t.token,
+                "from the tunnel's page in the Cloudflare dashboard",
+                show_password,
+            );
+            ui.end_row();
+
+            ui.label("Public hostname");
+            ui.add(
+                egui::TextEdit::singleline(&mut t.hostname)
+                    .hint_text("chat.example.com")
+                    .desired_width(FIELD_WIDTH - 100.0),
+            );
+            ui.end_row();
+
+            ui.label("API token");
+            secret(
+                ui,
+                &mut t.api_token,
+                "optional: publishes the hostname for you",
+                show_password,
+            );
+            ui.end_row();
+        }
+    }
 
     ui.label("cloudflared");
     ui.horizontal(|ui| {
@@ -297,8 +344,8 @@ fn tunnel_rows(
                 if hosts.is_empty() {
                     ui.colored_label(
                         warn,
-                        "Connected, but the tunnel has no public hostname yet: add one in the \
-                         Cloudflare dashboard.",
+                        "Connected, but the tunnel has no public hostname yet: add an API \
+                         token, or publish one in the Cloudflare dashboard.",
                     );
                 }
                 let plural = if *connections == 1 { "" } else { "s" };
@@ -309,6 +356,18 @@ fn tunnel_rows(
                 if *retrying {
                     ui.weak("Trying again shortly.");
                 }
+            }
+        }
+        match status.publish {
+            PublishStatus::Off => {}
+            PublishStatus::Working => {
+                ui.label("Publishing the hostname…");
+            }
+            PublishStatus::Done(done) => {
+                ui.weak(format!("Published {done}"));
+            }
+            PublishStatus::Failed(e) => {
+                ui.colored_label(error, format!("Publishing failed: {e}"));
             }
         }
         if status.tunnel_dirty {
@@ -324,16 +383,27 @@ fn tunnel_rows(
                 ),
             );
         }
-        let (scheme, tls_note) = match r.tls {
-            RemoteTls::Off => ("http", ""),
-            RemoteTls::SelfSigned => ("https", ", with No TLS Verify on"),
-            RemoteTls::Files => ("https", ""),
-        };
-        ui.weak(format!(
-            "In the Cloudflare dashboard, point the tunnel's public hostname at \
-             {scheme}://localhost:{}{tls_note}.",
-            r.port
-        ));
+        match r.tunnel.mode {
+            TunnelMode::Quick => {
+                ui.weak(
+                    "The address changes each time the tunnel starts. Quick tunnels are for \
+                     trying things out: Cloudflare gives them no uptime guarantee, and the \
+                     browser checks for new messages every few seconds instead of live.",
+                );
+            }
+            TunnelMode::Named if r.tunnel.api_token.trim().is_empty() => {
+                let tls_note = if r.tls == RemoteTls::Off {
+                    ""
+                } else {
+                    ", with No TLS Verify on"
+                };
+                ui.weak(format!(
+                    "In the Cloudflare dashboard, point the tunnel's public hostname at \
+                     {service}{tls_note}, or add an API token to do it for you."
+                ));
+            }
+            TunnelMode::Named => {}
+        }
     });
     ui.end_row();
 }
@@ -412,6 +482,7 @@ impl SettingsUi {
         servers: &[ServerView],
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
+        publish: &PublishStatus,
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
@@ -529,7 +600,7 @@ impl SettingsUi {
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
                 Tab::Subagents => self.subagents_tab(ui),
-                Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
+                Tab::General => self.general_tab(ui, live, remote, tunnel, publish, &mut actions),
             }
         });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
@@ -1361,6 +1432,7 @@ impl SettingsUi {
         live: &Settings,
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
+        publish: &PublishStatus,
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
@@ -1368,6 +1440,7 @@ impl SettingsUi {
         let remote_status = RemoteUiStatus {
             server: remote,
             tunnel,
+            publish,
             server_dirty: crate::remote::server_settings(draft_remote)
                 != crate::remote::server_settings(live_remote),
             tunnel_dirty: draft_remote.tunnel != live_remote.tunnel,
@@ -1690,6 +1763,12 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "Cloudflare Tunnel"),
     (Tab::General, "General", "Cloudflare Tunnel token"),
     (Tab::General, "General", "Cloudflare Tunnel public hostname"),
+    (
+        Tab::General,
+        "General",
+        "Cloudflare quick tunnel (trycloudflare.com)",
+    ),
+    (Tab::General, "General", "Cloudflare API token"),
     (Tab::General, "General", "cloudflared path"),
     (Tab::General, "General", "Show speed stats"),
     (Tab::General, "General", "Load web images in replies"),

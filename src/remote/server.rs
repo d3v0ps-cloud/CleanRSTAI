@@ -652,6 +652,8 @@ async fn set_model(
 
 /// The state of one open event stream.
 struct Watch {
+    /// The `hello` event is still to be sent.
+    hello: bool,
     rx: broadcast::Receiver<RemoteEvent>,
     ticker: tokio::time::Interval,
     state: Arc<AppState>,
@@ -671,12 +673,19 @@ async fn events(
         .filter(|token| state.auth.session_alive(token))
         .map(str::to_owned);
     let watch = Watch {
+        hello: true,
         rx: state.events.subscribe(),
         ticker: tokio::time::interval(SESSION_CHECK),
         state: state.clone(),
         token,
     };
     let stream = futures_util::stream::unfold(watch, |mut w| async move {
+        if std::mem::take(&mut w.hello) {
+            // Sent at once, so a browser can tell when a proxy holds the stream back (quick
+            // tunnels buffer event streams) and poll instead.
+            let event = Event::default().data(r#"{"type":"hello"}"#);
+            return Some((Ok::<Event, Infallible>(event), w));
+        }
         loop {
             let received = tokio::select! {
                 received = w.rx.recv() => Some(received),

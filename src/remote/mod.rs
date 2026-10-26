@@ -3,6 +3,7 @@
 //! the types both sides share; the server itself lives in `server.rs`.
 
 mod auth;
+mod cloudflare;
 mod server;
 mod tls;
 mod tunnel;
@@ -23,8 +24,8 @@ use crate::types::Role;
 
 use auth::Auth;
 pub use tunnel::{
-    MIN_PASSWORD_CHARS as MIN_TUNNEL_PASSWORD_CHARS, TunnelHandle, TunnelHosts, TunnelStatus,
-    start as start_tunnel,
+    MIN_PASSWORD_CHARS as MIN_TUNNEL_PASSWORD_CHARS, PublishStatus, TunnelHandle, TunnelHosts,
+    TunnelStatus, service_url as tunnel_service_url, start as start_tunnel,
 };
 
 /// A request from a browser, sent to the app as `AppEvent::Remote`. Each carries a oneshot

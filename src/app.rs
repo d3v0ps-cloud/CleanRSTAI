@@ -2668,13 +2668,14 @@ impl ChatApp {
         let wanted = cfg.enabled && cfg.tunnel.enabled;
         let password_ok =
             cfg.password.trim().chars().count() >= crate::remote::MIN_TUNNEL_PASSWORD_CHARS;
+        let service = crate::remote::tunnel_service_url(cfg);
         if wanted
             && password_ok
             && self.remote.is_some()
             && self
                 .tunnel
                 .as_ref()
-                .is_some_and(|t| *t.config() == cfg.tunnel)
+                .is_some_and(|t| *t.config() == cfg.tunnel && t.service() == service)
         {
             return;
         }
@@ -2691,8 +2692,8 @@ impl ChatApp {
         let repaint = Arc::new(move || ctx.request_repaint());
         match crate::remote::start_tunnel(
             &self.rt,
-            &cfg.tunnel,
-            &cfg.password,
+            self.http.clone(),
+            cfg,
             self.tunnel_hosts.clone(),
             repaint,
         ) {
@@ -2704,15 +2705,18 @@ impl ChatApp {
         }
     }
 
-    /// The tunnel's state for the settings page.
-    fn tunnel_status(&self) -> crate::remote::TunnelStatus {
+    /// The tunnel's state, and its hostname's publishing, for the settings page.
+    fn tunnel_status(&self) -> (crate::remote::TunnelStatus, crate::remote::PublishStatus) {
         match (&self.tunnel, &self.tunnel_error) {
-            (Some(t), _) => t.status(),
-            (None, Some(e)) => crate::remote::TunnelStatus::Failed {
-                error: e.clone(),
-                retrying: false,
-            },
-            (None, None) => crate::remote::TunnelStatus::Off,
+            (Some(t), _) => (t.status(), t.publish_status()),
+            (None, Some(e)) => (
+                crate::remote::TunnelStatus::Failed {
+                    error: e.clone(),
+                    retrying: false,
+                },
+                crate::remote::PublishStatus::Off,
+            ),
+            (None, None) => Default::default(),
         }
     }
 
@@ -3238,14 +3242,21 @@ impl eframe::App for ChatApp {
 
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
-            let tunnel = self.tunnel_status();
+            let (tunnel, publish) = self.tunnel_status();
             let mut keep = true;
             let mut actions = sui.take_queued();
             actions.extend(
                 egui::CentralPanel::no_frame()
                     .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
                     .show(ui, |ui| {
-                        sui.show(ui, &self.settings, &views, &self.remote_status, &tunnel)
+                        sui.show(
+                            ui,
+                            &self.settings,
+                            &views,
+                            &self.remote_status,
+                            &tunnel,
+                            &publish,
+                        )
                     })
                     .inner,
             );

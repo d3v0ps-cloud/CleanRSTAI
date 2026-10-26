@@ -1,7 +1,8 @@
-//! A Cloudflare Tunnel for remote access: runs `cloudflared tunnel run` with the tunnel's
-//! token, follows its log for the connection state and the public hostnames, and starts it
-//! again when it stops. The tunnel's public hostname and the local service it points at are
-//! set up in the Cloudflare dashboard. Dropping the handle stops cloudflared.
+//! A Cloudflare Tunnel for remote access. A quick tunnel runs `cloudflared tunnel --url` and
+//! gets a random `trycloudflare.com` address; a named tunnel runs `cloudflared tunnel run` with
+//! the tunnel's token, its hostname published through the API (`cloudflare.rs`) or in the
+//! dashboard. Either way the app follows cloudflared's log for the connection state and the
+//! public hostnames, and starts it again when it stops. Dropping the handle stops cloudflared.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -14,7 +15,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::config::TunnelSettings;
+use super::cloudflare;
+use crate::config::{RemoteSettings, RemoteTls, TunnelMode, TunnelSettings};
 
 /// The tunnel puts the server on the internet, so it needs a password at least this long.
 pub const MIN_PASSWORD_CHARS: usize = 12;
@@ -41,10 +43,24 @@ pub enum TunnelStatus {
     Failed { error: String, retrying: bool },
 }
 
+/// Whether a named tunnel's hostname was published through the Cloudflare API.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PublishStatus {
+    /// Not asked for: a quick tunnel, or no API token.
+    #[default]
+    Off,
+    Working,
+    /// What was published, e.g. `https://chat.example.com/ → https://127.0.0.1:8484`.
+    Done(String),
+    Failed(String),
+}
+
 /// A running tunnel, owned by `ChatApp`.
 pub struct TunnelHandle {
     config: TunnelSettings,
+    service: String,
     status: Arc<Mutex<TunnelStatus>>,
+    publish: Arc<Mutex<PublishStatus>>,
     hosts: TunnelHosts,
     task: JoinHandle<()>,
 }
@@ -55,8 +71,17 @@ impl TunnelHandle {
         &self.config
     }
 
+    /// The local address cloudflared sends requests to.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
     pub fn status(&self) -> TunnelStatus {
         self.status.lock().unwrap().clone()
+    }
+
+    pub fn publish_status(&self) -> PublishStatus {
+        self.publish.lock().unwrap().clone()
     }
 }
 
@@ -68,43 +93,125 @@ impl Drop for TunnelHandle {
     }
 }
 
-/// Starts cloudflared for `cfg`. Fails at once when the token is missing, the password is too
-/// short or cloudflared can't be found; everything later shows in `TunnelHandle::status`.
+/// Where cloudflared sends the tunnel's requests: this server on the loopback address.
+pub fn service_url(remote: &RemoteSettings) -> String {
+    let scheme = if remote.tls == RemoteTls::Off {
+        "http"
+    } else {
+        "https"
+    };
+    format!("{scheme}://127.0.0.1:{}", remote.port)
+}
+
+/// How to run cloudflared.
+struct Launch {
+    program: PathBuf,
+    args: Vec<String>,
+    /// A named tunnel's token, passed in `TUNNEL_TOKEN`.
+    token: Option<String>,
+    /// Hostnames known before cloudflared reports any.
+    hosts: Vec<String>,
+}
+
+/// Starts cloudflared for the tunnel in `remote`, which reaches the server those settings
+/// describe. Fails at once when something needed is missing or the password is too short;
+/// everything later shows in `TunnelHandle::status` and `publish_status`.
 pub fn start(
     rt: &tokio::runtime::Handle,
-    cfg: &TunnelSettings,
-    password: &str,
+    http: reqwest::Client,
+    remote: &RemoteSettings,
     hosts: TunnelHosts,
     repaint: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<TunnelHandle, String> {
-    let token = cfg.token.trim().to_owned();
-    if token.is_empty() {
-        return Err("Paste the tunnel's token to start it".into());
-    }
-    if password.trim().chars().count() < MIN_PASSWORD_CHARS {
+    let cfg = &remote.tunnel;
+    if remote.password.trim().chars().count() < MIN_PASSWORD_CHARS {
         return Err(format!(
             "The tunnel puts the server on the internet: use a password of at least \
              {MIN_PASSWORD_CHARS} characters"
         ));
     }
-    let program = find_cloudflared(&cfg.cloudflared)?;
-    let configured: Vec<String> = host_of(&cfg.hostname).into_iter().collect();
-    *hosts.write().unwrap() = configured.clone();
+    let service = service_url(remote);
+    let https = remote.tls != RemoteTls::Off;
+    let mut publish = None;
+    let launch = match cfg.mode {
+        TunnelMode::Quick => {
+            let mut args: Vec<String> = ["tunnel", "--no-autoupdate", "--url", &service]
+                .map(String::from)
+                .into();
+            if https {
+                // The certificate is self-signed, or made for another name than 127.0.0.1.
+                args.push("--no-tls-verify".into());
+            }
+            let emails = allowed_emails(&cfg.allowed_emails);
+            if !emails.is_empty() {
+                args.extend(["--allowed-mail".into(), emails]);
+            }
+            Launch {
+                program: find_cloudflared(&cfg.cloudflared)?,
+                args,
+                token: None,
+                hosts: Vec::new(),
+            }
+        }
+        TunnelMode::Named => {
+            let token = cfg.token.trim();
+            if token.is_empty() {
+                return Err("Paste the tunnel's token to start it".into());
+            }
+            let hostname = host_of(&cfg.hostname);
+            if !cfg.api_token.trim().is_empty() {
+                let Some(hostname) = hostname.clone() else {
+                    return Err("Enter the public hostname to publish".into());
+                };
+                publish = Some(cloudflare::Publish {
+                    api: cloudflare::API.into(),
+                    api_token: cfg.api_token.clone(),
+                    tunnel_token: token.to_owned(),
+                    hostname,
+                    service: service.clone(),
+                });
+            }
+            Launch {
+                program: find_cloudflared(&cfg.cloudflared)?,
+                args: ["tunnel", "--no-autoupdate", "run"]
+                    .map(String::from)
+                    .into(),
+                token: Some(token.to_owned()),
+                hosts: hostname.into_iter().collect(),
+            }
+        }
+    };
+    *hosts.write().unwrap() = launch.hosts.clone();
     let status = Arc::new(Mutex::new(TunnelStatus::Connecting(None)));
+    let publish_status = Arc::new(Mutex::new(if publish.is_some() {
+        PublishStatus::Working
+    } else {
+        PublishStatus::Off
+    }));
     let task = rt.spawn(supervise(
-        program,
-        token,
-        configured,
+        launch,
+        publish.map(|job| (http, job, publish_status.clone())),
         status.clone(),
         hosts.clone(),
         repaint,
     ));
     Ok(TunnelHandle {
         config: cfg.clone(),
+        service,
         status,
+        publish: publish_status,
         hosts,
         task,
     })
+}
+
+/// `a@x.com; *@y.com` → `a@x.com,*@y.com`.
+fn allowed_emails(list: &str) -> String {
+    list.split([',', ';', ' ', '\n'])
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn find_cloudflared(path: &str) -> Result<PathBuf, String> {
@@ -122,16 +229,30 @@ fn find_cloudflared(path: &str) -> Result<PathBuf, String> {
     })
 }
 
-/// Runs cloudflared until the task is aborted, starting it again after it stops unless the
-/// token was refused.
+/// Publishes the hostname first when asked to, then runs cloudflared until the task is
+/// aborted, starting it again after it stops unless the token was refused.
 async fn supervise(
-    program: PathBuf,
-    token: String,
-    configured: Vec<String>,
+    launch: Launch,
+    publish: Option<(
+        reqwest::Client,
+        cloudflare::Publish,
+        Arc<Mutex<PublishStatus>>,
+    )>,
     status: Arc<Mutex<TunnelStatus>>,
     hosts: TunnelHosts,
     repaint: Arc<dyn Fn() + Send + Sync>,
 ) {
+    if let Some((http, job, publish_status)) = publish {
+        let outcome = match cloudflare::publish(&http, &job).await {
+            Ok(done) => PublishStatus::Done(done),
+            Err(e) => {
+                log::warn!("publishing the tunnel's hostname failed: {e}");
+                PublishStatus::Failed(e)
+            }
+        };
+        *publish_status.lock().unwrap() = outcome;
+        repaint();
+    }
     let set = |s: TunnelStatus| {
         let mut current = status.lock().unwrap();
         if *current != s {
@@ -142,8 +263,8 @@ async fn supervise(
     let mut delay = RETRY_FIRST;
     loop {
         set(TunnelStatus::Connecting(None));
-        let (error, connected) = run_once(&program, &token, &configured, &set, &hosts).await;
-        *hosts.write().unwrap() = configured.clone();
+        let (error, connected) = run_once(&launch, &set, &hosts).await;
+        *hosts.write().unwrap() = launch.hosts.clone();
         let retrying = !token_refused(&error);
         set(TunnelStatus::Failed { error, retrying });
         if !retrying {
@@ -160,21 +281,21 @@ async fn supervise(
 /// One cloudflared process, from start to exit. Returns why it stopped and whether it ever
 /// connected.
 async fn run_once(
-    program: &PathBuf,
-    token: &str,
-    configured: &[String],
+    launch: &Launch,
     set: &impl Fn(TunnelStatus),
     hosts: &TunnelHosts,
 ) -> (String, bool) {
-    let mut cmd = Command::new(program);
-    // The token goes in the environment, not the arguments, so other users can't read it
-    // from the process list.
-    cmd.args(["tunnel", "--no-autoupdate", "run"])
-        .env("TUNNEL_TOKEN", token)
+    let mut cmd = Command::new(&launch.program);
+    cmd.args(&launch.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // The token goes in the environment, not the arguments, so other users can't read it
+    // from the process list.
+    if let Some(token) = &launch.token {
+        cmd.env("TUNNEL_TOKEN", token);
+    }
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -193,7 +314,10 @@ async fn run_once(
     }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => return (format!("Can't start {}: {e}", program.display()), false),
+        Err(e) => {
+            let error = format!("Can't start {}: {e}", launch.program.display());
+            return (error, false);
+        }
     };
     let (lines_tx, mut lines) = mpsc::unbounded_channel();
     if let Some(out) = child.stdout.take() {
@@ -209,7 +333,7 @@ async fn run_once(
         if !log.feed(&line) {
             continue;
         }
-        let mut all = configured.to_vec();
+        let mut all = launch.hosts.clone();
         for host in &log.hosts {
             if !all.contains(host) {
                 all.push(host.clone());
@@ -279,6 +403,13 @@ impl LogState {
             self.last_error = Some(clip(line));
             return true;
         };
+        if let Some(host) = quick_tunnel_host(message) {
+            if self.hosts.contains(&host) {
+                return false;
+            }
+            self.hosts.push(host);
+            return true;
+        }
         if message.starts_with("Registered tunnel connection") {
             if let Some(index) = field(message, "connIndex") {
                 self.last_error = None;
@@ -303,6 +434,17 @@ impl LogState {
         }
         false
     }
+}
+
+/// The address in the banner a quick tunnel prints:
+/// `|  https://seasonal-deck-organisms-sf.trycloudflare.com  |`.
+fn quick_tunnel_host(message: &str) -> Option<String> {
+    let at = message.find("https://")?;
+    let url = message[at..]
+        .split(|c: char| c.is_whitespace() || c == '|')
+        .next()?;
+    let host = host_of(url)?;
+    host.ends_with(".trycloudflare.com").then_some(host)
 }
 
 /// Splits `<timestamp> <LEVEL> <message>`.
@@ -469,57 +611,151 @@ mod tests {
     }
 
     #[test]
-    fn start_checks_token_password_and_program() {
+    fn quick_tunnel_address_comes_from_the_banner() {
+        let mut log = LogState::default();
+        assert!(
+            !log.feed(
+                "2026-10-26T06:44:20Z INF +--------------------------------------------------+"
+            )
+        );
+        assert!(!log.feed(
+            "2026-10-26T06:44:20Z INF |  Your quick Tunnel has been created! Visit it at (it \
+             may take some time to be reachable):  |"
+        ));
+        assert!(log.feed(
+            "2026-10-26T06:44:20Z INF |  https://seasonal-deck-organisms-sf.trycloudflare.com \
+                     |"
+        ));
+        assert_eq!(
+            log.hosts,
+            vec!["seasonal-deck-organisms-sf.trycloudflare.com".to_string()]
+        );
+        // Cloudflare's terms link on the first line is not a tunnel address.
+        let mut other = LogState::default();
+        assert!(!other.feed(
+            "2026-10-26T06:44:17Z INF Thank you for trying Cloudflare Tunnel. … \
+             (https://www.cloudflare.com/website-terms/) …"
+        ));
+        assert!(other.hosts.is_empty());
+    }
+
+    #[test]
+    fn allowed_emails_are_joined_with_commas() {
+        assert_eq!(
+            allowed_emails(" a@x.com; *@y.com\nb@z.org,, "),
+            "a@x.com,*@y.com,b@z.org"
+        );
+        assert_eq!(allowed_emails("  "), "");
+    }
+
+    fn remote(tunnel: TunnelSettings) -> RemoteSettings {
+        RemoteSettings {
+            enabled: true,
+            password: "a long enough password".into(),
+            tunnel,
+            ..RemoteSettings::default()
+        }
+    }
+
+    #[test]
+    fn start_checks_token_password_hostname_and_program() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let hosts = TunnelHosts::default();
-        let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-        let cfg = TunnelSettings {
+        let err = |remote: &RemoteSettings| {
+            start(
+                rt.handle(),
+                reqwest::Client::new(),
+                remote,
+                TunnelHosts::default(),
+                Arc::new(|| {}),
+            )
+            .err()
+            .unwrap()
+        };
+        let named = TunnelSettings {
             enabled: true,
+            mode: TunnelMode::Named,
             token: "tok".into(),
             cloudflared: "/no/such/cloudflared".into(),
             ..TunnelSettings::default()
         };
-        let err = |cfg: &TunnelSettings, pw: &str| {
-            start(rt.handle(), cfg, pw, hosts.clone(), repaint.clone())
-                .err()
-                .unwrap()
-        };
         let no_token = TunnelSettings {
             token: " ".into(),
-            ..cfg.clone()
+            ..named.clone()
         };
-        assert!(err(&no_token, "a long enough password").contains("token"));
-        assert!(err(&cfg, "short").contains("at least 12"));
-        assert!(err(&cfg, "a long enough password").contains("/no/such/cloudflared"));
+        assert!(err(&remote(no_token)).contains("token"));
+        let short = RemoteSettings {
+            password: "short".into(),
+            ..remote(named.clone())
+        };
+        assert!(err(&short).contains("at least 12"));
+        let publish_without_host = TunnelSettings {
+            api_token: "api".into(),
+            ..named.clone()
+        };
+        assert!(err(&remote(publish_without_host)).contains("hostname"));
+        assert!(err(&remote(named)).contains("/no/such/cloudflared"));
     }
 
-    /// A stand-in for cloudflared: a shell script that prints log lines, then waits.
-    #[cfg(unix)]
     #[test]
-    fn runs_cloudflared_and_follows_its_log() {
-        use std::os::unix::fs::PermissionsExt;
+    fn the_service_is_this_server_on_the_loopback_address() {
+        let mut r = RemoteSettings {
+            port: 9000,
+            ..RemoteSettings::default()
+        };
+        assert_eq!(service_url(&r), "https://127.0.0.1:9000");
+        r.tls = RemoteTls::Off;
+        assert_eq!(service_url(&r), "http://127.0.0.1:9000");
+    }
 
-        let dir = std::env::temp_dir().join(format!("cleanrstai-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    /// Writes a stand-in for cloudflared: a shell script that checks how it was started, prints
+    /// `lines` as cloudflared would, then waits.
+    #[cfg(unix)]
+    fn fake_cloudflared(dir: &std::path::Path, expect_args: &str, token: &str, lines: &[&str]) {
+        use std::os::unix::fs::PermissionsExt;
+        let echo: String = lines
+            .iter()
+            .map(|l| format!("echo '{}' >&2\n", l.replace('\'', "'\\''")))
+            .collect();
         let script = dir.join("cloudflared");
-        let config = CONFIG.replace('\'', "'\\''");
-        let registered = REGISTERED;
         std::fs::write(
             &script,
             format!(
                 "#!/bin/sh\n\
-                 [ \"$*\" = 'tunnel --no-autoupdate run' ] || exit 3\n\
-                 [ \"$TUNNEL_TOKEN\" = 'secret-token' ] || exit 4\n\
-                 echo '{config}' >&2\n\
-                 echo '{registered}' >&2\n\
-                 sleep 30\n"
+                 [ \"$*\" = '{expect_args}' ] || {{ echo \"bad args: $*\" >&2; exit 3; }}\n\
+                 [ \"$TUNNEL_TOKEN\" = '{token}' ] || {{ echo 'bad token' >&2; exit 4; }}\n\
+                 {echo}sleep 30\n"
             ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
+    #[cfg(unix)]
+    fn wait_connected(handle: &TunnelHandle) -> TunnelStatus {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = handle.status();
+            if matches!(status, TunnelStatus::Connected { .. }) {
+                return status;
+            }
+            assert!(std::time::Instant::now() < deadline, "status: {status:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runs_a_named_tunnel_and_follows_its_log() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        fake_cloudflared(
+            &dir,
+            "tunnel --no-autoupdate run",
+            "secret-token",
+            &[CONFIG, REGISTERED],
+        );
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -527,37 +763,80 @@ mod tests {
         let hosts = TunnelHosts::default();
         let cfg = TunnelSettings {
             enabled: true,
+            mode: TunnelMode::Named,
             token: "secret-token".into(),
             hostname: "https://typed.example.com/".into(),
-            cloudflared: script.display().to_string(),
+            cloudflared: dir.join("cloudflared").display().to_string(),
+            ..TunnelSettings::default()
         };
         let handle = start(
             rt.handle(),
-            &cfg,
-            "a long enough password",
+            reqwest::Client::new(),
+            &remote(cfg),
             hosts.clone(),
             Arc::new(|| {}),
         )
         .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !matches!(handle.status(), TunnelStatus::Connected { .. }) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "status: {:?}",
-                handle.status()
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
         assert_eq!(
-            handle.status(),
+            wait_connected(&handle),
             TunnelStatus::Connected {
                 connections: 1,
                 hosts: vec!["typed.example.com".into(), "chat.example.com".into()],
             }
         );
+        assert_eq!(handle.publish_status(), PublishStatus::Off);
         assert_eq!(hosts.read().unwrap().len(), 2);
         drop(handle);
         assert!(hosts.read().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runs_a_quick_tunnel_to_this_server() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        fake_cloudflared(
+            &dir,
+            "tunnel --no-autoupdate --url https://127.0.0.1:8484 --no-tls-verify \
+             --allowed-mail me@example.com,*@team.example",
+            "",
+            &[
+                "2026-10-26T06:44:20Z INF |  https://brave-new-words.trycloudflare.com  |",
+                REGISTERED,
+            ],
+        );
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let hosts = TunnelHosts::default();
+        let cfg = TunnelSettings {
+            enabled: true,
+            mode: TunnelMode::Quick,
+            allowed_emails: "me@example.com, *@team.example".into(),
+            // A named tunnel's token is not used, nor passed on.
+            token: "unused".into(),
+            cloudflared: dir.join("cloudflared").display().to_string(),
+            ..TunnelSettings::default()
+        };
+        let handle = start(
+            rt.handle(),
+            reqwest::Client::new(),
+            &remote(cfg),
+            hosts.clone(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        assert_eq!(
+            wait_connected(&handle),
+            TunnelStatus::Connected {
+                connections: 1,
+                hosts: vec!["brave-new-words.trycloudflare.com".into()],
+            }
+        );
+        assert_eq!(handle.service(), "https://127.0.0.1:8484");
+        drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

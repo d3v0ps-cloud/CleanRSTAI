@@ -373,17 +373,34 @@ pub struct RemoteSettings {
     pub tunnel: TunnelSettings,
 }
 
-/// A named Cloudflare Tunnel run with `cloudflared`. The tunnel's public hostname and the
-/// local service it points at are set up in the Cloudflare dashboard.
+/// Which kind of Cloudflare Tunnel `cloudflared` runs.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelMode {
+    /// A temporary `trycloudflare.com` address, no Cloudflare account needed.
+    #[default]
+    Quick,
+    /// A tunnel in the user's Cloudflare account, on their own domain.
+    Named,
+}
+
+/// A Cloudflare Tunnel run with `cloudflared`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TunnelSettings {
     pub enabled: bool,
-    /// The tunnel's token from the Cloudflare dashboard. Kept in the keychain.
+    pub mode: TunnelMode,
+    /// Quick tunnels: email addresses or `*@domain` patterns, comma-separated, that Cloudflare
+    /// lets through with a one-time PIN. Empty lets anyone with the address reach the login.
+    pub allowed_emails: String,
+    /// Named tunnels: the tunnel's token from the Cloudflare dashboard. Kept in the keychain.
     pub token: String,
-    /// The tunnel's public hostname, e.g. `chat.example.com`. Optional: cloudflared also
-    /// reports the hostnames once it is connected.
+    /// Named tunnels: the public hostname, e.g. `chat.example.com`.
     pub hostname: String,
+    /// Named tunnels: a Cloudflare API token that publishes `hostname` on the tunnel (its route
+    /// and DNS record). Optional; without it the route is set up in the dashboard. Kept in the
+    /// keychain.
+    pub api_token: String,
     /// Path to `cloudflared`; empty finds it on `PATH`.
     pub cloudflared: String,
 }

@@ -251,6 +251,10 @@ fn slots(settings: &mut Settings) -> Vec<(String, &mut String)> {
         "remote:tunnel_token".into(),
         &mut settings.general.remote.tunnel.token,
     ));
+    out.push((
+        "remote:tunnel_api_token".into(),
+        &mut settings.general.remote.tunnel.api_token,
+    ));
     for s in &mut settings.mcp_servers {
         match &mut s.transport {
             McpTransportConfig::Stdio { env, .. } => {
@@ -501,11 +505,13 @@ pub mod tests {
         let mut settings = sample();
         settings.general.remote.password = "pw".into();
         settings.general.remote.tunnel.token = "tunnel-token".into();
+        settings.general.remote.tunnel.api_token = "api-token".into();
         let accounts = externalize(&mut settings, &store).unwrap();
         assert!(accounts.contains(&"remote:password".to_string()));
         assert!(accounts.contains(&"remote:tunnel_token".to_string()));
         assert!(settings.general.remote.password.is_empty());
         assert!(settings.general.remote.tunnel.token.is_empty());
+        assert!(settings.general.remote.tunnel.api_token.is_empty());
         assert_eq!(
             store
                 .items
@@ -519,5 +525,6 @@ pub mod tests {
         assert!(internalize(&mut back, &store, &accounts).is_empty());
         assert_eq!(back.general.remote.password, "pw");
         assert_eq!(back.general.remote.tunnel.token, "tunnel-token");
+        assert_eq!(back.general.remote.tunnel.api_token, "api-token");
     }
 }
