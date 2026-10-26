@@ -2,10 +2,10 @@ name: CI
 
 # Runs on the self-hosted runners: the Gentoo box (Linux x64), the Mac mini (macOS ARM64)
 # and DARKBASE (Windows x64).
-# A pull request that only changes roadmap.md doesn't run CI. Pushes to main always do.
+# A pull request that only changes roadmap.md doesn't run CI. Pushes to main and dev always do.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     paths-ignore:
       - "roadmap.md"
