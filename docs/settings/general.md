@@ -92,7 +92,7 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
 
 Changes take effect when you click **Apply** or **Save & Close**. The server restarts, which
 logs browsers out; a change to the tunnel settings alone restarts only the tunnel. See
-[Reaching it from outside your network](../using/remote-access.html#reaching-it-from-outside-your-network).
+[Cloudflare Tunnel](../using/cloudflare-tunnel.html).
 
 ## Updates
 

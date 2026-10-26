@@ -16,3 +16,5 @@ How to work with CleanRSTAI day to day.
 - [Updates](updates.html): checking for and installing new versions.
 - [Remote access](remote-access.html): using your chats from a browser on a phone or another
   computer, and its security.
+- [Cloudflare Tunnel](cloudflare-tunnel.html): reaching remote access from anywhere, with a
+  quick tunnel or your own domain.

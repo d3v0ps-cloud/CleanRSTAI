@@ -45,7 +45,7 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   network, which ends the HTTPS connection and so can read it. With an API token, the app also
   calls Cloudflare's API (`api.cloudflare.com`) when the tunnel starts, to publish the
   hostname
-  ([Reaching it from outside your network](../using/remote-access.html#reaching-it-from-outside-your-network)).
+  ([Cloudflare Tunnel](../using/cloudflare-tunnel.html#privacy)).
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
   system's temporary folder and run in the browser, where a page can load anything it links to.
   The app only does this when you click **Open in browser**.

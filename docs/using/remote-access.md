@@ -95,86 +95,19 @@ its attachments, but you can't add files from the browser.
 - **What never leaves the computer.** API keys, MCP secrets and settings are not sent to the
   browser. Model requests, tools and approvals stay on this computer.
 - **Network.** Use remote access on a network you trust. To reach it from outside, use the
-  [Cloudflare Tunnel](#reaching-it-from-outside-your-network). Do not forward the port from your
+  [Cloudflare Tunnel](cloudflare-tunnel.html). Do not forward the port from your
   router to the internet.
 
 ## Reaching it from outside your network
 
-A [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) makes the server reachable
-from anywhere, without opening a port on your router. CleanRSTAI runs Cloudflare's
-`cloudflared` program for you while remote access is on. There are two kinds:
+To use your chats from anywhere, turn on a **Cloudflare Tunnel** in the same settings. The app
+runs Cloudflare's `cloudflared` for you, without opening a port on your router:
 
-- **Quick tunnel**: a random `https://….trycloudflare.com` address, with no Cloudflare
-  account. The address changes every time the tunnel starts, and Cloudflare offers quick
-  tunnels for trying things out, with no uptime guarantee.
-- **Named tunnel**: your own address such as `https://chat.example.com`, from a tunnel in your
-  Cloudflare account on a domain you have on Cloudflare. Use this one to keep using it.
+- a **quick tunnel** gives a random `trycloudflare.com` address with no Cloudflare account;
+- a **named tunnel** uses your own domain, such as `https://chat.example.com`.
 
-Either way, install `cloudflared` first, from
-[Cloudflare's downloads page](https://developers.cloudflare.com/tunnel/downloads/)
-(on macOS, `brew install cloudflared`). You don't need to log in with it. If it isn't on your
-`PATH`, set its location in the **cloudflared** row.
-
-The tunnel needs a password of at least 12 characters, since anyone on the internet can reach
-the login page. **Listen on** can stay at **This computer only**: the tunnel reaches the server
-from this computer.
-
-### Quick tunnel
-
-1. In **Settings → General → Remote access**, tick **Cloudflare Tunnel** and choose **Quick
-   tunnel**.
-2. Optionally, enter **Allowed emails** (for example `me@example.com` or `*@example.com`,
-   separated by commas). Cloudflare then asks visitors for a one-time PIN sent to that
-   address before they reach the login page. This needs a recent `cloudflared` (2026.10 or
-   later).
-3. Click **Apply**. When **Tunnel status** says *Online at https://….trycloudflare.com/*, open
-   that address on any device and log in.
-
-Quick tunnels hold back the live updates the page normally receives, so through a quick tunnel
-the page checks for changes every few seconds (every second while a reply is written) instead.
-
-### Named tunnel
-
-1. In the [Cloudflare dashboard](https://dash.cloudflare.com/), go to **Networking → Tunnels**
-   and create a tunnel. Copy its token: the long `eyJ…` string in the install command the
-   dashboard shows. You don't need to run that command.
-2. In **Settings → General → Remote access**, tick **Cloudflare Tunnel**, choose **Named
-   tunnel**, paste the **Tunnel token** and enter the **Public hostname**
-   (`chat.example.com`).
-3. Publish the hostname, so that Cloudflare sends it to this computer. A tunnel run with a
-   token takes its routes from Cloudflare, so this is done there, either way:
-   - **Let the app do it:** create an [API token](https://dash.cloudflare.com/profile/api-tokens)
-     with **Account → Cloudflare Tunnel → Edit**, **Zone → DNS → Edit** and **Zone → Zone →
-     Read**, and paste it as the **API token**. When the tunnel starts, the app adds the route
-     for the hostname to the tunnel (keeping any other routes) and creates the DNS record that
-     points the hostname at the tunnel. It won't replace a DNS record that already points
-     somewhere else; the status says so instead.
-   - **Or do it in the dashboard:** on the tunnel's page, add a **published application** route
-     for the hostname with the service the status shows: with the self-signed certificate (the
-     default), type **HTTPS**, URL `127.0.0.1:8484`, and under **TLS** turn on **No TLS
-     Verify**; with **Off (plain HTTP)**, type **HTTP**, URL `127.0.0.1:8484`. Use your port
-     if you changed it.
-4. Click **Apply**. When **Tunnel status** says *Online at https://chat.example.com/* (and,
-   with an API token, *Published …*), open that address on any device and log in.
-
-### What changes with a tunnel
-
-- **Cloudflare carries the traffic.** Cloudflare ends the HTTPS connection to the browser, so
-  your chats pass through Cloudflare's network, in the clear inside it, on the way to this
-  computer.
-- **Logins are limited per visitor.** The lockout uses the visitor's address that Cloudflare
-  reports. In addition, after 20 wrong passwords through the tunnel within 10 minutes, from
-  any addresses, logins through the tunnel pause for 5 minutes. Logins on your own network
-  aren't affected.
-- **The tunnel's hostname is accepted** alongside the local addresses, only while the tunnel
-  runs.
-- **cloudflared restarts on its own** if it stops, after a few seconds and then less often,
-  unless Cloudflare refuses the token. A quick tunnel gets a new address when it restarts.
-
-Turning the tunnel off, turning remote access off or quitting the app stops `cloudflared`
-(on Linux even if the app is killed). Changing the tunnel settings restarts only the tunnel, so
-browsers on your network stay logged in. Turning the tunnel off doesn't remove a published
-route or DNS record; delete them in the dashboard if you no longer want them.
+See [Cloudflare Tunnel](cloudflare-tunnel.html) for setup, what the status means and how
+logins work through the tunnel.
 
 ## Limits
 
