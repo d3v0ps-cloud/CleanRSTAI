@@ -228,6 +228,8 @@ Run the commands and code the model triggers inside a local Docker container, no
   folder mounted, and nothing else from the host
 - [x] Choose network access for the container (none by default), and resource limits (CPU,
   memory, time)
+- [x] A custom network that allows only listed outbound hosts (domains, IPv4 addresses and
+  ranges), protocols and ports, through a firewall and DNS companion container
 - [x] Refuse to run tools in the sandbox, with a clear message, when Docker isn't running or the
   image is missing, rather than falling back to the host
 - [x] Show in the chat which container ran a command, with its exit code and output

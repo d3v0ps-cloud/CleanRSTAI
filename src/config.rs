@@ -510,7 +510,35 @@ pub enum SandboxNetwork {
     None,
     /// Normal Docker bridge network.
     Bridge,
+    /// Only the outbound connections that `SandboxSettings::rules` allow.
+    Custom,
 }
+
+/// The protocol a sandbox network rule allows.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetProtocol {
+    #[default]
+    Tcp,
+    Udp,
+    /// TCP and UDP on the rule's ports, or every protocol when it has no ports.
+    Any,
+}
+
+/// One outbound connection a custom sandbox network allows.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SandboxNetRule {
+    /// A domain (its subdomains included; `*.` is optional), an IPv4 address or CIDR range,
+    /// or `*` for any address.
+    pub host: String,
+    pub protocol: NetProtocol,
+    /// Ports and ranges separated by commas, such as `80, 443, 8000-8100`. Empty allows all.
+    pub ports: String,
+}
+
+/// Most rules a custom sandbox network takes.
+pub const MAX_SANDBOX_NET_RULES: usize = 256;
 
 /// Image used when the sandbox image is unset.
 pub const DEFAULT_SANDBOX_IMAGE: &str = "python:3.13-slim";
@@ -543,6 +571,9 @@ pub struct SandboxSettings {
     pub pull: SandboxPull,
     /// Network access for the container.
     pub network: SandboxNetwork,
+    /// The outbound connections allowed when `network` is `Custom`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<SandboxNetRule>,
     /// CPU limit per container, in CPUs.
     pub cpus: f32,
     /// Memory limit per container, in MB.
@@ -573,6 +604,11 @@ impl SandboxSettings {
         } else {
             DEFAULT_SANDBOX_IMAGE.into()
         };
+        sb.rules.truncate(MAX_SANDBOX_NET_RULES);
+        for rule in &mut sb.rules {
+            rule.host = rule.host.trim().to_ascii_lowercase();
+            rule.ports = rule.ports.trim().to_owned();
+        }
         sb
     }
 }
@@ -586,6 +622,7 @@ impl Default for SandboxSettings {
             dockerfile: DEFAULT_SANDBOX_DOCKERFILE.into(),
             pull: SandboxPull::Missing,
             network: SandboxNetwork::None,
+            rules: Vec::new(),
             cpus: 2.0,
             memory_mb: 2048,
             pids: 512,

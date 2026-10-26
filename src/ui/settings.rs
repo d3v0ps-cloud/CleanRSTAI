@@ -4,14 +4,83 @@
 use eframe::egui;
 
 use super::theme::icon;
-use super::widgets::{code_block, kv_editor, list_editor, optional_value};
+use super::widgets::{code_block, icon_button, kv_editor, list_editor, optional_value};
 use crate::config::{
-    DEFAULT_SANDBOX_DOCKERFILE, McpServerConfig, McpTransportConfig, ProviderConfig, RemoteBind,
-    RemoteSettings, RemoteTls, SandboxImageSource, SandboxNetwork, SandboxPull, SandboxSettings,
-    Settings, Theme, TunnelMode, import_mcp_json,
+    DEFAULT_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig, McpTransportConfig,
+    NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls, SandboxImageSource,
+    SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings, Settings, Theme, TunnelMode,
+    import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
+
+/// The rows of a custom sandbox network: host, protocol, ports and a remove button, with
+/// each rule's error under it.
+fn net_rules_editor(ui: &mut egui::Ui, rules: &mut Vec<SandboxNetRule>) {
+    ui.push_id("net-rules", |ui| {
+        let mut remove = None;
+        for (i, rule) in rules.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut rule.host)
+                            .hint_text("pypi.org, 10.0.0.0/8 or *")
+                            .desired_width(200.0),
+                    );
+                    egui::ComboBox::from_id_salt("protocol")
+                        .width(70.0)
+                        .selected_text(protocol_label(rule.protocol))
+                        .show_ui(ui, |ui| {
+                            for p in [NetProtocol::Tcp, NetProtocol::Udp, NetProtocol::Any] {
+                                ui.selectable_value(&mut rule.protocol, p, protocol_label(p));
+                            }
+                        });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut rule.ports)
+                            .hint_text("all ports")
+                            .desired_width(110.0),
+                    );
+                    if icon_button(ui, icon::CLOSE, "Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                let check = SandboxNetRule {
+                    host: rule.host.trim().to_ascii_lowercase(),
+                    ..rule.clone()
+                };
+                if let Err(e) = crate::sandbox::check_rule(&check) {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            rules.remove(i);
+        }
+        if rules.len() < MAX_SANDBOX_NET_RULES
+            && ui
+                .small_button(format!("{}  Add rule", icon::PLUS))
+                .clicked()
+        {
+            rules.push(SandboxNetRule {
+                ports: "443".into(),
+                ..SandboxNetRule::default()
+            });
+        }
+        ui.weak(
+            "Host: a domain (its subdomains too), an IPv4 address or range such as \
+             192.168.1.0/24, or * for any address. Ports: such as 80, 443, 8000-8100; empty \
+             allows all. Everything else is refused, and only the domains listed resolve.",
+        );
+    });
+}
+
+fn protocol_label(protocol: NetProtocol) -> &'static str {
+    match protocol {
+        NetProtocol::Tcp => "TCP",
+        NetProtocol::Udp => "UDP",
+        NetProtocol::Any => "Any",
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -1352,8 +1421,19 @@ impl SettingsUi {
                                 SandboxNetwork::Bridge,
                                 "Normal network (can reach this computer, your local network and the internet)",
                             );
+                            ui.radio_value(
+                                &mut sb.network,
+                                SandboxNetwork::Custom,
+                                "Only the hosts and ports below",
+                            );
                         });
                         ui.end_row();
+
+                        if sb.network == SandboxNetwork::Custom {
+                            ui.label("Allowed outbound");
+                            ui.vertical(|ui| net_rules_editor(ui, &mut sb.rules));
+                            ui.end_row();
+                        }
 
                         ui.label("CPUs");
                         ui.add(
@@ -2003,6 +2083,11 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Docker, "Docker sandbox", "Sandbox image"),
     (Tab::Docker, "Docker sandbox", "Custom Dockerfile"),
     (Tab::Docker, "Docker sandbox", "Sandbox network"),
+    (
+        Tab::Docker,
+        "Docker sandbox",
+        "Allowed hosts, ports and protocols (firewall)",
+    ),
     (
         Tab::Docker,
         "Docker sandbox",

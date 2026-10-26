@@ -72,8 +72,8 @@ too, as an installer and a portable `.exe`.
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
   **Settings → Built-in Tools** or per chat.
 - **Docker sandbox** (off by default): run the workspace shell commands in a Docker container
-  with only the chat's folder mounted, no network by default, and CPU, memory and process
-  limits. Use a published image or a custom Dockerfile. See the
+  with only the chat's folder mounted, no network by default (or only the hosts, ports and
+  protocols you allow), and CPU, memory and process limits. Use a published image or a custom Dockerfile. See the
   [Docker sandbox settings](https://d3v0ps-cloud.github.io/CleanRSTAI/settings/docker.html).
 - **Subagents**: a `delegate` tool lets the model hand independent tasks to subagents that work
   in parallel and report back. Each subagent's progress, tools and result show in the chat, and

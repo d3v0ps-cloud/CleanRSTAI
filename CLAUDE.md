@@ -128,7 +128,10 @@ spawns retry `ExecutableFileBusy`. `Sandbox` keeps one container per chat, named
 and labelled `net.bukn.cleanrstai.sandbox=1`, reused via `docker exec`. It removes them with
 `rm -f` on timeout, cancel (a drop guard), 15 idle minutes, chat delete, settings change, last-clone
 drop, and at startup for leftovers. Images are a named image with a pull policy, or a Dockerfile
-built as `cleanrstai-sandbox:<sha256-12>` with no build context. Errors are returned as the
+built as `cleanrstai-sandbox:<sha256-12>` with no build context. A custom network (`network.rs`)
+runs a gateway container `<name>-net` (image `cleanrstai-sandbox-net:<hash>` built from
+`GATEWAY_DOCKERFILE`; iptables, ipset and dnsmasq set up by `gateway_script`) whose network the
+sandbox joins with `--network container:`; only the allowed domains resolve, into per-rule ipsets. Errors are returned as the
 command's error; nothing falls back to the host. `ChatMessage.sandbox` records the image for the badge.
 
 **Remote access** (`remote/`): an axum server, started by `ChatApp::sync_remote` when

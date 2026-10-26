@@ -614,8 +614,9 @@ fn sandbox_shell_description(sandbox: &Sandbox) -> String {
     let cfg = sandbox.config();
     let read_only = if cfg.read_only { " (read-only)" } else { "" };
     let network = match cfg.network {
-        SandboxNetwork::None => "The container has no network access.",
-        SandboxNetwork::Bridge => "The container has network access.",
+        SandboxNetwork::None => "The container has no network access.".to_owned(),
+        SandboxNetwork::Bridge => "The container has network access.".to_owned(),
+        SandboxNetwork::Custom => custom_network_note(&cfg.rules),
     };
     format!(
         "Run a shell command (sh) in a Linux container from the image {}, with the workspace \
@@ -624,6 +625,40 @@ fn sandbox_shell_description(sandbox: &Sandbox) -> String {
          and stderr. Commands run without a terminal or input; use non-interactive flags.",
         sandbox.image()
     )
+}
+
+/// The shell tool's sentence about a custom sandbox network: what it may reach.
+fn custom_network_note(rules: &[crate::config::SandboxNetRule]) -> String {
+    use crate::config::NetProtocol;
+    let allowed: Vec<String> = rules
+        .iter()
+        .map(|r| {
+            let protocol = match r.protocol {
+                NetProtocol::Tcp => "TCP",
+                NetProtocol::Udp => "UDP",
+                NetProtocol::Any => "any protocol",
+            };
+            let host = if r.host == "*" {
+                "any address"
+            } else {
+                &r.host
+            };
+            if r.ports.is_empty() {
+                format!("{host} ({protocol})")
+            } else {
+                format!("{host} port {} ({protocol})", r.ports)
+            }
+        })
+        .collect();
+    if allowed.is_empty() {
+        "The container has no network access.".to_owned()
+    } else {
+        format!(
+            "The container's network allows only outbound connections to: {}; everything else \
+             is refused, and other domains don't resolve.",
+            allowed.join(", ")
+        )
+    }
 }
 
 /// Stop a timed-out shell command and every process it started.

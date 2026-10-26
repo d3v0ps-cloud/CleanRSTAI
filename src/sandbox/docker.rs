@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
+use super::network;
 use crate::config::{
     SandboxImageSource, SandboxNetwork, SandboxPull, SandboxSettings, valid_sandbox_image,
 };
@@ -80,8 +81,9 @@ pub fn pid_label() -> String {
 /// Arguments of `docker run` that create a chat's container (without the program).
 pub fn run_args(cfg: &SandboxSettings, name: &str, root: &Path, image: &str) -> Vec<String> {
     let network = match cfg.network {
-        SandboxNetwork::None => "none",
-        SandboxNetwork::Bridge => "bridge",
+        SandboxNetwork::None => "none".to_owned(),
+        SandboxNetwork::Bridge => "bridge".to_owned(),
+        SandboxNetwork::Custom => format!("container:{}", network::gateway_name(name)),
     };
     let memory = format!("{}m", cfg.memory_mb);
     let mut args = strings(&[
@@ -94,7 +96,7 @@ pub fn run_args(cfg: &SandboxSettings, name: &str, root: &Path, image: &str) -> 
         "-w",
         "/workspace",
         "--network",
-        network,
+        &network,
         "--cpus",
     ]));
     args.push(cfg.cpus.to_string());
@@ -112,6 +114,48 @@ pub fn run_args(cfg: &SandboxSettings, name: &str, root: &Path, image: &str) -> 
     args.extend(strings(&["-e", "HOME=/tmp", "--entrypoint", ""]));
     args.push(image.into());
     args.extend(strings(&["sleep", "infinity"]));
+    args
+}
+
+/// Arguments of `docker run` that create the gateway container `name` of a custom network,
+/// running `script` (see [`network::gateway_script`]).
+pub fn gateway_run_args(name: &str, script: &str) -> Vec<String> {
+    let mut args = strings(&[
+        "run", "-d", "--init", "--name", name, "--label", LABEL, "--label",
+    ]);
+    args.push(pid_label());
+    args.extend(strings(&[
+        "--network",
+        "bridge",
+        "--cpus",
+        "0.5",
+        "--memory",
+        "64m",
+        "--memory-swap",
+        "64m",
+        "--pids-limit",
+        "64",
+        "--cap-drop",
+        "ALL",
+        // iptables and ipset (whose match looks sets up over a raw socket); dnsmasq binds
+        // port 53, then switches to its own user.
+        "--cap-add",
+        "NET_ADMIN",
+        "--cap-add",
+        "NET_RAW",
+        "--cap-add",
+        "NET_BIND_SERVICE",
+        "--cap-add",
+        "SETUID",
+        "--cap-add",
+        "SETGID",
+        "--security-opt",
+        "no-new-privileges",
+        "--entrypoint",
+        "",
+    ]));
+    args.push(network::gateway_image());
+    args.extend(strings(&["sh", "-c", script]));
     args
 }
 
@@ -367,28 +411,51 @@ async fn pull(program: &Path, image: &str) -> Result<(), String> {
     }
 }
 
+/// Builds `dockerfile` (no build context) as `tag`; `what` names the image in errors.
 async fn build(
     program: &Path,
-    cfg: &SandboxSettings,
+    dockerfile: &str,
     tag: &str,
     force: bool,
+    what: &str,
 ) -> Result<(), String> {
     let mut args = strings(&["build"]);
     if force {
         args.extend(strings(&["--pull", "--no-cache"]));
     }
     args.extend(strings(&["-t", tag, "-"]));
-    let out = docker(program, &args, Some(&cfg.dockerfile), BUILD_TIMEOUT)
+    let out = docker(program, &args, Some(dockerfile), BUILD_TIMEOUT)
         .await
-        .map_err(|e| format!("Couldn't build the sandbox image: {e}"))?;
+        .map_err(|e| format!("Couldn't build the {what}: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "Couldn't build the sandbox image: {}",
-            last_line(&out)
-        ))
+        Err(format!("Couldn't build the {what}: {}", last_line(&out)))
     }
+}
+
+/// Builds the gateway image of a custom network when it is missing (or always, with
+/// `force`). Nothing to do for the other network settings.
+async fn ensure_gateway_image(
+    program: &Path,
+    cfg: &SandboxSettings,
+    force: bool,
+) -> Result<(), String> {
+    if cfg.network != SandboxNetwork::Custom {
+        return Ok(());
+    }
+    let tag = network::gateway_image();
+    if force || !image_present(program, &tag).await? {
+        build(
+            program,
+            network::GATEWAY_DOCKERFILE,
+            &tag,
+            force,
+            "sandbox network image",
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Makes the sandbox image ready and returns its reference. `force` pulls or rebuilds
@@ -402,10 +469,11 @@ pub async fn ensure_image(
 ) -> Result<String, String> {
     let image = image_ref(cfg);
     check_image_name(&image)?;
+    ensure_gateway_image(program, cfg, force).await?;
     match cfg.source {
         SandboxImageSource::Dockerfile => {
             if force || !image_present(program, &image).await? {
-                build(program, cfg, &image, force).await?;
+                build(program, &cfg.dockerfile, &image, force, "sandbox image").await?;
             }
             Ok(image)
         }
@@ -464,7 +532,17 @@ pub async fn check(cfg: &SandboxSettings) -> Result<String, String> {
         (SandboxImageSource::Dockerfile, true) => format!("image {image} is built"),
         (SandboxImageSource::Dockerfile, false) => format!("image {image} isn't built yet"),
     };
-    Ok(format!("Docker {version} is running · {state}"))
+    let mut status = format!("Docker {version} is running · {state}");
+    if cfg.network == SandboxNetwork::Custom {
+        network::gateway_script(&cfg.rules)?;
+        let tag = network::gateway_image();
+        if image_present(&program, &tag).await? {
+            status.push_str(" · network image is built");
+        } else {
+            status.push_str(" · network image isn't built yet");
+        }
+    }
+    Ok(status)
 }
 
 /// For "Pull now" / "Build now": pulls the image or rebuilds the Dockerfile, even when it is
@@ -475,10 +553,14 @@ pub async fn prepare(cfg: &SandboxSettings) -> Result<String, String> {
     server_version(&program).await?;
     let mut pulled = false;
     let image = ensure_image(&program, cfg, true, &mut pulled).await?;
-    Ok(match cfg.source {
+    let mut done = match cfg.source {
         SandboxImageSource::Image => format!("Pulled {image}"),
         SandboxImageSource::Dockerfile => format!("Built {image}"),
-    })
+    };
+    if cfg.network == SandboxNetwork::Custom {
+        done.push_str(" and the network image");
+    }
+    Ok(done)
 }
 
 /// Removes the containers labelled [`LABEL`] that no running app made: the ones whose

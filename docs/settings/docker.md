@@ -54,7 +54,8 @@ present.
 | **Image name** | `python:3.13-slim` | Shown for **Docker image**. Any image name and tag. An empty name is replaced by the default. |
 | **Get the image** | Pull when missing | Shown for **Docker image**. **Pull when missing**, **Pull every time the app starts**, or **Only use an image already on this computer**. |
 | **Dockerfile** | An example | Shown for **Custom Dockerfile**. The Dockerfile text, with **Reset to example** to put back the default. |
-| **Network** | None (no network) | **None (no network)** or **Normal network (can reach this computer, your local network and the internet)**. See [Limits and hardening](#limits-and-hardening). |
+| **Network** | None (no network) | **None (no network)**, **Normal network (can reach this computer, your local network and the internet)** or **Only the hosts and ports below**. See [Custom network](#custom-network) and [Limits and hardening](#limits-and-hardening). |
+| **Allowed outbound** | none | With **Only the hosts and ports below**: the rules, each a host, a protocol and ports. See [Custom network](#custom-network). |
 | **CPUs** | 2 | How many CPUs a container may use, from 0.25 to 64. |
 | **Memory** | 2048 MB | How much memory a container may use, from 256 to 262144 MB. |
 | **Processes** | 512 | How many processes a container may run at once, from 32 to 65536. |
@@ -113,11 +114,67 @@ RUN apt-get update \
 pulling the base image and ignoring the cache (`docker build --pull --no-cache`). Use it to
 update an old base image.
 
+## Custom network
+
+**Only the hosts and ports below** lets commands make only the outbound connections you list,
+such as `pypi.org` on port 443 to install packages. Everything else is refused at once
+(connections fail with "connection refused" rather than hanging).
+
+Click **Add rule** for each connection to allow. A rule has:
+
+| Field | What to enter |
+|---|---|
+| Host | A domain such as `pypi.org` (it covers its subdomains too, so `*.pypi.org` means the same), an IPv4 address such as `192.168.1.20`, a range such as `10.0.0.0/8`, or `*` for any address. |
+| Protocol | **TCP**, **UDP** or **Any**. **Any** with ports means TCP and UDP on those ports; **Any** without ports allows every protocol, ping included. |
+| Ports | Ports and ranges separated by commas, such as `80, 443, 8000-8100`. Empty allows every port. |
+
+A rule with a mistake shows what is wrong under it, and commands are refused with "Network rule
+<n>: …" until it is fixed. With no rules at all, the container has no network, like **None**.
+
+Some useful rules:
+
+| To | Host | Protocol | Ports |
+|---|---|---|---|
+| Install Python packages with pip | `pypi.org` and `files.pythonhosted.org` | TCP | 443 |
+| Install npm packages | `registry.npmjs.org` | TCP | 443 |
+| Clone from GitHub | `github.com` and `codeload.github.com` | TCP | 443 |
+| Reach a server on your network | `192.168.1.20` | TCP | 8080 |
+| Allow the web, nothing else | `*` | TCP | 80, 443 |
+
+### How it works
+
+The app starts a small companion container, named like the sandbox container with `-net` at the
+end, from an image it builds itself (`cleanrstai-sandbox-net:<hash>`, Ubuntu with `iptables`,
+`ipset` and `dnsmasq`; the first build needs internet access and takes a minute). The sandbox
+container shares its network, and:
+
+- the companion's firewall drops every outbound connection except the rules, and refuses
+  incoming connections;
+- the companion answers DNS for the sandbox. Only the domains in the rules resolve; other names
+  get "not found", unless a rule allows `*`. Each address a domain resolves to is added to that
+  rule, so it keeps working when the address changes;
+- commands can't reach any DNS server themselves, so they can't send data out through DNS
+  lookups of other names;
+- the sandbox has no Linux capabilities, so commands can't change the firewall. Only the
+  companion has the network capabilities it needs to set it up.
+
+The companion is removed with the sandbox container. **Test** also says whether its image is
+built, and **Pull now** / **Build now** rebuilds it too.
+
+Limits:
+
+- IPv4 only. IPv6 is blocked, and domains resolve to IPv4 addresses only.
+- Rules work on addresses, not names. A domain served from a shared address (a CDN, for
+  example) also lets commands reach other sites on that same address.
+- A domain resolves through your computer's DNS servers, as Docker sets them up.
+- The rules apply when a chat's container is created. After changing them, click **Apply**; the
+  running containers are removed and the next command starts a new one.
+
 ## Limits and hardening
 
 In plain words, each container:
 
-- has **no network access** by default. With **Normal network (can reach this computer, your local network and the internet)** it can reach the internet;
+- has **no network access** by default. With **Normal network (can reach this computer, your local network and the internet)** it can reach the internet; with **Only the hosts and ports below** only what the [rules](#custom-network) allow;
 - is limited to the **CPUs**, **Memory** and **Processes** you set. Swap is not extra: the
   memory limit is also the swap limit;
 - has no Linux capabilities (`--cap-drop ALL`), and cannot gain privileges through `setuid`
@@ -145,6 +202,10 @@ says what to do:
 - Building fails: "Couldn't build the sandbox image: <last line of Docker's error>"
 - The container can't be created: "Couldn't start the sandbox container: <last line of Docker's
   error>"
+- A network rule is wrong: "Network rule <n>: <what is wrong>"
+- The network image can't be built: "Couldn't build the sandbox network image: <last line of
+  Docker's error>"
+- The custom network can't be set up: "Couldn't set up the sandbox network: <the reason>"
 - The command runs past its time limit: "the command didn't finish within <n> s; its container
   was stopped and removed"
 
@@ -171,7 +232,8 @@ The sandbox limits what a command can reach. It does not make an untrusted comma
 **It protects against:**
 
 - commands reading or changing files outside the workspace folder;
-- commands using your network, when the network is set to **None (no network)**;
+- commands using your network, when the network is set to **None (no network)**, or using more
+  of it than the rules allow, with **Only the hosts and ports below**;
 - commands using more than the CPU, memory and processes you allow.
 
 **It doesn't protect against:**

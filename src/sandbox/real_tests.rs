@@ -305,3 +305,96 @@ async fn read_only_workspace_refuses_writes() {
     drop(sandbox);
     assert_removed(&name);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon and internet DNS; set CLEANRSTAI_DOCKER_TESTS=1"]
+async fn custom_network_allows_only_its_rules() {
+    use crate::config::{NetProtocol, SandboxNetRule};
+    if !enabled() {
+        return;
+    }
+    // The host as containers on the default bridge see it.
+    let out = Command::new("docker")
+        .args([
+            "network",
+            "inspect",
+            "bridge",
+            "-f",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ])
+        .output()
+        .expect("run docker network inspect");
+    let host = text(&out.stdout).trim().to_owned();
+    let allowed = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let blocked = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let (allowed_port, blocked_port) = (
+        allowed.local_addr().unwrap().port(),
+        blocked.local_addr().unwrap().port(),
+    );
+
+    let ws = Scratch::new("net");
+    let sandbox = Sandbox::new(SandboxSettings {
+        rules: vec![
+            SandboxNetRule {
+                host: host.clone(),
+                protocol: NetProtocol::Tcp,
+                ports: allowed_port.to_string(),
+            },
+            SandboxNetRule {
+                host: "pypi.org".into(),
+                protocol: NetProtocol::Tcp,
+                ports: "443".into(),
+            },
+        ],
+        ..settings(SandboxNetwork::Custom, false)
+    });
+    let chat = Uuid::new_v4();
+    let script = format!(
+        r#"python3 - <<'PY'
+import socket
+def t(name, f):
+    try:
+        f(); print(name, "ok")
+    except Exception as e:
+        print(name, "fail", type(e).__name__)
+t("allowed-port", lambda: socket.create_connection(("{host}", {allowed_port}), timeout=5))
+t("blocked-port", lambda: socket.create_connection(("{host}", {blocked_port}), timeout=5))
+t("allowed-domain", lambda: socket.gethostbyname("pypi.org"))
+t("other-domain", lambda: socket.gethostbyname("example.com"))
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+t("direct-dns", lambda: (s.sendto(b"\0" * 12, ("8.8.8.8", 53)), s.recvfrom(512)))
+PY"#
+    );
+    let run = exec(&sandbox, chat, &ws.0, &script).await;
+    let out = text(&run.stdout);
+    for line in [
+        "allowed-port ok",
+        "blocked-port fail",
+        "allowed-domain ok",
+        "other-domain fail",
+        "direct-dns fail",
+    ] {
+        assert!(
+            out.lines()
+                .any(|l| l == line || l.starts_with(&format!("{line} "))),
+            "missing {line:?} in {out}{}",
+            text(&run.stderr)
+        );
+    }
+
+    let gateway = super::network::gateway_name(&run.container);
+    sandbox.remove_chat(chat);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let out = Command::new("docker")
+            .args(["ps", "-aq", "--filter", &format!("name=^{gateway}$")])
+            .output()
+            .expect("run docker ps");
+        if text(&out.stdout).trim().is_empty() || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_removed(&run.container);
+    assert_removed(&gateway);
+}

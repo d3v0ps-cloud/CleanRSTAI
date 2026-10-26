@@ -2,6 +2,7 @@
 //! `docker` command line.
 
 mod docker;
+mod network;
 #[cfg(test)]
 mod real_tests;
 
@@ -13,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use crate::config::SandboxSettings;
+use crate::config::{SandboxNetwork, SandboxSettings};
 
 pub use docker::{check, image_ref, prepare};
+pub use network::check_rule;
 
 /// How long `docker run` may take to create a container.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
@@ -25,6 +27,8 @@ const REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 const DROP_WAIT: Duration = Duration::from_secs(5);
 /// How long `docker inspect` or `docker logs` may take.
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a custom network's gateway may take to put its rules in place.
+const GATEWAY_WAIT: Duration = Duration::from_secs(30);
 
 /// Runs workspace shell commands in Docker containers, one per chat, reused between
 /// commands. Cheap to clone (Arc inside). Dropping the last clone removes its containers.
@@ -139,13 +143,13 @@ impl Sandbox {
 
         let known = locked(&inner.containers).get(&chat).cloned();
         let reuse = match &known {
-            Some(c) if c.root.as_path() == root => is_running(&program, &name).await,
+            Some(c) if c.root.as_path() == root => all_running(&inner.cfg, &program, &name).await,
             _ => false,
         };
         if !reuse {
             if known.is_some() {
                 // Recorded but stopped or removed outside the app, or mounted elsewhere.
-                quiet(&program, &["rm", "-f", name.as_str()]).await;
+                remove(&inner.cfg, &program, &name).await;
                 locked(&inner.containers).remove(&chat);
             }
             create(inner, &program, chat, root).await?;
@@ -160,7 +164,7 @@ impl Sandbox {
             Ok(out) => out,
             Err(e) if e.contains(docker::TIMED_OUT) => {
                 guard.armed = false;
-                quiet(&program, &["rm", "-f", name.as_str()]).await;
+                remove(&inner.cfg, &program, &name).await;
                 forget(inner, chat, &name);
                 return Ok(SandboxRun {
                     exit_code: None,
@@ -195,7 +199,7 @@ impl Sandbox {
         let removed = locked(&self.inner.containers).remove(&chat);
         prune_lock(&self.inner, chat);
         if let Some(c) = removed {
-            remove_in_background(&self.inner.cfg, &[c.name]);
+            remove_in_background(&self.inner.cfg, &with_gateways(&self.inner.cfg, &[c.name]));
         }
     }
 
@@ -214,7 +218,7 @@ impl Sandbox {
         for chat in chats {
             prune_lock(&self.inner, chat);
         }
-        remove_in_background(&self.inner.cfg, &stale);
+        remove_in_background(&self.inner.cfg, &with_gateways(&self.inner.cfg, &stale));
     }
 }
 
@@ -233,6 +237,7 @@ impl Drop for Inner {
             .values()
             .map(|c| c.name.clone())
             .collect();
+        let names = with_gateways(&self.cfg, &names);
         if names.is_empty() {
             return;
         }
@@ -284,7 +289,10 @@ impl Drop for Cancel {
     fn drop(&mut self) {
         if self.armed {
             forget(&self.inner, self.chat, &self.name);
-            detached(&self.program, &["rm", "-f", self.name.as_str()]);
+            let names = with_gateways(&self.inner.cfg, std::slice::from_ref(&self.name));
+            let mut args = vec!["rm", "-f"];
+            args.extend(names.iter().map(String::as_str));
+            detached(&self.program, &args);
         }
     }
 }
@@ -292,12 +300,20 @@ impl Drop for Cancel {
 /// Makes the image ready, creates the chat's container and records it. The caller's removal
 /// guard must already be armed: a stopped or failed container is removed here too.
 async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Result<(), String> {
+    // Bad rules are reported before anything is pulled or built.
+    let script = match inner.cfg.network {
+        SandboxNetwork::Custom => Some(network::gateway_script(&inner.cfg.rules)?),
+        _ => None,
+    };
     {
         let mut pulled = inner.pulled.lock().await;
         docker::ensure_image(program, &inner.cfg, false, &mut pulled).await?;
     }
     let name = container_name(chat);
-    quiet(program, &["rm", "-f", name.as_str()]).await;
+    remove(&inner.cfg, program, &name).await;
+    if inner.cfg.network == SandboxNetwork::Custom {
+        start_gateway(program, &network::gateway_name(&name), script.as_deref()).await?;
+    }
     let image = docker::image_ref(&inner.cfg);
     let args = docker::run_args(&inner.cfg, &name, root, &image);
     let out = docker::docker(program, &args, None, RUN_TIMEOUT)
@@ -318,7 +334,7 @@ async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Resul
         )
         .await;
         let last = logs.map_or_else(|_| "no log output".to_owned(), |out| last_log_line(&out));
-        quiet(program, &["rm", "-f", name.as_str()]).await;
+        remove(&inner.cfg, program, &name).await;
         return Err(format!(
             "The sandbox container stopped right after starting: {last}"
         ));
@@ -332,6 +348,71 @@ async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Resul
         },
     );
     Ok(())
+}
+
+/// Starts the gateway container `name` running `script` and waits until its rules are in
+/// place. A gateway that stops or doesn't get ready in time is removed.
+async fn start_gateway(program: &Path, name: &str, script: Option<&str>) -> Result<(), String> {
+    let script = script.unwrap_or_default();
+    let fail = |e: String| format!("Couldn't set up the sandbox network: {e}");
+    let out = docker::docker(
+        program,
+        &docker::gateway_run_args(name, script),
+        None,
+        RUN_TIMEOUT,
+    )
+    .await
+    .map_err(fail)?;
+    if !out.status.success() {
+        return Err(fail(docker::last_line(&out)));
+    }
+    let started = Instant::now();
+    let logs_args = ["logs", name].map(str::to_owned);
+    loop {
+        let logs = docker::docker(program, &logs_args, None, INSPECT_TIMEOUT).await;
+        if let Ok(out) = &logs
+            && String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.trim() == network::READY)
+        {
+            return Ok(());
+        }
+        let running = is_running(program, name).await;
+        if !running || started.elapsed() > GATEWAY_WAIT {
+            let last = logs.map_or_else(|e| e, |out| last_log_line(&out));
+            quiet(program, &["rm", "-f", name]).await;
+            return Err(fail(if running {
+                format!("it wasn't ready within {} s", GATEWAY_WAIT.as_secs())
+            } else {
+                last
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// `docker rm -f` for the container `name` and, on a custom network, its gateway.
+async fn remove(cfg: &SandboxSettings, program: &Path, name: &str) {
+    let names = with_gateways(cfg, &[name.to_owned()]);
+    let mut args = vec!["rm", "-f"];
+    args.extend(names.iter().map(String::as_str));
+    quiet(program, &args).await;
+}
+
+/// `names`, followed on a custom network by their gateway containers.
+fn with_gateways(cfg: &SandboxSettings, names: &[String]) -> Vec<String> {
+    let mut all = names.to_vec();
+    if cfg.network == SandboxNetwork::Custom {
+        all.extend(names.iter().map(|n| network::gateway_name(n)));
+    }
+    all
+}
+
+/// Whether the container `name` (and, on a custom network, its gateway) is running.
+async fn all_running(cfg: &SandboxSettings, program: &Path, name: &str) -> bool {
+    is_running(program, name).await
+        && (cfg.network != SandboxNetwork::Custom
+            || is_running(program, &network::gateway_name(name)).await)
 }
 
 /// Whether the container `name` is running, by `docker inspect`. Any failure counts as not.
@@ -461,7 +542,7 @@ run) rm -f "$dir/stopped"
   echo fake-container-id
   if [ -f "$dir/dies" ]; then touch "$dir/stopped"; fi ;;
 inspect) if [ -f "$dir/stopped" ]; then echo false; else echo true; fi ;;
-logs) echo starting; echo 'exec format error' >&2 ;;
+logs) echo starting; echo cleanrstai-network-ready; echo 'exec format error' >&2 ;;
 rm|kill) ;;
 exec)
   for last; do :; done
@@ -566,6 +647,70 @@ mod tests {
         assert_eq!(fake.count_prefix("run -d "), 1);
         assert_eq!(fake.count_prefix("rm "), 1);
         assert_eq!(fake.count_prefix("exec "), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_custom_network_starts_a_gateway_first_and_removes_it_too() {
+        use crate::config::{NetProtocol, SandboxNetRule};
+        let fake = Fake::new();
+        let sb = Sandbox::new(SandboxSettings {
+            network: SandboxNetwork::Custom,
+            rules: vec![SandboxNetRule {
+                host: "pypi.org".into(),
+                protocol: NetProtocol::Tcp,
+                ports: "443".into(),
+            }],
+            ..fake.settings()
+        });
+        let chat = Uuid::new_v4();
+        let name = container_name(chat);
+        let gateway = network::gateway_name(&name);
+
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        let runs: Vec<String> = fake
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("run -d "))
+            .collect();
+        assert_eq!(runs.len(), 2);
+        assert!(runs[0].contains(&format!("--name {gateway} ")));
+        assert!(runs[0].contains("--cap-add NET_ADMIN"));
+        // The script is the gateway's last argument; the log splits it into lines.
+        assert!(fake.calls().contains(
+            &"iptables -A OUTPUT -m set --match-set r1 dst -p tcp --dport 443 -j ACCEPT".to_owned()
+        ));
+        assert!(runs[1].contains(&format!("--name {name} ")));
+        assert!(runs[1].contains(&format!("--network container:{gateway} ")));
+        assert!(runs[1].contains("--cap-drop ALL"));
+        assert_eq!(fake.count_eq(&format!("rm -f {name} {gateway}")), 1);
+
+        sb.remove_chat(chat);
+        within_two_seconds("the removal", || {
+            fake.count_eq(&format!("rm -f {name} {gateway}")) == 2
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_network_rule_fails_before_anything_starts() {
+        use crate::config::SandboxNetRule;
+        let fake = Fake::new();
+        let sb = Sandbox::new(SandboxSettings {
+            network: SandboxNetwork::Custom,
+            rules: vec![SandboxNetRule {
+                host: "::1".into(),
+                ..SandboxNetRule::default()
+            }],
+            ..fake.settings()
+        });
+        let err = sb
+            .exec(Uuid::new_v4(), &fake.dir, "true", LONG)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.starts_with("Network rule 1: "), "{err}");
+        assert_eq!(fake.count_prefix("run "), 0);
+        assert_eq!(fake.count_prefix("image "), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
