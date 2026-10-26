@@ -13,6 +13,7 @@ mod export;
 mod llm;
 mod mcp;
 mod remote;
+mod sandbox;
 mod secrets;
 mod servers;
 mod sse;
