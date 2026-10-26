@@ -79,6 +79,8 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// Images the tool returned, shown in the chat.
     pub images: Vec<crate::attach::Attachment>,
+    /// The Docker sandbox container the command ran in, if it ran in one.
+    pub sandbox: Option<crate::types::SandboxInfo>,
 }
 
 enum Transport {
@@ -672,6 +674,7 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
         text: parts.join("\n"),
         is_error,
         images,
+        sandbox: None,
     }
 }
 

@@ -114,6 +114,10 @@ pub struct ChatApp {
     /// Focus is being moved with the keyboard, so the focused widget gets a visible ring
     /// (until the next pointer press).
     keyboard_nav: bool,
+    /// The Docker sandbox for the workspace shell tool, while it's on.
+    sandbox: Option<crate::sandbox::Sandbox>,
+    /// When idle sandbox containers were last removed.
+    sandbox_reaped: Instant,
     /// The browser remote-access server, while it runs.
     remote: Option<crate::remote::RemoteHandle>,
     /// Whether the remote-access server runs, and where.
@@ -283,6 +287,15 @@ impl ChatApp {
 
         let conversations = Conversation::load_all();
         let current = conversations.first().map(|c| c.id);
+        let sandbox = settings
+            .sandbox
+            .enabled
+            .then(|| crate::sandbox::Sandbox::new(settings.sandbox.clone()));
+        if settings.sandbox.enabled {
+            // Containers left by an earlier run of the app. Docker isn't touched when it's off.
+            let cfg = settings.sandbox.clone();
+            rt.spawn_blocking(move || crate::sandbox::reap_orphans(&cfg));
+        }
         let mut app = Self {
             rt,
             http,
@@ -322,6 +335,8 @@ impl ChatApp {
             server_info: None,
             input_focused_once: false,
             keyboard_nav: false,
+            sandbox,
+            sandbox_reaped: Instant::now(),
             remote: None,
             remote_status: RemoteStatus::Off,
             tunnel: None,
@@ -603,6 +618,9 @@ impl ChatApp {
     fn delete_chat(&mut self, id: Uuid) {
         self.stop(id);
         Conversation::delete(id);
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.remove_chat(id);
+        }
         self.conversations.retain(|c| c.id != id);
         self.errors.remove(&id);
         self.always_allow.remove(&id);
@@ -676,6 +694,7 @@ impl ChatApp {
             delegation: Delegation::new(&self.settings, &selection),
             selection,
             workspace: conv.workspace.clone(),
+            sandbox: self.sandbox.clone(),
         };
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
@@ -1047,8 +1066,17 @@ impl ChatApp {
     }
 
     fn apply_settings(&mut self, new: Settings, ctx: &egui::Context) {
+        let sandbox_before = self.settings.sandbox.clone();
         self.settings = new;
         self.settings.normalize();
+        if self.settings.sandbox != sandbox_before {
+            // Dropping the old sandbox removes its containers.
+            self.sandbox = self
+                .settings
+                .sandbox
+                .enabled
+                .then(|| crate::sandbox::Sandbox::new(self.settings.sandbox.clone()));
+        }
         apply_appearance(ctx, &self.settings);
         self.mcp.sync(&self.settings.mcp_servers);
         self.save_settings();
@@ -3121,6 +3149,12 @@ impl eframe::App for ChatApp {
         self.publish_remote();
         self.handle_shortcuts(ctx);
         self.handle_dropped_files(ctx);
+        if let Some(sandbox) = &self.sandbox
+            && self.sandbox_reaped.elapsed() >= Duration::from_secs(60)
+        {
+            self.sandbox_reaped = Instant::now();
+            sandbox.reap_idle(Duration::from_secs(15 * 60));
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

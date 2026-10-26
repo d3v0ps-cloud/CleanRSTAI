@@ -210,7 +210,7 @@ impl Toolbox {
         let specs = workspace::TOOLS
             .iter()
             .filter(|(name, _)| selection.builtin_on(name))
-            .map(|(name, _)| workspace::spec(name));
+            .map(|(name, _)| ws.spec(name));
         self.specs.splice(at..at, specs);
         self.workspace = Some(ws);
         self
@@ -287,6 +287,7 @@ pub(crate) fn text_output(text: impl Into<String>) -> ToolOutput {
         text: text.into(),
         is_error: false,
         images: Vec::new(),
+        sandbox: None,
     }
 }
 
@@ -295,6 +296,7 @@ pub fn error_output(text: impl Into<String>) -> ToolOutput {
         text: text.into(),
         is_error: true,
         images: Vec::new(),
+        sandbox: None,
     }
 }
 

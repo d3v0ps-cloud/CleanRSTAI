@@ -1,8 +1,6 @@
 //! Docker sandbox for the workspace shell tool. Commands run in a container through the
 //! `docker` command line.
 
-#![allow(dead_code)] // TODO(sandbox): remove once the app uses the manager.
-
 mod docker;
 
 use std::collections::HashMap;
@@ -15,7 +13,7 @@ use uuid::Uuid;
 
 use crate::config::SandboxSettings;
 
-#[allow(unused_imports)] // TODO(sandbox): remove once the app uses them.
+#[allow(unused_imports)] // TODO(sandbox): remove once the Settings → Docker tab uses them.
 pub use docker::{check, prepare};
 
 /// How long `docker run` may take to create a container.
@@ -44,6 +42,14 @@ pub struct SandboxRun {
     pub container: String,
     /// The image the container runs.
     pub image: String,
+}
+
+impl std::fmt::Debug for Sandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sandbox")
+            .field("image", &self.image())
+            .finish()
+    }
 }
 
 struct Inner {
@@ -347,8 +353,9 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A `docker` stand-in for the tests (unix only), shared with the workspace tool tests.
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod fake_docker {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -372,13 +379,13 @@ esac
     /// A `docker` stand-in in its own temp folder. It logs each call to `log`, and `exec`
     /// runs its command with `sh -c` in that folder. The marker file `down` makes `version`
     /// fail.
-    struct Fake {
-        dir: PathBuf,
+    pub(crate) struct Fake {
+        pub(crate) dir: PathBuf,
         program: PathBuf,
     }
 
     impl Fake {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let dir = std::env::temp_dir().join(format!("cleanrstai-sandbox-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             let program = dir.join("docker");
@@ -387,18 +394,18 @@ esac
             Self { dir, program }
         }
 
-        fn settings(&self) -> SandboxSettings {
+        pub(crate) fn settings(&self) -> SandboxSettings {
             SandboxSettings {
                 docker: self.program.display().to_string(),
                 ..SandboxSettings::default()
             }
         }
 
-        fn mark(&self, name: &str) {
+        pub(crate) fn mark(&self, name: &str) {
             std::fs::write(self.dir.join(name), "").unwrap();
         }
 
-        fn calls(&self) -> Vec<String> {
+        pub(crate) fn calls(&self) -> Vec<String> {
             std::fs::read_to_string(self.dir.join("log"))
                 .unwrap_or_default()
                 .lines()
@@ -406,14 +413,14 @@ esac
                 .collect()
         }
 
-        fn count_prefix(&self, prefix: &str) -> usize {
+        pub(crate) fn count_prefix(&self, prefix: &str) -> usize {
             self.calls()
                 .iter()
                 .filter(|c| c.starts_with(prefix))
                 .count()
         }
 
-        fn count_eq(&self, line: &str) -> usize {
+        pub(crate) fn count_eq(&self, line: &str) -> usize {
             self.calls().iter().filter(|c| c.as_str() == line).count()
         }
     }
@@ -423,6 +430,12 @@ esac
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::fake_docker::Fake;
+    use super::*;
 
     const LONG: Duration = Duration::from_secs(30);
 

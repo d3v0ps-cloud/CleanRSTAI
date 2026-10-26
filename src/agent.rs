@@ -117,6 +117,8 @@ pub struct AgentRequest {
     pub delegation: Option<Delegation>,
     /// The chat's workspace folder, for the workspace tools.
     pub workspace: Option<std::path::PathBuf>,
+    /// The Docker sandbox that runs the workspace shell tool, while it's on.
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -143,6 +145,11 @@ pub async fn run(
             emit(ChatEvent::Done);
             return;
         }
+    };
+    // Shell commands run in the chat's sandbox container, when the sandbox is on.
+    let workspace = match (workspace, &req.sandbox) {
+        (Some(ws), Some(sandbox)) => Some(ws.with_sandbox(sandbox.clone(), req.conv_id)),
+        (ws, _) => ws,
     };
     let system_prompt = match &workspace {
         Some(ws) => format!(
@@ -303,6 +310,7 @@ pub async fn run(
                             .await;
                         let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
                         msg.attachments = out.images;
+                        msg.sandbox = out.sandbox;
                         msg
                     }
                 }
@@ -400,6 +408,7 @@ mod tests {
             selection: ToolSelection::default(),
             delegation: None,
             workspace: None,
+            sandbox: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -478,6 +487,7 @@ mod tests {
             delegation: Delegation::new(settings, &selection),
             selection,
             workspace: None,
+            sandbox: None,
         }
     }
 

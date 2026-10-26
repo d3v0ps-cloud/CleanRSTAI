@@ -404,6 +404,7 @@ fn summarize(reports: &[SubagentReport]) -> ToolOutput {
         text: text.trim_end().to_owned(),
         is_error: reports.iter().all(|r| r.state != SubagentState::Done),
         images: Vec::new(),
+        sandbox: None,
     }
 }
 

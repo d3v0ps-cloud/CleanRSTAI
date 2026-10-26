@@ -1,8 +1,6 @@
 //! The `docker` command line: argument builders and small async runners. The sandbox talks to
 //! Docker only through this program, never through a socket or a library.
 
-#![allow(dead_code)] // TODO(sandbox): remove once the manager and the app use it.
-
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -278,6 +276,8 @@ pub async fn ensure_image(
 }
 
 /// For Settings → Docker "Test": the Docker version and whether the image is ready.
+// TODO(sandbox): remove once the Settings → Docker tab uses it.
+#[allow(dead_code)]
 pub async fn check(cfg: &SandboxSettings) -> Result<String, String> {
     let program = program(cfg)?;
     let version = server_version(&program).await?;
@@ -294,6 +294,8 @@ pub async fn check(cfg: &SandboxSettings) -> Result<String, String> {
 
 /// For "Pull now" / "Build now": pulls the image or rebuilds the Dockerfile, even when it is
 /// already there.
+// TODO(sandbox): remove once the Settings → Docker tab uses it.
+#[allow(dead_code)]
 pub async fn prepare(cfg: &SandboxSettings) -> Result<String, String> {
     let program = program(cfg)?;
     server_version(&program).await?;

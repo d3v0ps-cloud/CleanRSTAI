@@ -53,6 +53,18 @@ pub struct ChatMessage {
     /// resent, but is never sent to the model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cancelled: bool,
+    /// For a command that ran in the Docker sandbox: where.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxInfo>,
+}
+
+/// The Docker sandbox container a command ran in.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SandboxInfo {
+    /// The image the container runs.
+    pub image: String,
+    /// The container's name.
+    pub container: String,
 }
 
 /// The tool results answering the calls of the assistant message at `idx`: the tool
@@ -83,6 +95,7 @@ impl ChatMessage {
             attachments: Vec::new(),
             subagents: Vec::new(),
             cancelled: false,
+            sandbox: None,
         }
     }
 
@@ -209,5 +222,22 @@ mod tests {
         c.messages.push(m);
         c.auto_title();
         assert_eq!(c.title, "report.pdf.txt");
+    }
+
+    #[test]
+    fn a_message_without_a_sandbox_loads_and_one_with_it_round_trips() {
+        let old = r#"{"role":"tool","content":"Exit code: 0","tool_call_id":"c1"}"#;
+        let m: ChatMessage = serde_json::from_str(old).unwrap();
+        assert_eq!(m.sandbox, None);
+        assert!(!serde_json::to_string(&m).unwrap().contains("sandbox"));
+
+        let mut m = ChatMessage::new(Role::Tool, "Exit code: 0");
+        m.sandbox = Some(SandboxInfo {
+            image: "python:3.13-slim".into(),
+            container: "cleanrstai-3f2a".into(),
+        });
+        let json = serde_json::to_string(&m).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
     }
 }
