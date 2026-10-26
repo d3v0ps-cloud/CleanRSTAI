@@ -12,7 +12,8 @@ LM Studio, vLLM and OpenRouter provider types, the Windows icon and in-app updat
 accessibility pass in **v0.7.9**, and one macOS Keychain item for all secrets (one password
 prompt instead of one per key) in **v0.7.10**, and artifacts (web pages, drawings, documents and
 longer code in a side panel, with a link in the chat) in **v0.7.11**, and remote access in the browser in **v0.8.0**, and the Cloudflare Tunnel (quick tunnels, or
-named tunnels) in **v0.8.1**.
+named tunnels) in **v0.8.1**, with named tunnels needing only the tunnel token (the tunnel and
+its route set up in the Cloudflare dashboard) in **v0.8.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
