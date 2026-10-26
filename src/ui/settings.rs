@@ -1432,7 +1432,8 @@ impl SettingsUi {
                                             .on_hover_text(
                                                 "Ubuntu with Python, Node.js, build tools and \
                                                  network tools (ping, nmap, dig, traceroute); \
-                                                 about 1.5 GB",
+                                                 Python data, document, PDF, image, chart \
+                                                 and NLP packages; about 3 GB",
                                             )
                                             .clicked()
                                         {

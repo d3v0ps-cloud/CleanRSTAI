@@ -113,13 +113,27 @@ Two examples are a click away under the editor:
 
 - **Small example**: the default, which adds `git`, `curl` and `ca-certificates` to
   `python:3.13-slim`.
-- **Full example**: Ubuntu 24.04 with `bash`, Python 3 (with `requests`, `httpx`, `pyyaml`,
-  `numpy` and `pandas` in a virtual environment), Node.js and npm, build tools (`gcc`, `make`,
+- **Full example**: Ubuntu 24.04 with `bash`, Python 3 with many packages in a virtual
+  environment (listed below), Node.js and npm, build tools (`gcc`, `make`,
   `cmake`, `ninja`, autotools, `gdb` and common `-dev` libraries), everyday tools (`git`, `curl`,
   `wget`, `jq`, `zip`, `sqlite3`, `rsync`, `ssh`, …) and network tools (`ping`, `traceroute`,
-  `nmap`, `dig`, `nc`, `socat`, `ip`, `whois`). The image is about 1.5 GB, and its first build
+  `nmap`, `dig`, `nc`, `socat`, `ip`, `whois`). The image is about 3 GB, and its first build
   takes a few minutes. The same file is in the repository as
   [`assets/sandbox/full.Dockerfile`](https://github.com/d3v0ps-cloud/CleanRSTAI/blob/main/assets/sandbox/full.Dockerfile).
+
+The full example's Python packages:
+
+| For | Packages |
+|---|---|
+| Data analysis | `numpy`, `pandas`, `polars`, `openpyxl`, `xlrd`, `tabulate` |
+| Documents and templates | `python-docx`, `python-pptx`, `jinja2`, `pyyaml` |
+| Web and HTTP | `requests`, `httpx`, `beautifulsoup4`, `lxml`, `scrapy` |
+| PDF | `pypdf`, `reportlab`, `pdfplumber` |
+| Images | `pillow`, `opencv-python-headless` |
+| Charts and terminal output | `matplotlib`, `seaborn`, `plotly`, `rich` |
+| Text and NLP | `nltk` and `textblob` (with their data: tokenizers, tagger, WordNet, stopwords, VADER), `regex`, `rapidfuzz` |
+| Databases | `sqlalchemy`, `psycopg2-binary`, `pymysql` (and Python's `sqlite3`) |
+| Utilities | `tqdm`, `click`, `python-dotenv`, `arrow`, `pytz`, `loguru`, `pytest` |
 
 The full image is also published to GitHub Packages, built for Intel/AMD and ARM (Apple
 Silicon) machines, so you can skip the local build: choose **Docker image** and enter

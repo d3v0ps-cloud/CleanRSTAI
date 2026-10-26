@@ -42,8 +42,37 @@ RUN getcap -r /usr /bin /sbin 2>/dev/null | cut -d' ' -f1 | xargs -r -n1 setcap 
 # A Python environment and an npm prefix that the (unprivileged) sandbox user can install to.
 RUN python3 -m venv /opt/venv \
  && pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir requests httpx pyyaml numpy pandas \
+ && pip install --no-cache-dir \
+      # data analysis
+      numpy pandas polars openpyxl xlrd tabulate \
+      # documents and templates
+      python-docx python-pptx jinja2 pyyaml \
+      # web and HTTP
+      requests httpx beautifulsoup4 lxml scrapy \
+      # PDF
+      pypdf reportlab pdfplumber \
+      # images
+      pillow opencv-python-headless \
+      # charts and terminal output
+      matplotlib seaborn plotly rich \
+      # text and NLP
+      nltk textblob regex rapidfuzz \
+      # databases
+      sqlalchemy psycopg2-binary pymysql \
+      # utilities
+      tqdm click python-dotenv arrow pytz loguru pytest \
  && mkdir -p /opt/npm \
  && chmod -R a+rwX /opt/venv /opt/npm
+
+# The NLTK data TextBlob needs (tokenizers, tagger, WordNet, stopwords, corpora), where NLTK
+# looks without NLTK_DATA set. The downloader exits 0 even when a download fails, so the
+# build checks that TextBlob and NLTK can use it.
+RUN python -m nltk.downloader -q -d /usr/share/nltk_data \
+      punkt punkt_tab stopwords wordnet omw-1.4 averaged_perceptron_tagger \
+      averaged_perceptron_tagger_eng brown conll2000 movie_reviews vader_lexicon \
+ && python -c "from textblob import TextBlob; from nltk.corpus import stopwords, wordnet; \
+from nltk.sentiment import SentimentIntensityAnalyzer as S; \
+b = TextBlob('It works. It is good.'); b.sentences; b.tags; b.noun_phrases; \
+stopwords.words('english'); wordnet.synsets('dog'); S().polarity_scores('good')"
 
 WORKDIR /workspace
