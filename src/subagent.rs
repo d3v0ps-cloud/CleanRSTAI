@@ -594,6 +594,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn tool_names(req: &crate::testutil::Request) -> Vec<String> {
         req.json()["tools"]
             .as_array()
