@@ -170,6 +170,19 @@ Limits:
 - The rules apply when a chat's container is created. After changing them, click **Apply**; the
   running containers are removed and the next command starts a new one.
 
+## Subagent containers
+
+With **The workspace tools, with commands in their own sandbox container** on in
+[Settings → Subagents](subagents.html), each subagent that runs a command gets a container of
+its own, named like the chat's with `-s` and a short id at the end. It uses the same image,
+limits and **Mount read-only** setting, has the chat's folder at `/workspace`, and is removed
+when the subagent finishes, fails or runs out of time. Subagents run their commands in
+parallel, each in its own container.
+
+On a [custom network](#custom-network) all of a chat's containers, its own and its subagents',
+share the chat's one network companion, so the same rules apply to all of them. The companion
+is removed with the chat's last container (after 15 idle minutes at the latest).
+
 ## Limits and hardening
 
 In plain words, each container:

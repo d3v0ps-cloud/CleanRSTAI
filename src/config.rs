@@ -289,6 +289,10 @@ pub struct SubagentSettings {
     pub builtin_tools: bool,
     /// Subagents may use the chat's MCP tools. Their calls run without asking.
     pub mcp_tools: bool,
+    /// Subagents may use the chat's workspace tools, with shell commands in their own
+    /// container of the Docker sandbox (only while the sandbox is on). Their calls run
+    /// without asking.
+    pub workspace: bool,
     /// MCP servers (by id) subagents may not use, even when on in the chat.
     pub excluded_servers: Vec<String>,
     /// How many subagents run at the same time.
@@ -314,6 +318,7 @@ impl Default for SubagentSettings {
             allow_provider_choice: true,
             builtin_tools: true,
             mcp_tools: false,
+            workspace: false,
             excluded_servers: Vec::new(),
             max_parallel: 3,
             max_tasks: 8,

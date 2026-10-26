@@ -398,3 +398,85 @@ PY"#
     assert_removed(&run.container);
     assert_removed(&gateway);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; set CLEANRSTAI_DOCKER_TESTS=1"]
+async fn subagents_share_the_chats_custom_network() {
+    use crate::config::{NetProtocol, SandboxNetRule};
+    if !enabled() {
+        return;
+    }
+    let out = Command::new("docker")
+        .args([
+            "network",
+            "inspect",
+            "bridge",
+            "-f",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ])
+        .output()
+        .expect("run docker network inspect");
+    let host = text(&out.stdout).trim().to_owned();
+    let allowed = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let blocked = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let (allowed_port, blocked_port) = (
+        allowed.local_addr().unwrap().port(),
+        blocked.local_addr().unwrap().port(),
+    );
+    let ws = Scratch::new("subs");
+    let sandbox = Sandbox::new(SandboxSettings {
+        rules: vec![SandboxNetRule {
+            host: host.clone(),
+            protocol: NetProtocol::Tcp,
+            ports: allowed_port.to_string(),
+        }],
+        ..settings(SandboxNetwork::Custom, false)
+    });
+    let chat = Uuid::new_v4();
+    let probe = |tag: &str| {
+        format!(
+            r#"echo {tag} > {tag}.txt; python3 - <<'PY'
+import socket
+for port in ({allowed_port}, {blocked_port}):
+    try:
+        socket.create_connection(("{host}", port), timeout=5); print(port, "ok")
+    except Exception as e:
+        print(port, "fail")
+PY"#
+        )
+    };
+    let (a, b) = (sandbox.subagent(chat), sandbox.subagent(chat));
+    let (pa, pb) = (probe("a"), probe("b"));
+    let (ra, rb) = tokio::join!(a.exec(&ws.0, &pa, LONG), b.exec(&ws.0, &pb, LONG));
+    let expected = format!("{allowed_port} ok\n{blocked_port} fail\n");
+    for run in [ra.unwrap(), rb.unwrap()] {
+        assert_eq!(text(&run.stdout), expected, "{}", text(&run.stderr));
+    }
+    // Both wrote to the shared folder, and the chat's own container sees their files.
+    let main = exec(&sandbox, chat, &ws.0, "cat a.txt b.txt").await;
+    assert_eq!(text(&main.stdout), "a\nb\n");
+
+    let gateway = super::chat_gateway(chat);
+    let sub = a.name.clone();
+    drop(a);
+    drop(b);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        let out = Command::new("docker")
+            .args(["ps", "-aq", "--filter", &format!("name=^{sub}$")])
+            .output()
+            .expect("run docker ps");
+        if text(&out.stdout).trim().is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_removed(&sub);
+    // The chat's container still has its network.
+    let again = exec(&sandbox, chat, &ws.0, "echo still").await;
+    assert_eq!(text(&again.stdout), "still\n");
+    sandbox.remove_chat(chat);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_removed(&main.container);
+    assert_removed(&gateway);
+}

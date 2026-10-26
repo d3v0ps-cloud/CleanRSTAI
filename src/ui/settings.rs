@@ -1647,6 +1647,25 @@ impl SettingsUi {
                                         ),
                                     );
                                 }
+                                ui.checkbox(
+                                    &mut sa.workspace,
+                                    "The workspace tools, with commands in their own sandbox container",
+                                )
+                                .on_hover_text(
+                                    "Only while the Docker sandbox is on. Each subagent gets its \
+                                     own container with the chat's folder at /workspace, sharing \
+                                     the chat's network rules. It is removed when the subagent \
+                                     finishes.",
+                                );
+                                if sa.workspace {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        format!(
+                                            "{}  Subagents read, write and run commands without asking for approval; approving the delegate call allows it.",
+                                            icon::WARNING
+                                        ),
+                                    );
+                                }
                             });
                             ui.end_row();
 
@@ -2094,7 +2113,11 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Sandbox CPU and memory limits",
     ),
     (Tab::Subagents, "Subagents", "Subagent provider and model"),
-    (Tab::Subagents, "Subagents", "Subagent tools and MCP access"),
+    (
+        Tab::Subagents,
+        "Subagents",
+        "Subagent tools, MCP and workspace access",
+    ),
     (
         Tab::Subagents,
         "Subagents",

@@ -228,6 +228,8 @@ Run the commands and code the model triggers inside a local Docker container, no
   folder mounted, and nothing else from the host
 - [x] Choose network access for the container (none by default), and resource limits (CPU,
   memory, time)
+- [x] Subagents can use the workspace, each running commands in a sandbox container of its own
+  on the chat's network
 - [x] A custom network that allows only listed outbound hosts (domains, IPv4 addresses and
   ranges), protocols and ports, through a firewall and DNS companion container
 - [x] Refuse to run tools in the sandbox, with a clear message, when Docker isn't running or the

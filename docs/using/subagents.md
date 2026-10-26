@@ -29,11 +29,18 @@ then uses their results.
   pick one of your provider profiles per task, for example a fast local model for simple
   tasks.
 - **Tools**: time, calculator and web fetch when they are on in the chat, and optionally the
-  chat's MCP tools. Subagents never get the task list, `delegate` or the workspace tools.
+  chat's MCP tools. Subagents never get the task list or `delegate`.
+- **The workspace**: optionally, with the [Docker sandbox](../settings/docker.html) on. Each
+  subagent then gets the chat's workspace tools, and its shell commands run in a container of
+  its own with the chat's folder at `/workspace`, on the chat's network (so a
+  [custom network](../settings/docker.html#custom-network)'s rules apply to it too). The
+  subagents share the folder and work at the same time, so the model is told to give each its
+  own files. Each container starts clean, and is removed when its subagent finishes.
 
 {: .warning }
-> Subagents call MCP tools and fetch URLs **without asking for approval**. Only give them MCP
-> tools from servers you trust to run unattended.
+> Subagents call MCP tools, fetch URLs and (with the workspace on) write files and run
+> commands **without asking for approval**: approving the `delegate` call allows all of it.
+> Only give them MCP tools from servers you trust to run unattended.
 
 ## Turning it off
 

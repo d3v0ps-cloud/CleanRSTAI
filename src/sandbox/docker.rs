@@ -79,11 +79,18 @@ pub fn pid_label() -> String {
 }
 
 /// Arguments of `docker run` that create a chat's container (without the program).
-pub fn run_args(cfg: &SandboxSettings, name: &str, root: &Path, image: &str) -> Vec<String> {
+/// On a custom network the container joins the network of the container `gateway`.
+pub fn run_args(
+    cfg: &SandboxSettings,
+    name: &str,
+    root: &Path,
+    image: &str,
+    gateway: &str,
+) -> Vec<String> {
     let network = match cfg.network {
         SandboxNetwork::None => "none".to_owned(),
         SandboxNetwork::Bridge => "bridge".to_owned(),
-        SandboxNetwork::Custom => format!("container:{}", network::gateway_name(name)),
+        SandboxNetwork::Custom => format!("container:{gateway}"),
     };
     let memory = format!("{}m", cfg.memory_mb);
     let mut args = strings(&[
@@ -741,6 +748,7 @@ mod tests {
             "cleanrstai-abc",
             Path::new("/home/me/work"),
             "python:3.13-slim",
+            "cleanrstai-abc-net",
         );
         let user = args.iter().position(|a| a == "--user");
         assert_eq!(user.is_some(), cfg!(target_os = "linux"));
@@ -801,7 +809,7 @@ mod tests {
             pids: 64,
             ..cfg()
         };
-        let args = run_args(&settings, "n", Path::new("/w"), "img:1");
+        let args = run_args(&settings, "n", Path::new("/w"), "img:1", "n-net");
         let pairs: Vec<(&str, &str)> = args
             .windows(2)
             .map(|w| (w[0].as_str(), w[1].as_str()))
@@ -822,11 +830,11 @@ mod tests {
     fn mount_quotes_a_path_with_a_comma_or_quote() {
         // The `src=` pair is CSV-quoted with inner quotes doubled; the docker CLI accepts it
         // (checked with `docker run --mount` by hand: a parse error only without the quotes).
-        let comma = run_args(&cfg(), "n", Path::new("/a,b\"c"), "img");
+        let comma = run_args(&cfg(), "n", Path::new("/a,b\"c"), "img", "n-net");
         assert!(comma.contains(&"type=bind,\"src=/a,b\"\"c\",dst=/workspace".to_owned()));
-        let quote = run_args(&cfg(), "n", Path::new("/x\"y"), "img");
+        let quote = run_args(&cfg(), "n", Path::new("/x\"y"), "img", "n-net");
         assert!(quote.contains(&"type=bind,\"src=/x\"\"y\",dst=/workspace".to_owned()));
-        let plain = run_args(&cfg(), "n", Path::new("/x y"), "img");
+        let plain = run_args(&cfg(), "n", Path::new("/x y"), "img", "n-net");
         assert!(plain.contains(&"type=bind,src=/x y,dst=/workspace".to_owned()));
     }
 
@@ -836,7 +844,7 @@ mod tests {
             read_only: true,
             ..cfg()
         };
-        let args = run_args(&settings, "n", Path::new("/a,b\"c"), "img");
+        let args = run_args(&settings, "n", Path::new("/a,b\"c"), "img", "n-net");
         assert!(args.contains(&"type=bind,\"src=/a,b\"\"c\",dst=/workspace,readonly".to_owned()));
     }
 
@@ -849,7 +857,7 @@ mod tests {
         );
         assert_eq!(mount_path(r"C:\work"), r"C:\work");
         assert_eq!(mount_path("/home/me/work"), "/home/me/work");
-        let args = run_args(&cfg(), "n", Path::new(r"\\?\UNC\srv\share"), "img");
+        let args = run_args(&cfg(), "n", Path::new(r"\\?\UNC\srv\share"), "img", "n-net");
         assert!(args.contains(&r"type=bind,src=\\srv\share,dst=/workspace".to_owned()));
     }
 
@@ -884,7 +892,7 @@ mod tests {
 
     #[test]
     fn run_args_clears_the_entrypoint_just_before_the_image() {
-        let args = run_args(&cfg(), "n", Path::new("/w"), "img");
+        let args = run_args(&cfg(), "n", Path::new("/w"), "img", "n-net");
         assert_eq!(
             &args[args.len() - 5..],
             strings(&["--entrypoint", "", "img", "sleep", "infinity"])
@@ -1297,7 +1305,7 @@ mod tests {
         #[test]
         fn pid_label_is_the_format_key() {
             assert!(pid_label().starts_with(&format!("{PID_KEY}=")));
-            assert!(run_args(&cfg(), "n", Path::new("/w"), "img").contains(&pid_label()));
+            assert!(run_args(&cfg(), "n", Path::new("/w"), "img", "n-net").contains(&pid_label()));
         }
 
         #[test]

@@ -106,8 +106,11 @@ them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` lis
 server id and MCP tool name (not the routed function name), so it survives renames.
 
 **Subagents** (`subagent.rs`): the `delegate` tool runs tasks in parallel, each with its own
-model/tool loop and a derived `ToolSelection` (never the task list, `delegate` or workspace
-tools; time/calculator/fetch only when allowed for subagents). Progress streams back as
+model/tool loop and a derived `ToolSelection` (never the task list or `delegate`;
+time/calculator/fetch only when allowed for subagents). Workspace tools only with
+`subagents.workspace` and the sandbox on (`Delegation::with_workspace`): each subagent gets
+`Workspace::for_subagent`, whose shell runs in its own container (`sandbox::Subagent`, removed on
+drop). Subagent tool calls never ask for approval. Progress streams back as
 `SubagentProgress` events.
 
 **MCP** (`mcp/`): stdio and Streamable HTTP transports, OAuth (PKCE, dynamic registration,
@@ -124,12 +127,13 @@ for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers
 
 **Docker sandbox** (`sandbox/`): only `exec_shell_command` is sandboxed. `docker.rs` talks to
 Docker only through the `docker` CLI; its argument builders (`run_args`, `exec_args`) are pure, and
-spawns retry `ExecutableFileBusy`. `Sandbox` keeps one container per chat, named `cleanrstai-<chat>`
+spawns retry `ExecutableFileBusy`. `Sandbox` keeps one container per chat, named `cleanrstai-<chat>` (subagents get
+`cleanrstai-<chat>-s<id>`; containers are keyed by name)
 and labelled `net.bukn.cleanrstai.sandbox=1`, reused via `docker exec`. It removes them with
 `rm -f` on timeout, cancel (a drop guard), 15 idle minutes, chat delete, settings change, last-clone
 drop, and at startup for leftovers. Images are a named image with a pull policy, or a Dockerfile
 built as `cleanrstai-sandbox:<sha256-12>` with no build context. A custom network (`network.rs`)
-runs a gateway container `<name>-net` (image `cleanrstai-sandbox-net:<hash>` built from
+runs one gateway container per chat, `cleanrstai-<chat>-net`, shared by its containers (image `cleanrstai-sandbox-net:<hash>` built from
 `GATEWAY_DOCKERFILE`; iptables, ipset and dnsmasq set up by `gateway_script`) whose network the
 sandbox joins with `--network container:`; only the allowed domains resolve, into per-rule ipsets. Errors are returned as the
 command's error; nothing falls back to the host. `ChatMessage.sandbox` records the image for the badge.

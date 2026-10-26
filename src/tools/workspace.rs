@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::config::SandboxNetwork;
 use crate::llm::ToolSpec;
 use crate::mcp::ToolOutput;
-use crate::sandbox::Sandbox;
+use crate::sandbox::{Place, Sandbox};
 use crate::types::SandboxInfo;
 
 pub const READ_FILE: &str = "read_file";
@@ -57,8 +57,10 @@ const MAX_LISTING: usize = 200;
 pub struct Workspace {
     /// Canonical path of the folder.
     root: PathBuf,
-    /// The Docker sandbox that runs shell commands, and the chat whose container it uses.
-    sandbox: Option<(Sandbox, Uuid)>,
+    /// The Docker sandbox container that runs shell commands.
+    sandbox: Option<Place>,
+    /// A subagent's workspace: its writes and commands run without asking.
+    subagent: bool,
 }
 
 impl Workspace {
@@ -72,13 +74,32 @@ impl Workspace {
         Ok(Self {
             root,
             sandbox: None,
+            subagent: false,
         })
     }
 
     /// Run shell commands in the Docker `sandbox`, in the container of `chat`.
     pub fn with_sandbox(mut self, sandbox: Sandbox, chat: Uuid) -> Self {
-        self.sandbox = Some((sandbox, chat));
+        self.sandbox = Some(Place::Chat(sandbox, chat));
         self
+    }
+
+    /// This workspace for a subagent: shell commands run in the subagent's own container,
+    /// which shares the chat's network. `None` without a sandbox (subagents never run
+    /// commands on this computer). The container is removed when the last clone is dropped.
+    pub fn for_subagent(&self) -> Option<Self> {
+        Some(Self {
+            root: self.root.clone(),
+            sandbox: Some(self.sandbox.as_ref()?.for_subagent()),
+            subagent: true,
+        })
+    }
+
+    /// Whether shell commands run in a sandbox with the folder mounted read-only.
+    pub fn read_only(&self) -> bool {
+        self.sandbox
+            .as_ref()
+            .is_some_and(|p| p.sandbox().config().read_only)
     }
 
     #[cfg(test)]
@@ -93,13 +114,18 @@ impl Workspace {
              to look around before changing anything: get_info, file_glob_search, \
              grep_search and read_file. Paths are relative to the workspace. Make changes \
              with edit_file (exact string replacement) or write_file, and run commands with \
-             exec_shell_command; the user approves each of those.",
-            self.root.display()
+             exec_shell_command{}.",
+            self.root.display(),
+            if self.subagent {
+                ""
+            } else {
+                "; the user approves each of those"
+            }
         );
-        if let Some((sandbox, _)) = &self.sandbox {
+        if let Some(place) = &self.sandbox {
             note.push_str(&format!(
                 " Shell commands run in a Linux container (image {}) with this folder at /workspace.",
-                sandbox.image()
+                place.sandbox().image()
             ));
         }
         note
@@ -109,8 +135,8 @@ impl Workspace {
     /// commands run when this workspace runs them in a sandbox.
     pub fn spec(&self, name: &str) -> ToolSpec {
         let mut spec = base_spec(name);
-        if let (SHELL, Some((sandbox, _))) = (name, &self.sandbox) {
-            spec.description = sandbox_shell_description(sandbox);
+        if let (SHELL, Some(place)) = (name, &self.sandbox) {
+            spec.description = sandbox_shell_description(place.sandbox());
         }
         spec
     }
@@ -512,8 +538,8 @@ impl Workspace {
             .as_u64()
             .unwrap_or(DEFAULT_SHELL_SECS.max(timeout.as_secs()))
             .clamp(1, MAX_SHELL_SECS);
-        if let Some((sandbox, chat)) = &self.sandbox {
-            return self.sandboxed_shell(sandbox, *chat, command, secs).await;
+        if let Some(place) = &self.sandbox {
+            return self.sandboxed_shell(place, command, secs).await;
         }
         let mut cmd = if cfg!(windows) {
             let mut c = tokio::process::Command::new("cmd");
@@ -558,15 +584,9 @@ impl Workspace {
 
     /// Runs the command in the chat's sandbox container. A Docker error is returned as is:
     /// the command never runs on this computer instead.
-    async fn sandboxed_shell(
-        &self,
-        sandbox: &Sandbox,
-        chat: Uuid,
-        command: &str,
-        secs: u64,
-    ) -> Result<ToolOutput> {
-        let run = sandbox
-            .exec(chat, &self.root, command, Duration::from_secs(secs))
+    async fn sandboxed_shell(&self, place: &Place, command: &str, secs: u64) -> Result<ToolOutput> {
+        let run = place
+            .exec(&self.root, command, Duration::from_secs(secs))
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if run.timed_out {

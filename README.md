@@ -80,7 +80,8 @@ too, as an installer and a portable `.exe`.
   their token usage counts towards the chat's totals. **Settings → Subagents** sets their
   provider and model (or lets the model pick a provider profile per task, e.g. a fast local
   model for simple tasks), system prompt, tool access, how many run at once, round limit and
-  time limit.
+  time limit. With the Docker sandbox on, subagents can also use the workspace, each running
+  commands in a container of its own on the chat's network.
 - **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools,
   the workspace tools when the chat has a folder, and every MCP server and tool, each with a
   switch for the current chat. Settings keeps the defaults for new chats.

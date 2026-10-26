@@ -17,6 +17,7 @@ Let the model delegate independent tasks to agents that work in parallel and rep
 | **Per-task choice** | on | The `delegate` tool lists your provider profiles, so the model can pick another profile or model per task, for example a fast local model for simple tasks. |
 | **Tools: Time, calculator and web fetch** | on | Subagents get these when they are on in the chat. |
 | **Tools: The chat's MCP tools** | off | Subagents get the chat's MCP tools; untick servers to leave them out. Subagents call MCP tools without asking for approval. |
+| **Tools: The workspace tools, with commands in their own sandbox container** | off | Only while the [Docker sandbox](docker.html) is on and the chat has a working folder. Each subagent gets the chat's workspace tools, and runs shell commands in a container of its own (see [Subagent containers](docker.html#subagent-containers)). Subagents read, write and run commands without asking for approval: approving the `delegate` call allows it. |
 | **Run at once** | 3 | How many subagents work at the same time (1–16). |
 | **Tasks per call** | 8 | Most tasks one `delegate` call may hand out (1–32). |
 | **Max tool rounds** | 10 | Tool-call rounds each subagent may make (1–100). |
@@ -28,4 +29,7 @@ The default subagent system prompt:
 > You are a subagent working on one task delegated by another assistant. Complete the task on
 > your own and reply with a concise, complete result. You cannot ask follow-up questions.
 
-Subagents never get the task list, `delegate` or the workspace tools.
+Subagents never get the task list or `delegate`. They get the workspace tools only with the
+setting above and the Docker sandbox on, so their commands never run on your computer itself.
+With **Mount read-only** on, they don't get `write_file` or `edit_file` (those work on your
+computer, not in the container).

@@ -30,8 +30,9 @@ const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a custom network's gateway may take to put its rules in place.
 const GATEWAY_WAIT: Duration = Duration::from_secs(30);
 
-/// Runs workspace shell commands in Docker containers, one per chat, reused between
-/// commands. Cheap to clone (Arc inside). Dropping the last clone removes its containers.
+/// Runs workspace shell commands in Docker containers: one per chat, reused between
+/// commands, and one per subagent that runs commands. Cheap to clone (Arc inside). Dropping
+/// the last clone removes its containers.
 #[derive(Clone)]
 pub struct Sandbox {
     inner: Arc<Inner>,
@@ -63,20 +64,100 @@ impl std::fmt::Debug for Sandbox {
     }
 }
 
+/// Where shell commands run: a chat's container, or a subagent's own container in that chat.
+#[derive(Clone, Debug)]
+pub enum Place {
+    Chat(Sandbox, Uuid),
+    Subagent(Arc<Subagent>),
+}
+
+impl Place {
+    pub fn sandbox(&self) -> &Sandbox {
+        match self {
+            Self::Chat(sandbox, _) => sandbox,
+            Self::Subagent(sub) => &sub.sandbox,
+        }
+    }
+
+    /// Runs `command` with `sh -c` in this place's container, with `root` at /workspace.
+    pub async fn exec(
+        &self,
+        root: &Path,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<SandboxRun, String> {
+        match self {
+            Self::Chat(sandbox, chat) => sandbox.exec(*chat, root, command, timeout).await,
+            Self::Subagent(sub) => sub.exec(root, command, timeout).await,
+        }
+    }
+
+    /// A new subagent container in the same chat. It shares the chat's network container.
+    pub fn for_subagent(&self) -> Self {
+        let chat = match self {
+            Self::Chat(_, chat) => *chat,
+            Self::Subagent(sub) => sub.chat,
+        };
+        Self::Subagent(Arc::new(self.sandbox().subagent(chat)))
+    }
+}
+
+/// A subagent's own container in a chat. It is created by its first command and removed when
+/// this handle is dropped.
+#[derive(Debug)]
+pub struct Subagent {
+    sandbox: Sandbox,
+    chat: Uuid,
+    name: String,
+}
+
+impl Subagent {
+    pub async fn exec(
+        &self,
+        root: &Path,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<SandboxRun, String> {
+        self.sandbox
+            .run(
+                self.chat,
+                &self.name,
+                root,
+                command,
+                timeout,
+                docker::OUTPUT_CAP,
+            )
+            .await
+    }
+}
+
+impl Drop for Subagent {
+    fn drop(&mut self) {
+        if forget(&self.sandbox.inner, &self.name) {
+            remove_in_background(&self.sandbox.inner.cfg, std::slice::from_ref(&self.name));
+        }
+    }
+}
+
 struct Inner {
     cfg: SandboxSettings,
-    containers: Mutex<HashMap<Uuid, Container>>,
+    /// The running containers, by name: chats', subagents' and network gateways.
+    containers: Mutex<HashMap<String, Container>>,
     /// Whether an `Always` pull already ran this session. Held while the image is made ready,
     /// so chats that start together wait for one pull or build.
     pulled: tokio::sync::Mutex<bool>,
-    /// One lock per chat, so two commands in a chat can't both create its container.
+    /// One lock per chat, so two commands can't both create the chat's containers. A chat's
+    /// own commands hold it while they run; a subagent's only while its container is made.
     chat_locks: Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Clone)]
 struct Container {
-    name: String,
+    chat: Uuid,
+    /// The folder mounted at /workspace; empty for a gateway.
     root: PathBuf,
+    /// A custom network's gateway, shared by the chat's containers.
+    gateway: bool,
     last_used: Instant,
 }
 
@@ -101,6 +182,16 @@ impl Sandbox {
         docker::image_ref(&self.inner.cfg)
     }
 
+    /// A handle for a subagent's own container in `chat`, with a new name.
+    pub fn subagent(&self, chat: Uuid) -> Subagent {
+        let id = Uuid::new_v4().simple().to_string();
+        Subagent {
+            sandbox: self.clone(),
+            chat,
+            name: format!("{}-s{}", container_name(chat), &id[..8]),
+        }
+    }
+
     /// Runs `command` with `sh -c` in the chat's container, with `root` mounted at /workspace.
     /// Errors are user-facing sentences; nothing falls back to running on the host.
     pub async fn exec(
@@ -123,49 +214,72 @@ impl Sandbox {
         timeout: Duration,
         cap: usize,
     ) -> Result<SandboxRun, String> {
+        self.run(chat, &container_name(chat), root, command, timeout, cap)
+            .await
+    }
+
+    /// Runs `command` in the container `name` of `chat`, creating it first when needed. The
+    /// chat's own container keeps the chat lock while the command runs; a subagent's lets go
+    /// once its container is ready, so subagents run in parallel.
+    async fn run(
+        &self,
+        chat: Uuid,
+        name: &str,
+        root: &Path,
+        command: &str,
+        timeout: Duration,
+        cap: usize,
+    ) -> Result<SandboxRun, String> {
         let inner = &*self.inner;
         let program = docker::program(&inner.cfg)?;
         docker::server_version(&program).await?;
 
         let lock = chat_lock(inner, chat);
-        let _turn = lock.lock().await;
+        let mut turn = Some(lock.lock().await);
         let image = self.image();
-        // The name is fixed per chat, so the guard is armed before anything can create the
-        // container: an abandoned or failed call then removes it.
-        let name = container_name(chat);
+        // The name is fixed, so the guard is armed before anything can create the container:
+        // an abandoned or failed call then removes it.
         let mut guard = Cancel {
             inner: Arc::clone(&self.inner),
             program: program.clone(),
-            chat,
-            name: name.clone(),
+            name: name.to_owned(),
             armed: true,
         };
 
-        let known = locked(&inner.containers).get(&chat).cloned();
+        let known = locked(&inner.containers).get(name).cloned();
         let reuse = match &known {
-            Some(c) if c.root.as_path() == root => all_running(&inner.cfg, &program, &name).await,
+            Some(c) if c.root.as_path() == root => {
+                is_running(&program, name).await
+                    && (inner.cfg.network != SandboxNetwork::Custom
+                        || is_running(&program, &chat_gateway(chat)).await)
+            }
             _ => false,
         };
         if !reuse {
             if known.is_some() {
-                // Recorded but stopped or removed outside the app, or mounted elsewhere.
-                remove(&inner.cfg, &program, &name).await;
-                locked(&inner.containers).remove(&chat);
+                // Recorded but stopped or removed outside the app, mounted elsewhere, or its
+                // network gateway stopped.
+                quiet(&program, &["rm", "-f", name]).await;
+                forget(inner, name);
             }
-            create(inner, &program, chat, root).await?;
+            create(inner, &program, chat, name, root).await?;
         }
 
         // Touched before the run too, so the container is not reaped as idle while the
         // command runs. The touch after a successful run follows below.
-        touch(inner, chat, &name);
+        touch(inner, name);
+        if name != container_name(chat) {
+            turn = None;
+        }
         let out =
-            docker::docker_capped(&program, &docker::exec_args(&name, command), timeout, cap).await;
+            docker::docker_capped(&program, &docker::exec_args(name, command), timeout, cap).await;
+        drop(turn);
         let out = match out {
             Ok(out) => out,
             Err(e) if e.contains(docker::TIMED_OUT) => {
                 guard.armed = false;
-                remove(&inner.cfg, &program, &name).await;
-                forget(inner, chat, &name);
+                quiet(&program, &["rm", "-f", name]).await;
+                forget(inner, name);
                 return Ok(SandboxRun {
                     exit_code: None,
                     stdout: Vec::new(),
@@ -173,7 +287,7 @@ impl Sandbox {
                     stdout_cut: 0,
                     stderr_cut: 0,
                     timed_out: true,
-                    container: name,
+                    container: name.to_owned(),
                     image,
                 });
             }
@@ -181,7 +295,7 @@ impl Sandbox {
         };
         guard.armed = false;
         // Touched again after a successful run.
-        touch(inner, chat, &name);
+        touch(inner, name);
         Ok(SandboxRun {
             exit_code: out.status.code(),
             stdout: out.stdout,
@@ -189,37 +303,72 @@ impl Sandbox {
             stdout_cut: out.stdout_cut,
             stderr_cut: out.stderr_cut,
             timed_out: false,
-            container: name,
+            container: name.to_owned(),
             image,
         })
     }
 
-    /// Removes the chat's container, if any (the chat was deleted).
+    /// Removes the chat's containers, its subagents' and its network gateway (the chat was
+    /// deleted).
     pub fn remove_chat(&self, chat: Uuid) {
-        let removed = locked(&self.inner.containers).remove(&chat);
-        prune_lock(&self.inner, chat);
-        if let Some(c) = removed {
-            remove_in_background(&self.inner.cfg, &with_gateways(&self.inner.cfg, &[c.name]));
-        }
-    }
-
-    /// Removes the containers not used for longer than `idle`.
-    pub fn reap_idle(&self, idle: Duration) {
-        let mut stale = Vec::new();
-        let mut chats = Vec::new();
-        locked(&self.inner.containers).retain(|chat, c| {
-            let keep = c.last_used.elapsed() <= idle;
+        let mut removed: Vec<(String, bool)> = Vec::new();
+        locked(&self.inner.containers).retain(|name, c| {
+            let keep = c.chat != chat;
             if !keep {
-                stale.push(c.name.clone());
-                chats.push(*chat);
+                removed.push((name.clone(), c.gateway));
             }
             keep
         });
-        for chat in chats {
-            prune_lock(&self.inner, chat);
-        }
-        remove_in_background(&self.inner.cfg, &with_gateways(&self.inner.cfg, &stale));
+        prune_lock(&self.inner, chat);
+        remove_in_background(&self.inner.cfg, &gateways_last(removed));
     }
+
+    /// Removes the containers not used for longer than `idle`, and the network gateways of
+    /// chats that have no containers left.
+    pub fn reap_idle(&self, idle: Duration) {
+        let mut stale: Vec<(String, bool)> = Vec::new();
+        let mut chats = Vec::new();
+        {
+            let mut map = locked(&self.inner.containers);
+            map.retain(|name, c| {
+                let keep = c.gateway || c.last_used.elapsed() <= idle;
+                if !keep {
+                    stale.push((name.clone(), false));
+                    chats.push(c.chat);
+                }
+                keep
+            });
+            // A gateway is touched with its chat's containers, so it is idle once they are.
+            let in_use: Vec<Uuid> = map
+                .values()
+                .filter(|c| !c.gateway)
+                .map(|c| c.chat)
+                .collect();
+            map.retain(|name, c| {
+                let keep = !c.gateway || in_use.contains(&c.chat) || c.last_used.elapsed() <= idle;
+                if !keep {
+                    stale.push((name.clone(), true));
+                    chats.push(c.chat);
+                }
+                keep
+            });
+        }
+        for chat in chats {
+            if !locked(&self.inner.containers)
+                .values()
+                .any(|c| c.chat == chat)
+            {
+                prune_lock(&self.inner, chat);
+            }
+        }
+        remove_in_background(&self.inner.cfg, &gateways_last(stale));
+    }
+}
+
+/// The names, with the gateways after the containers that use their network.
+fn gateways_last(mut names: Vec<(String, bool)>) -> Vec<String> {
+    names.sort_by_key(|(_, gateway)| *gateway);
+    names.into_iter().map(|(name, _)| name).collect()
 }
 
 /// Removes every container labelled `net.bukn.cleanrstai.sandbox=1` (left by an earlier run).
@@ -233,11 +382,12 @@ pub fn reap_orphans(cfg: &SandboxSettings) {
 impl Drop for Inner {
     /// Removes the recorded containers, waiting at most [`DROP_WAIT`]. Never panics.
     fn drop(&mut self) {
-        let names: Vec<String> = locked(&self.containers)
-            .values()
-            .map(|c| c.name.clone())
-            .collect();
-        let names = with_gateways(&self.cfg, &names);
+        let names = gateways_last(
+            locked(&self.containers)
+                .iter()
+                .map(|(name, c)| (name.clone(), c.gateway))
+                .collect(),
+        );
         if names.is_empty() {
             return;
         }
@@ -275,12 +425,11 @@ fn reap_within(child: &mut std::process::Child, limit: Duration) {
     }
 }
 
-/// Removes a chat's container when its command is abandoned (the `exec` future is dropped)
-/// before it finishes.
+/// Removes a container when its command is abandoned (the `exec` future is dropped) before
+/// it finishes. The chat's network gateway stays for its other containers.
 struct Cancel {
     inner: Arc<Inner>,
     program: PathBuf,
-    chat: Uuid,
     name: String,
     armed: bool,
 }
@@ -288,18 +437,22 @@ struct Cancel {
 impl Drop for Cancel {
     fn drop(&mut self) {
         if self.armed {
-            forget(&self.inner, self.chat, &self.name);
-            let names = with_gateways(&self.inner.cfg, std::slice::from_ref(&self.name));
-            let mut args = vec!["rm", "-f"];
-            args.extend(names.iter().map(String::as_str));
-            detached(&self.program, &args);
+            forget(&self.inner, &self.name);
+            detached(&self.program, &["rm", "-f", self.name.as_str()]);
         }
     }
 }
 
-/// Makes the image ready, creates the chat's container and records it. The caller's removal
-/// guard must already be armed: a stopped or failed container is removed here too.
-async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Result<(), String> {
+/// Makes the image ready, creates the container `name` of `chat` (after the chat's network
+/// gateway, on a custom network) and records it. The caller's removal guard must already be
+/// armed: a stopped or failed container is removed here too.
+async fn create(
+    inner: &Inner,
+    program: &Path,
+    chat: Uuid,
+    name: &str,
+    root: &Path,
+) -> Result<(), String> {
     // Bad rules are reported before anything is pulled or built.
     let script = match inner.cfg.network {
         SandboxNetwork::Custom => Some(network::gateway_script(&inner.cfg.rules)?),
@@ -309,13 +462,13 @@ async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Resul
         let mut pulled = inner.pulled.lock().await;
         docker::ensure_image(program, &inner.cfg, false, &mut pulled).await?;
     }
-    let name = container_name(chat);
-    remove(&inner.cfg, program, &name).await;
-    if inner.cfg.network == SandboxNetwork::Custom {
-        start_gateway(program, &network::gateway_name(&name), script.as_deref()).await?;
+    quiet(program, &["rm", "-f", name]).await;
+    let gateway = chat_gateway(chat);
+    if let Some(script) = &script {
+        ensure_gateway(inner, program, chat, &gateway, script).await?;
     }
     let image = docker::image_ref(&inner.cfg);
-    let args = docker::run_args(&inner.cfg, &name, root, &image);
+    let args = docker::run_args(&inner.cfg, name, root, &image, &gateway);
     let out = docker::docker(program, &args, None, RUN_TIMEOUT)
         .await
         .map_err(|e| format!("Couldn't start the sandbox container: {e}"))?;
@@ -325,25 +478,55 @@ async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Resul
             docker::last_line(&out)
         ));
     }
-    if !is_running(program, &name).await {
+    if !is_running(program, name).await {
         let logs = docker::docker(
             program,
-            &["logs", "--tail", "5", name.as_str()].map(str::to_owned),
+            &["logs", "--tail", "5", name].map(str::to_owned),
             None,
             INSPECT_TIMEOUT,
         )
         .await;
         let last = logs.map_or_else(|_| "no log output".to_owned(), |out| last_log_line(&out));
-        remove(&inner.cfg, program, &name).await;
+        quiet(program, &["rm", "-f", name]).await;
         return Err(format!(
             "The sandbox container stopped right after starting: {last}"
         ));
     }
     locked(&inner.containers).insert(
-        chat,
+        name.to_owned(),
         Container {
-            name,
+            chat,
             root: root.to_owned(),
+            gateway: false,
+            last_used: Instant::now(),
+        },
+    );
+    Ok(())
+}
+
+/// Makes sure the chat's network gateway `name` is running: reuses a recorded one that is,
+/// and otherwise starts a new one and records it. Called with the chat lock held.
+async fn ensure_gateway(
+    inner: &Inner,
+    program: &Path,
+    chat: Uuid,
+    name: &str,
+    script: &str,
+) -> Result<(), String> {
+    let known = locked(&inner.containers).contains_key(name);
+    if known && is_running(program, name).await {
+        touch(inner, name);
+        return Ok(());
+    }
+    forget(inner, name);
+    quiet(program, &["rm", "-f", name]).await;
+    start_gateway(program, name, script).await?;
+    locked(&inner.containers).insert(
+        name.to_owned(),
+        Container {
+            chat,
+            root: PathBuf::new(),
+            gateway: true,
             last_used: Instant::now(),
         },
     );
@@ -352,8 +535,7 @@ async fn create(inner: &Inner, program: &Path, chat: Uuid, root: &Path) -> Resul
 
 /// Starts the gateway container `name` running `script` and waits until its rules are in
 /// place. A gateway that stops or doesn't get ready in time is removed.
-async fn start_gateway(program: &Path, name: &str, script: Option<&str>) -> Result<(), String> {
-    let script = script.unwrap_or_default();
+async fn start_gateway(program: &Path, name: &str, script: &str) -> Result<(), String> {
     let fail = |e: String| format!("Couldn't set up the sandbox network: {e}");
     let out = docker::docker(
         program,
@@ -391,30 +573,6 @@ async fn start_gateway(program: &Path, name: &str, script: Option<&str>) -> Resu
     }
 }
 
-/// `docker rm -f` for the container `name` and, on a custom network, its gateway.
-async fn remove(cfg: &SandboxSettings, program: &Path, name: &str) {
-    let names = with_gateways(cfg, &[name.to_owned()]);
-    let mut args = vec!["rm", "-f"];
-    args.extend(names.iter().map(String::as_str));
-    quiet(program, &args).await;
-}
-
-/// `names`, followed on a custom network by their gateway containers.
-fn with_gateways(cfg: &SandboxSettings, names: &[String]) -> Vec<String> {
-    let mut all = names.to_vec();
-    if cfg.network == SandboxNetwork::Custom {
-        all.extend(names.iter().map(|n| network::gateway_name(n)));
-    }
-    all
-}
-
-/// Whether the container `name` (and, on a custom network, its gateway) is running.
-async fn all_running(cfg: &SandboxSettings, program: &Path, name: &str) -> bool {
-    is_running(program, name).await
-        && (cfg.network != SandboxNetwork::Custom
-            || is_running(program, &network::gateway_name(name)).await)
-}
-
 /// Whether the container `name` is running, by `docker inspect`. Any failure counts as not.
 async fn is_running(program: &Path, name: &str) -> bool {
     let args = ["inspect", "-f", "{{.State.Running}}", name].map(str::to_owned);
@@ -443,6 +601,11 @@ fn container_name(chat: Uuid) -> String {
     format!("cleanrstai-{}", chat.simple())
 }
 
+/// The name of the chat's custom network gateway, shared by all its containers.
+fn chat_gateway(chat: Uuid) -> String {
+    network::gateway_name(&container_name(chat))
+}
+
 fn chat_lock(inner: &Inner, chat: Uuid) -> Arc<tokio::sync::Mutex<()>> {
     let mut locks = locked(&inner.chat_locks);
     Arc::clone(
@@ -463,22 +626,23 @@ fn prune_lock(inner: &Inner, chat: Uuid) {
     }
 }
 
-/// Records that the chat's container (if it is still `name`) was just used.
-fn touch(inner: &Inner, chat: Uuid, name: &str) {
-    if let Some(c) = locked(&inner.containers)
-        .get_mut(&chat)
-        .filter(|c| c.name == name)
-    {
+/// Records that the container `name` (and its chat's gateway) was just used.
+fn touch(inner: &Inner, name: &str) {
+    let mut map = locked(&inner.containers);
+    let Some(chat) = map.get_mut(name).map(|c| {
         c.last_used = Instant::now();
+        c.chat
+    }) else {
+        return;
+    };
+    if let Some(gateway) = map.get_mut(&chat_gateway(chat)) {
+        gateway.last_used = Instant::now();
     }
 }
 
-/// Forgets the chat's container if it is still `name`.
-fn forget(inner: &Inner, chat: Uuid, name: &str) {
-    let mut map = locked(&inner.containers);
-    if map.get(&chat).is_some_and(|c| c.name == name) {
-        map.remove(&chat);
-    }
+/// Forgets the container `name`. Whether it was recorded.
+fn forget(inner: &Inner, name: &str) -> bool {
+    locked(&inner.containers).remove(name).is_some()
 }
 
 /// Runs `docker` with `args` and waits for it, ignoring the result.
@@ -682,13 +846,118 @@ mod tests {
         assert!(runs[1].contains(&format!("--name {name} ")));
         assert!(runs[1].contains(&format!("--network container:{gateway} ")));
         assert!(runs[1].contains("--cap-drop ALL"));
-        assert_eq!(fake.count_eq(&format!("rm -f {name} {gateway}")), 1);
+        assert_eq!(fake.count_eq(&format!("rm -f {name}")), 1);
+        assert_eq!(fake.count_eq(&format!("rm -f {gateway}")), 1);
 
         sb.remove_chat(chat);
         within_two_seconds("the removal", || {
-            fake.count_eq(&format!("rm -f {name} {gateway}")) == 2
+            fake.count_eq(&format!("rm -f {name} {gateway}")) == 1
         })
         .await;
+    }
+
+    fn custom(fake: &Fake) -> SandboxSettings {
+        use crate::config::{NetProtocol, SandboxNetRule};
+        SandboxSettings {
+            network: SandboxNetwork::Custom,
+            rules: vec![SandboxNetRule {
+                host: "pypi.org".into(),
+                protocol: NetProtocol::Tcp,
+                ports: "443".into(),
+            }],
+            ..fake.settings()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagents_get_their_own_containers_on_the_chats_network() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(custom(&fake));
+        let chat = Uuid::new_v4();
+        let gateway = chat_gateway(chat);
+
+        let main = sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        let (a, b) = (sb.subagent(chat), sb.subagent(chat));
+        let (ra, rb) = tokio::join!(
+            a.exec(&fake.dir, "echo a", LONG),
+            b.exec(&fake.dir, "echo b", LONG)
+        );
+        let (ra, rb) = (ra.unwrap(), rb.unwrap());
+        assert_eq!(String::from_utf8_lossy(&ra.stdout), "a\n");
+        assert_eq!(String::from_utf8_lossy(&rb.stdout), "b\n");
+        let names = [&main.container, &ra.container, &rb.container];
+        assert!(names[1].starts_with(&format!("{}-s", main.container)));
+        assert_ne!(names[1], names[2]);
+
+        // One gateway, joined by all three containers.
+        let runs: Vec<String> = fake
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("run -d "))
+            .collect();
+        assert_eq!(runs.len(), 4, "{runs:?}");
+        assert_eq!(
+            runs.iter()
+                .filter(|r| r.contains(&format!("--name {gateway} ")))
+                .count(),
+            1
+        );
+        for name in names {
+            assert!(
+                runs.iter().any(|r| r.contains(&format!("--name {name} "))
+                    && r.contains(&format!("--network container:{gateway} "))),
+                "{name}"
+            );
+        }
+
+        // A finished subagent's container goes; the chat's and the gateway stay.
+        let sub = ra.container.clone();
+        drop(a);
+        within_two_seconds("the subagent removal", || {
+            fake.count_eq(&format!("rm -f {sub}")) == 2
+        })
+        .await;
+        assert_eq!(fake.count_eq(&format!("rm -f {gateway}")), 1);
+        sb.reap_idle(Duration::from_secs(3600));
+        drop(b);
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        assert_eq!(fake.count_prefix("run -d "), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subagent_alone_starts_the_gateway_and_idle_reaping_removes_it_last() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(custom(&fake));
+        let chat = Uuid::new_v4();
+        let gateway = chat_gateway(chat);
+
+        let sub = sb.subagent(chat);
+        let run = sub.exec(&fake.dir, "true", LONG).await.unwrap();
+        assert!(
+            fake.calls()
+                .iter()
+                .any(|r| r.starts_with("run -d ") && r.contains(&format!("--name {gateway} ")))
+        );
+        sb.reap_idle(Duration::ZERO);
+        let both = format!("rm -f {} {gateway}", run.container);
+        within_two_seconds("idle reaping", || fake.count_eq(&both) == 1).await;
+        assert!(locked(&sb.inner.containers).is_empty());
+        // Already reaped, so dropping the handle removes nothing more.
+        drop(sub);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(fake.count_prefix(&format!("rm -f {}", run.container)), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_gateway_is_replaced_with_the_container_using_it() {
+        let fake = Fake::new();
+        let sb = Sandbox::new(custom(&fake));
+        let chat = Uuid::new_v4();
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        // The fake reports every container stopped while the marker is there.
+        fake.mark("stopped");
+        sb.exec(chat, &fake.dir, "true", LONG).await.unwrap();
+        assert_eq!(fake.count_prefix("run -d "), 4);
     }
 
     #[tokio::test(flavor = "multi_thread")]
