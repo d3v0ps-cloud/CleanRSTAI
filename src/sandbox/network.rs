@@ -61,10 +61,15 @@ pub fn check_rule(rule: &SandboxNetRule) -> Result<(), String> {
 }
 
 fn parse(rule: &SandboxNetRule) -> Result<Rule, String> {
+    let target = parse_host(rule.host.trim())?;
+    let ports = parse_ports(rule.ports.trim())?;
+    if rule.protocol == NetProtocol::Icmp && !ports.is_empty() {
+        return Err("ICMP has no ports: leave Ports empty.".into());
+    }
     Ok(Rule {
-        target: parse_host(rule.host.trim())?,
+        target,
         protocol: rule.protocol,
-        ports: parse_ports(rule.ports.trim())?,
+        ports,
     })
 }
 
@@ -210,6 +215,7 @@ iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
         let protocols: &[&str] = match rule.protocol {
             NetProtocol::Tcp => &["tcp"],
             NetProtocol::Udp => &["udp"],
+            NetProtocol::Icmp => &["icmp"],
             NetProtocol::Any if rule.ports.is_empty() => &[""],
             NetProtocol::Any => &["tcp", "udp"],
         };
@@ -367,6 +373,22 @@ mod tests {
         let last_accept = script.rfind("-j ACCEPT").unwrap();
         assert!(script.find("-j REJECT").unwrap() > last_accept);
         assert!(script.find(READY).unwrap() > script.find("dnsmasq -C").unwrap());
+    }
+
+    #[test]
+    fn icmp_rules_allow_ping_and_take_no_ports() {
+        let script = gateway_script(&[
+            rule("1.1.1.1", NetProtocol::Icmp, ""),
+            rule("pypi.org", NetProtocol::Icmp, ""),
+        ])
+        .unwrap();
+        assert!(script.contains("iptables -A OUTPUT -d 1.1.1.1/32 -p icmp -j ACCEPT\n"));
+        assert!(
+            script.contains("iptables -A OUTPUT -m set --match-set r2 dst -p icmp -j ACCEPT\n")
+        );
+        assert!(script.contains("echo 'ipset=/pypi.org/r2'"));
+        let err = gateway_script(&[rule("1.1.1.1", NetProtocol::Icmp, "80")]).unwrap_err();
+        assert!(err.contains("ICMP has no ports"), "{err}");
     }
 
     #[test]

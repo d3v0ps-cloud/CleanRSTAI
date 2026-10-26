@@ -31,15 +31,31 @@ fn net_rules_editor(ui: &mut egui::Ui, rules: &mut Vec<SandboxNetRule>) {
                         .width(70.0)
                         .selected_text(protocol_label(rule.protocol))
                         .show_ui(ui, |ui| {
-                            for p in [NetProtocol::Tcp, NetProtocol::Udp, NetProtocol::Any] {
+                            for p in [
+                                NetProtocol::Tcp,
+                                NetProtocol::Udp,
+                                NetProtocol::Icmp,
+                                NetProtocol::Any,
+                            ] {
                                 ui.selectable_value(&mut rule.protocol, p, protocol_label(p));
                             }
                         });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut rule.ports)
-                            .hint_text("all ports")
-                            .desired_width(110.0),
-                    );
+                    if rule.protocol == NetProtocol::Icmp {
+                        // ICMP has no ports.
+                        rule.ports.clear();
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut rule.ports)
+                                .hint_text("no ports")
+                                .desired_width(110.0),
+                        );
+                    } else {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut rule.ports)
+                                .hint_text("all ports")
+                                .desired_width(110.0),
+                        );
+                    }
                     if icon_button(ui, icon::CLOSE, "Remove").clicked() {
                         remove = Some(i);
                     }
@@ -69,7 +85,8 @@ fn net_rules_editor(ui: &mut egui::Ui, rules: &mut Vec<SandboxNetRule>) {
         ui.weak(
             "Host: a domain (its subdomains too), an IPv4 address or range such as \
              192.168.1.0/24, or * for any address. Ports: such as 80, 443, 8000-8100; empty \
-             allows all. Everything else is refused, and only the domains listed resolve.",
+             allows all. ICMP allows ping and takes no ports. Everything else is refused, and \
+             only the domains listed resolve.",
         );
     });
 }
@@ -78,6 +95,7 @@ fn protocol_label(protocol: NetProtocol) -> &'static str {
     match protocol {
         NetProtocol::Tcp => "TCP",
         NetProtocol::Udp => "UDP",
+        NetProtocol::Icmp => "ICMP",
         NetProtocol::Any => "Any",
     }
 }

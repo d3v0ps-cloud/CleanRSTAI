@@ -656,6 +656,7 @@ fn custom_network_note(rules: &[crate::config::SandboxNetRule]) -> String {
             let protocol = match r.protocol {
                 NetProtocol::Tcp => "TCP",
                 NetProtocol::Udp => "UDP",
+                NetProtocol::Icmp => "ICMP, such as ping",
                 NetProtocol::Any => "any protocol",
             };
             let host = if r.host == "*" {

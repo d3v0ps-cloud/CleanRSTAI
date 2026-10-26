@@ -125,7 +125,7 @@ Click **Add rule** for each connection to allow. A rule has:
 | Field | What to enter |
 |---|---|
 | Host | A domain such as `pypi.org` (it covers its subdomains too, so `*.pypi.org` means the same), an IPv4 address such as `192.168.1.20`, a range such as `10.0.0.0/8`, or `*` for any address. |
-| Protocol | **TCP**, **UDP** or **Any**. **Any** with ports means TCP and UDP on those ports; **Any** without ports allows every protocol, ping included. |
+| Protocol | **TCP**, **UDP**, **ICMP** or **Any**. **ICMP** allows `ping` (and the replies `traceroute` needs) and takes no ports. **Any** with ports means TCP and UDP on those ports; **Any** without ports allows every protocol, ICMP included. |
 | Ports | Ports and ranges separated by commas, such as `80, 443, 8000-8100`. Empty allows every port. |
 
 A rule with a mistake shows what is wrong under it, and commands are refused with "Network rule
@@ -139,6 +139,7 @@ Some useful rules:
 | Install npm packages | `registry.npmjs.org` | TCP | 443 |
 | Clone from GitHub | `github.com` and `codeload.github.com` | TCP | 443 |
 | Reach a server on your network | `192.168.1.20` | TCP | 8080 |
+| Ping a host | `1.1.1.1` (or a domain) | ICMP | (none) |
 | Allow the web, nothing else | `*` | TCP | 80, 443 |
 
 ### How it works
@@ -164,6 +165,9 @@ built, and **Pull now** / **Build now** rebuilds it too.
 Limits:
 
 - IPv4 only. IPv6 is blocked, and domains resolve to IPv4 addresses only.
+- `ping` works without extra permissions in the container (Docker allows unprivileged ICMP),
+  but the image must have it: `python:3.13-slim` doesn't, so install `iputils-ping` (in a
+  [custom Dockerfile](#custom-dockerfile), or with apt while a rule allows the Debian mirrors).
 - Rules work on addresses, not names. A domain served from a shared address (a CDN, for
   example) also lets commands reach other sites on that same address.
 - A domain resolves through your computer's DNS servers, as Docker sets them up.

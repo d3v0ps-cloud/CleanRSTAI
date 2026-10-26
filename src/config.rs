@@ -526,7 +526,9 @@ pub enum NetProtocol {
     #[default]
     Tcp,
     Udp,
-    /// TCP and UDP on the rule's ports, or every protocol when it has no ports.
+    /// ICMP (ping, traceroute replies); takes no ports.
+    Icmp,
+    /// TCP and UDP on the rule's ports, or every protocol (ICMP too) when it has no ports.
     Any,
 }
 

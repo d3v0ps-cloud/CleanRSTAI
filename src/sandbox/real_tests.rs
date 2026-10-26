@@ -345,6 +345,11 @@ async fn custom_network_allows_only_its_rules() {
                 protocol: NetProtocol::Tcp,
                 ports: "443".into(),
             },
+            SandboxNetRule {
+                host: host.clone(),
+                protocol: NetProtocol::Icmp,
+                ports: String::new(),
+            },
         ],
         ..settings(SandboxNetwork::Custom, false)
     });
@@ -363,6 +368,12 @@ t("allowed-domain", lambda: socket.gethostbyname("pypi.org"))
 t("other-domain", lambda: socket.gethostbyname("example.com"))
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
 t("direct-dns", lambda: (s.sendto(b"\0" * 12, ("8.8.8.8", 53)), s.recvfrom(512)))
+def ping(addr):
+    p = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP); p.settimeout(3)
+    p.sendto(b"\x08\0\0\0\0\0\0\x01ping", (addr, 0))
+    p.recvfrom(64)
+t("allowed-ping", lambda: ping("{host}"))
+t("other-ping", lambda: ping("8.8.8.8"))
 PY"#
     );
     let run = exec(&sandbox, chat, &ws.0, &script).await;
@@ -373,6 +384,8 @@ PY"#
         "allowed-domain ok",
         "other-domain fail",
         "direct-dns fail",
+        "allowed-ping ok",
+        "other-ping fail",
     ] {
         assert!(
             out.lines()
