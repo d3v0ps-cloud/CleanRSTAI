@@ -23,6 +23,10 @@ self-hosted runners (Gentoo Linux x64, Mac mini ARM64, DARKBASE Windows x64). A 
 `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust (skipped on
 Windows). The runners are persistent machines, so the release workflow installs tools once
 (WiX into the runner's tool cache) and removes signing certificates in always-run steps.
+For the same reason both workflows build into a persistent `CARGO_TARGET_DIR` in the runner's
+tool cache (`.github/actions/cargo-target`, cleared when `rustc -vV` changes or past 30 GiB)
+instead of using the GitHub Actions cache, so paths in the release steps use
+`$CARGO_TARGET_DIR`, not `target/`.
 `.github/workflows/sandbox-image.yml` builds `assets/sandbox/full.Dockerfile` (amd64 + arm64 via
 QEMU, on any self-hosted Linux x64 runner with Docker) and pushes
 `ghcr.io/<owner>/cleanrstai-sandbox` (`full`/`latest` from main, `full-dev` from dev, plus

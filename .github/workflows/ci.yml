@@ -27,9 +27,12 @@ jobs:
     # manual runs and PRs from branches of this repository still run. A fork's PR could edit
     # this line too, so "Require approval for all external contributors" (Settings → Actions)
     # stays on as well: check a fork's changes to .github/ before approving its run.
+    # A PR from main or dev is skipped too: pushes to those branches already run CI on the same
+    # commit, and the PR shows that run's checks.
     if: >-
       github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       !contains(fromJSON('["main", "dev"]'), github.head_ref))
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +68,7 @@ jobs:
         run: |
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           "$CARGO_HOME/bin/rustc" --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/cargo-target
       # No system packages needed on Linux: X11/Wayland/xkbcommon are loaded at runtime.
       - run: cargo fmt --check
         if: runner.os == 'Linux'
