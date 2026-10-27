@@ -367,6 +367,8 @@ in them follows the same rule:
 - [ ] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
   settings and prints the reply, for scripts and CI; turned on in Settings, with its own
   approval mode (read only by default)
+- [ ] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and
+  Windows/Linux system-tray icons to reopen the window or quit
 - [ ] Background tasks: start a request that keeps running when the chat is closed, and notify
   when it finishes or needs approval
 - [ ] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
