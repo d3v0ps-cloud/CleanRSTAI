@@ -1510,6 +1510,23 @@ impl ChatApp {
         });
     }
 
+    /// Save the current chat as a self-contained HTML file for sharing.
+    fn export_html(&mut self, id: Uuid) {
+        let Some(c) = self.conversations.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let Some(path) =
+            export::pick_save_path_as(&export::safe_file_name(&c.title, "html"), "HTML", "html")
+        else {
+            return;
+        };
+        let html = export::conversation_html(c);
+        self.notice = Some(match crate::config::write_private(&path, html.as_bytes()) {
+            Ok(()) => format!("Shared \"{}\" to {}", c.title, path.display()),
+            Err(e) => format!("Export failed: {e:#}"),
+        });
+    }
+
     fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>) {
         self.read_files(paths.into_iter().map(FileSource::Path).collect());
     }
@@ -1668,6 +1685,12 @@ impl ChatApp {
                 "Export this chat as Markdown…",
                 "Chat",
                 Command::ExportChatMarkdown,
+            ),
+            Entry::new(
+                icon::ARROW_SQUARE_OUT,
+                "Share this chat as an HTML file…",
+                "Chat",
+                Command::ExportChatHtml,
             ),
             Entry::new(
                 icon::STACK,
@@ -1835,6 +1858,11 @@ impl ChatApp {
             Command::ExportChatMarkdown => {
                 if let Some(id) = self.current {
                     self.export_markdown(id);
+                }
+            }
+            Command::ExportChatHtml => {
+                if let Some(id) = self.current {
+                    self.export_html(id);
                 }
             }
             Command::CompactChat => {
@@ -2433,6 +2461,7 @@ impl ChatApp {
         let mut select = None;
         let mut delete = None;
         let mut export_md = None;
+        let mut export_html = None;
         let mut toggle_pin = None;
         let mut rename_commit = None;
         let needle = self.search.to_lowercase();
@@ -2527,6 +2556,13 @@ impl ChatApp {
                             export_md = Some(c.id);
                             ui.close();
                         }
+                        if ui
+                            .button(theme::labelled(icon::ARROW_SQUARE_OUT, "Share as HTML…"))
+                            .clicked()
+                        {
+                            export_html = Some(c.id);
+                            ui.close();
+                        }
                         ui.separator();
                         if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
                             delete = Some(c.id);
@@ -2543,6 +2579,9 @@ impl ChatApp {
         }
         if let Some(id) = export_md {
             self.export_markdown(id);
+        }
+        if let Some(id) = export_html {
+            self.export_html(id);
         }
         if let Some(id) = select {
             self.current = Some(id);

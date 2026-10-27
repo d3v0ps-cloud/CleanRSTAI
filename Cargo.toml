@@ -25,7 +25,7 @@ rfd = "0.17"
 keyring = "4"
 egui_extras = { version = "0.37", features = ["image", "gif", "webp", "svg", "svg_text"] }
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
-pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 sha2 = "0.10"

@@ -234,11 +234,13 @@ can't be read.
 Chats are saved automatically. In the sidebar:
 
 - Type in the search box to filter chats.
-- Right-click a chat for **Pin** / **Unpin**, **Rename**, **Export as Markdown…** and
-  **Delete**.
+- Right-click a chat for **Pin** / **Unpin**, **Rename**, **Export as Markdown…**,
+  **Share as HTML…** and **Delete**.
 
-**Export as Markdown** includes tool calls, results and images. To back up every chat at once,
-use **Export conversations…** in [General](../settings/general.html#export--import).
+**Export as Markdown** includes tool calls, results and images. **Share as HTML…** writes the
+same chat as a single, self-contained `.html` file styled like the app: it opens in any browser
+with no network, fonts or scripts, so it is easy to send to someone. To back up every chat at
+once, use **Export conversations…** in [General](../settings/general.html#export--import).
 
 ## Command palette
 

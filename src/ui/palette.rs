@@ -18,6 +18,7 @@ pub enum Command {
     SetTheme(Theme),
     Attach,
     ExportChatMarkdown,
+    ExportChatHtml,
     CompactChat,
     UndoLastEdits,
     ExportSettings,
