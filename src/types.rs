@@ -56,6 +56,59 @@ pub struct ChatMessage {
     /// For a command that ran in the Docker sandbox: where.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxInfo>,
+    /// For a workspace `write_file` or `edit_file` result: the change, and how to undo it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<FileEdit>,
+    /// A compaction marker (a `System` message whose content is the summary): the messages
+    /// before it are no longer sent to the model, only the summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionInfo>,
+}
+
+/// One file changed by `write_file` or `edit_file`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FileEdit {
+    /// The file, relative to the workspace.
+    pub path: String,
+    /// The file's full path, for undo.
+    pub abs: PathBuf,
+    /// The change as a unified diff (empty when diffs are off).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diff: String,
+    /// The file didn't exist before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created: bool,
+    /// The previous content, while a checkpoint is kept (`None` for a new file, or once the
+    /// checkpoint is dropped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// A checkpoint is kept: the edit can be undone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checkpoint: bool,
+    /// SHA-256 of the content the edit wrote, to notice later changes before undoing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub after_sha256: String,
+    /// The edit was undone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub undone: bool,
+}
+
+/// What a compaction replaced with its summary.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CompactionInfo {
+    /// Messages the summary stands for (this compaction's, not earlier ones).
+    pub messages: usize,
+    /// Estimated tokens of the request before compacting.
+    #[serde(default)]
+    pub tokens_before: u64,
+    /// Started by hand ("Compact now") rather than automatically.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+}
+
+/// Where the latest compaction marker is, if any.
+pub fn last_compaction(messages: &[ChatMessage]) -> Option<usize> {
+    messages.iter().rposition(|m| m.compaction.is_some())
 }
 
 /// The Docker sandbox container a command ran in.
@@ -96,6 +149,8 @@ impl ChatMessage {
             subagents: Vec::new(),
             cancelled: false,
             sandbox: None,
+            edit: None,
+            compaction: None,
         }
     }
 

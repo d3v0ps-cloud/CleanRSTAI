@@ -22,6 +22,7 @@ workspace tools (when a chat has a folder) and [MCP servers](mcp.html).
 | **Calculator** | Exact arithmetic and functions: powers, roots, logarithms, trigonometry, rounding, min/max/avg. | No |
 | **Task list** | For multi-step requests the model breaks the work into tasks, shows them as a checklist in the chat and ticks them off. | No |
 | **Web fetch** | Reads an http(s) URL. Pages come back as readable text with their links, plain text and JSON as they are, images as images. Long pages are read in parts; downloads stop at 5 MB. | Yes |
+| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave or Tavily) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search) |
 
 Web fetch only reaches public internet addresses: not localhost, private networks or cloud
 metadata endpoints, also after a redirect. To reach those, turn on *Let web fetch reach this
@@ -48,6 +49,25 @@ are refused. Searches skip files ignored by `.gitignore`.
 Hover over the folder name to see the full path; click it to choose another folder, or click
 **×** to stop using it.
 
+### Project instructions
+
+When the folder has an `AGENTS.md` or `CLAUDE.md` (the names and order are set in
+[Context & files](../settings/context.html#project-instructions)), it is added to the system
+prompt of every request, so the model follows the project's conventions. Under **Chat features**
+in the tools menu, **Project instructions** shows which files the latest request read and
+switches them off for the chat.
+
+### Diffs and undo
+
+`write_file` and `edit_file` show their change as a diff on the approval prompt, before they
+run, and in the tool card afterwards; the card's header shows how many lines were added and
+removed. Each edit also keeps the file's previous content, so **Undo file edits** under the
+last reply of a turn puts back every file that turn changed, newest first. A file that changed
+again since is left alone, and commands run with `exec_shell_command` aren't undone. The card of
+an undone edit says **Undone**. **Undo the last turn's file edits** in the command palette does
+the same for the latest turn. Both can be turned off in
+[Context & files](../settings/context.html#workspace-file-edits).
+
 ## Docker sandbox
 
 With the [Docker sandbox](../settings/docker.html) on, **Run command** (`exec_shell_command`)
@@ -68,11 +88,17 @@ switches apply to the current chat from the next message. Defaults for new chats
 [Settings → Built-in Tools](../settings/built-in-tools.html) and
 [MCP Servers](../settings/mcp-servers.html).
 
+Under **Chat features**, the same menu switches **Context compaction**, **Project
+instructions** and **Undo for file edits** for the chat (defaults in
+[Context & files](../settings/context.html)), and **Compact now** summarises the chat's older
+messages straight away.
+
 ## Approving tool calls
 
-Tools that reach outside the app or change things ask first: MCP tools, web fetch,
-`delegate` (subagents) and the workspace tools that write files or run commands. The card
-shows the tool and its arguments and asks **Allow this tool to run?**:
+Tools that reach outside the app or change things ask first: MCP tools, web fetch, web
+search (unless turned off), `delegate` (subagents) and the workspace tools that write files or
+run commands. The card shows the tool and its arguments (or, for `write_file` and `edit_file`,
+the change as a diff) and asks **Allow this tool to run?**:
 
 - **Run**: run this call.
 - **Always allow this tool**: run this tool without asking for the rest of the chat.

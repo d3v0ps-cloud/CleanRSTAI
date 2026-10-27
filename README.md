@@ -60,10 +60,14 @@ too, as an installer and a portable `.exe`.
     in parts. Downloads stop at 5 MB. It only reaches public internet addresses (not
     localhost, private networks or cloud metadata endpoints, also after a redirect) unless
     *Let web fetch reach this computer and private networks* is on.
+  - **Web search**: searches the web and lists the results (title, address, snippet) for the
+    model to read with web fetch. DuckDuckGo works without an account; a SearXNG instance
+    (your own, even on localhost), the Brave Search API or Tavily can be chosen instead, with
+    the result count, safe search and whether to ask before each search.
 
-  Time, calculator and task list run locally without asking. Web fetch reaches the internet,
-  so it asks for approval like MCP tools do ("Always allow this tool" skips that for the rest
-  of the chat). Switch each one in **Settings → Built-in Tools**.
+  Time, calculator and task list run locally without asking. Web fetch and web search reach the
+  internet, so they ask for approval like MCP tools do ("Always allow this tool" skips that for
+  the rest of the chat). Switch each one in **Settings → Built-in Tools**.
 - **Workspace**: give a chat a local working folder with **Set working directory** under the
   message box, and the model gets tools to work in it: `read_file`, `file_glob_search`,
   `grep_search` and `get_info` run freely; `write_file`, `edit_file` and
@@ -71,6 +75,17 @@ too, as an installer and a portable `.exe`.
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
   **Settings → Built-in Tools** or per chat.
+  - **Project instructions**: an `AGENTS.md` or `CLAUDE.md` in the folder (names, order,
+    parent folders and size limit are configurable) goes into the system prompt.
+  - **Diffs and undo**: `write_file` and `edit_file` show their change as a diff on the
+    approval prompt and in the tool card, and keep a checkpoint, so **Undo file edits** puts
+    back the files a turn changed (files changed again since are left alone).
+- **Context compaction**: when a chat nears the model's context size, the older messages are
+  summarised (by the chat's model or one you choose) and only the summary and the latest
+  messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
+  older tool results can be shortened instead. Threshold, kept messages, context size and the
+  summary instructions are in **Settings → Context & files**; every one of these features can
+  be switched per chat under **Chat features** in the tools menu.
 - **Docker sandbox** (off by default): run the workspace shell commands in a Docker container
   with only the chat's folder mounted, no network by default (or only the hosts, ports and
   protocols you allow), and CPU, memory and process limits. Use a published image or a custom
@@ -122,7 +137,9 @@ too, as an installer and a portable `.exe`.
   show as links unless you turn on **Load web images in replies** in Settings → General.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
-  save; the reply keeps a link that expands them inline. Web pages open in your browser.
+  save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
+  live in the panel (scripts on, network off by default; both switchable), and any page can
+  open in your browser.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to

@@ -256,6 +256,9 @@ pub struct BuiltinToolSettings {
     pub fetch_private_networks: bool,
     /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
     pub workspace: bool,
+    /// Search the web through the service in `search`.
+    pub web_search: bool,
+    pub search: WebSearchSettings,
 }
 
 impl Default for BuiltinToolSettings {
@@ -267,6 +270,198 @@ impl Default for BuiltinToolSettings {
             fetch: true,
             fetch_private_networks: false,
             workspace: true,
+            web_search: true,
+            search: WebSearchSettings::default(),
+        }
+    }
+}
+
+/// The service the web search tool asks.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchBackend {
+    /// DuckDuckGo's HTML results page; no account or key.
+    #[default]
+    DuckDuckGo,
+    /// A SearXNG instance with the JSON format turned on.
+    Searxng,
+    /// The Brave Search API (needs a key).
+    Brave,
+    /// The Tavily search API (needs a key).
+    Tavily,
+}
+
+impl SearchBackend {
+    pub const ALL: [SearchBackend; 4] =
+        [Self::DuckDuckGo, Self::Searxng, Self::Brave, Self::Tavily];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "DuckDuckGo",
+            Self::Searxng => "SearXNG",
+            Self::Brave => "Brave Search API",
+            Self::Tavily => "Tavily",
+        }
+    }
+
+    pub fn needs_key(self) -> bool {
+        matches!(self, Self::Brave | Self::Tavily)
+    }
+}
+
+/// Most results one web search returns.
+pub const MAX_SEARCH_RESULTS: u32 = 20;
+
+/// The web search tool's service and options.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WebSearchSettings {
+    pub backend: SearchBackend,
+    /// Base URL of the SearXNG instance, e.g. `https://searx.example.org`.
+    pub searxng_url: String,
+    /// API key for Brave or Tavily. Kept in the keychain.
+    pub api_key: String,
+    /// Results per search, 1–20.
+    pub max_results: u32,
+    /// Ask the service to filter adult results.
+    pub safe_search: bool,
+    /// Ask before each search (the query leaves this computer).
+    pub ask: bool,
+    /// Subagents may search too (when they may use the built-in tools).
+    pub subagents: bool,
+}
+
+impl Default for WebSearchSettings {
+    fn default() -> Self {
+        Self {
+            backend: SearchBackend::DuckDuckGo,
+            searxng_url: String::new(),
+            api_key: String::new(),
+            max_results: 5,
+            safe_search: true,
+            ask: true,
+            subagents: true,
+        }
+    }
+}
+
+/// Summarising the older part of a chat when it nears the model's context size.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CompactionSettings {
+    /// Compact automatically. "Compact now" works either way.
+    pub enabled: bool,
+    /// Compact once the request would fill this share of the context, in percent (50–95).
+    pub threshold_percent: u32,
+    /// Messages at the end of the chat kept word for word (2–50).
+    pub keep_recent: u32,
+    /// Instructions for the model that writes the summary.
+    pub prompt: String,
+    /// Provider profile that writes the summary; empty means the chat's provider.
+    pub provider_id: String,
+    /// Model override for the summary; empty means the provider's selected model.
+    pub model: String,
+    /// Context size to assume when the server doesn't report one; 0 compacts automatically
+    /// only when it does.
+    pub context_tokens: u32,
+    /// Shorten long results of older tool calls in what is sent (the chat keeps them).
+    pub trim_tool_results: bool,
+    /// Characters an older tool result keeps when trimmed (200–100,000).
+    pub trim_chars: u32,
+}
+
+pub const DEFAULT_COMPACTION_PROMPT: &str = "Summarise the conversation below so another \
+assistant can continue it without seeing it. Keep the user's goals and instructions, decisions \
+made, facts and names that matter, files read or changed and what changed in them, commands run \
+and their outcome, open questions and the next steps. Leave out pleasantries. Write it as a \
+compact list of notes, not a story.";
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold_percent: 80,
+            keep_recent: 6,
+            prompt: DEFAULT_COMPACTION_PROMPT.into(),
+            provider_id: String::new(),
+            model: String::new(),
+            context_tokens: 0,
+            trim_tool_results: false,
+            trim_chars: 2000,
+        }
+    }
+}
+
+/// Instruction files (`AGENTS.md`, `CLAUDE.md`, …) read from a chat's workspace folder.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InstructionSettings {
+    pub enabled: bool,
+    /// File names to look for, in order.
+    pub file_names: Vec<String>,
+    /// Read every listed file found in a folder, not only the first.
+    pub all_files: bool,
+    /// Also read them from the folders above the workspace (outermost first).
+    pub parent_folders: bool,
+    /// Most text read in all, in KB (1–1024).
+    pub max_kb: u32,
+}
+
+impl Default for InstructionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file_names: vec!["AGENTS.md".into(), "CLAUDE.md".into()],
+            all_files: false,
+            parent_folders: false,
+            max_kb: 64,
+        }
+    }
+}
+
+/// What the app keeps around the workspace's `write_file` and `edit_file` calls.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct FileEditSettings {
+    /// Show the change as a diff on the approval prompt and in the tool card.
+    pub diff_preview: bool,
+    /// Keep each file's previous content, so a turn's edits can be undone.
+    pub checkpoints: bool,
+    /// Files larger than this (in KB) get no checkpoint (16–65,536).
+    pub max_file_kb: u32,
+    /// Checkpoints are kept for this many of the latest turns; 0 keeps them all.
+    pub keep_turns: u32,
+}
+
+impl Default for FileEditSettings {
+    fn default() -> Self {
+        Self {
+            diff_preview: true,
+            checkpoints: true,
+            max_file_kb: 1024,
+            keep_turns: 20,
+        }
+    }
+}
+
+/// The live preview of web page artifacts in the artifact panel.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct HtmlPreviewSettings {
+    /// Show web pages live in the panel (where the platform has a web view).
+    pub enabled: bool,
+    /// Let the page run its scripts.
+    pub scripts: bool,
+    /// Let the page load anything from the network (scripts, styles, images, requests).
+    pub network: bool,
+}
+
+impl Default for HtmlPreviewSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scripts: true,
+            network: false,
         }
     }
 }
@@ -450,7 +645,15 @@ pub struct GeneralSettings {
     pub load_remote_images: bool,
     /// Open the artifact panel when a reply makes a web page, drawing, document or long code.
     pub open_artifacts: bool,
+    /// Live preview of web page artifacts.
+    pub html_preview: HtmlPreviewSettings,
     pub builtin_tools: BuiltinToolSettings,
+    /// Summarising older turns when the context fills up.
+    pub compaction: CompactionSettings,
+    /// `AGENTS.md` and similar files from the workspace.
+    pub instructions: InstructionSettings,
+    /// Diffs and undo for workspace file edits.
+    pub file_edits: FileEditSettings,
     /// Browser remote access (see `remote`).
     pub remote: RemoteSettings,
 }
@@ -476,7 +679,11 @@ impl Default for GeneralSettings {
             reasoning_display: ReasoningDisplay::default(),
             load_remote_images: false,
             open_artifacts: true,
+            html_preview: HtmlPreviewSettings::default(),
             builtin_tools: BuiltinToolSettings::default(),
+            compaction: CompactionSettings::default(),
+            instructions: InstructionSettings::default(),
+            file_edits: FileEditSettings::default(),
             remote: RemoteSettings::default(),
         }
     }
@@ -786,6 +993,29 @@ impl Settings {
         } else {
             url.to_owned()
         };
+        let c = &mut self.general.compaction;
+        c.threshold_percent = c.threshold_percent.clamp(50, 95);
+        c.keep_recent = c.keep_recent.clamp(2, 50);
+        c.trim_chars = c.trim_chars.clamp(200, 100_000);
+        if c.prompt.trim().is_empty() {
+            c.prompt = DEFAULT_COMPACTION_PROMPT.into();
+        }
+        if !self.providers.iter().any(|p| p.id == c.provider_id) {
+            c.provider_id.clear();
+        }
+        let ins = &mut self.general.instructions;
+        ins.max_kb = ins.max_kb.clamp(1, 1024);
+        ins.file_names = ins
+            .file_names
+            .iter()
+            .map(|n| n.trim().to_owned())
+            .filter(|n| !n.is_empty() && !n.contains(['/', '\\']) && n != "." && n != "..")
+            .collect();
+        let fe = &mut self.general.file_edits;
+        fe.max_file_kb = fe.max_file_kb.clamp(16, 65_536);
+        let search = &mut self.general.builtin_tools.search;
+        search.max_results = search.max_results.clamp(1, MAX_SEARCH_RESULTS);
+        search.searxng_url = search.searxng_url.trim().trim_end_matches('/').to_owned();
         let sa = &mut self.subagents;
         sa.max_parallel = sa.max_parallel.clamp(1, 16);
         sa.max_tasks = sa.max_tasks.clamp(1, 32);
@@ -810,6 +1040,21 @@ impl Settings {
             .clone();
         if !self.subagents.model.trim().is_empty() {
             p.model = self.subagents.model.trim().to_owned();
+        }
+        p
+    }
+
+    /// The provider profile that writes compaction summaries for a chat on `chat`.
+    pub fn compaction_provider(&self, chat: &ProviderConfig) -> ProviderConfig {
+        let c = &self.general.compaction;
+        let mut p = self
+            .providers
+            .iter()
+            .find(|p| p.id == c.provider_id)
+            .unwrap_or(chat)
+            .clone();
+        if !c.model.trim().is_empty() {
+            p.model = c.model.trim().to_owned();
         }
         p
     }
@@ -1156,6 +1401,68 @@ mod tests {
         assert_eq!(s.general.remote, RemoteSettings::default());
         assert!(!s.general.remote.enabled);
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn new_feature_settings_load_with_defaults_and_normalise() {
+        let s: Settings = serde_json::from_str(r#"{"general": {"zoom": 1.5}}"#).unwrap();
+        assert!(s.general.compaction.enabled);
+        assert!(s.general.instructions.enabled);
+        assert_eq!(
+            s.general.instructions.file_names,
+            ["AGENTS.md", "CLAUDE.md"]
+        );
+        assert!(s.general.file_edits.diff_preview && s.general.file_edits.checkpoints);
+        assert!(s.general.html_preview.enabled && !s.general.html_preview.network);
+        assert!(s.general.builtin_tools.web_search);
+        assert_eq!(
+            s.general.builtin_tools.search.backend,
+            SearchBackend::DuckDuckGo
+        );
+
+        let mut s = Settings::default();
+        s.general.compaction.threshold_percent = 5;
+        s.general.compaction.keep_recent = 0;
+        s.general.compaction.prompt = " ".into();
+        s.general.compaction.provider_id = "gone".into();
+        s.general.instructions.file_names = vec![
+            " AGENTS.md ".into(),
+            "".into(),
+            "../x.md".into(),
+            "..".into(),
+        ];
+        s.general.instructions.max_kb = 0;
+        s.general.builtin_tools.search.max_results = 99;
+        s.general.builtin_tools.search.searxng_url = " https://searx.example/ ".into();
+        s.normalize();
+        assert_eq!(s.general.compaction.threshold_percent, 50);
+        assert_eq!(s.general.compaction.keep_recent, 2);
+        assert_eq!(s.general.compaction.prompt, DEFAULT_COMPACTION_PROMPT);
+        assert!(s.general.compaction.provider_id.is_empty());
+        assert_eq!(s.general.instructions.file_names, ["AGENTS.md"]);
+        assert_eq!(s.general.instructions.max_kb, 1);
+        assert_eq!(s.general.builtin_tools.search.max_results, 20);
+        assert_eq!(
+            s.general.builtin_tools.search.searxng_url,
+            "https://searx.example"
+        );
+    }
+
+    #[test]
+    fn compaction_provider_falls_back_to_the_chat() {
+        let mut s = Settings::default();
+        let chat = s.providers[0].clone();
+        assert_eq!(s.compaction_provider(&chat).model, chat.model);
+        let other = ProviderConfig {
+            id: "p2".into(),
+            model: "big".into(),
+            ..Default::default()
+        };
+        s.providers.push(other);
+        s.general.compaction.provider_id = "p2".into();
+        assert_eq!(s.compaction_provider(&chat).model, "big");
+        s.general.compaction.model = " small ".into();
+        assert_eq!(s.compaction_provider(&chat).model, "small");
     }
 
     #[test]

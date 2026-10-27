@@ -4,6 +4,7 @@
 
 pub mod calc;
 pub mod fetch;
+pub mod search;
 pub mod workspace;
 
 use std::collections::{BTreeMap, HashMap};
@@ -23,14 +24,16 @@ pub const TIME: &str = "builtin__get_time";
 pub const CALCULATE: &str = "builtin__calculate";
 pub const TASKS: &str = "builtin__update_tasks";
 pub const FETCH: &str = "builtin__fetch";
+pub const WEB_SEARCH: &str = "builtin__web_search";
 pub const DELEGATE: &str = "builtin__delegate";
 
 /// Built-in tools in display order, with the key used for per-chat switches.
-pub const BUILTINS: [(&str, &str, &str); 5] = [
+pub const BUILTINS: [(&str, &str, &str); 6] = [
     (TIME, "time", "Time & date"),
     (CALCULATE, "calculator", "Calculator"),
     (TASKS, "tasks", "Task list"),
     (FETCH, "fetch", "Web fetch"),
+    (WEB_SEARCH, "web_search", "Web search"),
     (DELEGATE, "subagents", "Subagents"),
 ];
 
@@ -71,6 +74,11 @@ impl ToolOverrides {
         format!("builtin:{key}")
     }
 
+    /// A chat feature that isn't a tool: one of [`FEATURES`].
+    pub fn feature_key(key: &str) -> String {
+        format!("feature:{key}")
+    }
+
     pub fn get(&self, key: &str) -> Option<bool> {
         self.0.get(key).copied()
     }
@@ -90,6 +98,29 @@ impl ToolOverrides {
     }
 }
 
+pub const COMPACTION: &str = "compaction";
+pub const INSTRUCTIONS: &str = "instructions";
+pub const CHECKPOINTS: &str = "checkpoints";
+
+/// Chat features with a per-chat switch, in display order: (key, label, description).
+pub const FEATURES: [(&str, &str, &str); 3] = [
+    (
+        COMPACTION,
+        "Context compaction",
+        "Summarise older turns when the context fills up",
+    ),
+    (
+        INSTRUCTIONS,
+        "Project instructions",
+        "Read AGENTS.md and similar files from the workspace",
+    ),
+    (
+        CHECKPOINTS,
+        "Undo for file edits",
+        "Keep files' previous content so a turn's edits can be undone",
+    ),
+];
+
 /// What one chat may use: Settings defaults plus that chat's overrides.
 #[derive(Clone, Debug, Default)]
 pub struct ToolSelection {
@@ -98,20 +129,42 @@ pub struct ToolSelection {
     pub subagents: bool,
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
+    /// Defaults of the [`FEATURES`], from Settings.
+    features: [bool; 3],
 }
 
 impl ToolSelection {
     pub fn new(settings: &Settings, overrides: &ToolOverrides) -> Self {
+        let g = &settings.general;
         Self {
             overrides: overrides.clone(),
-            builtins: settings.general.builtin_tools.clone(),
+            builtins: g.builtin_tools.clone(),
             subagents: settings.subagents.enabled,
             disabled: settings
                 .mcp_servers
                 .iter()
                 .map(|s| (s.id.clone(), s.disabled_tools.clone()))
                 .collect(),
+            features: [
+                g.compaction.enabled,
+                g.instructions.enabled,
+                g.file_edits.checkpoints,
+            ],
         }
+    }
+
+    /// Default for a chat feature, by its key ([`COMPACTION`], …).
+    pub fn feature_default(&self, key: &str) -> bool {
+        FEATURES
+            .iter()
+            .position(|(k, ..)| *k == key)
+            .is_some_and(|i| self.features[i])
+    }
+
+    pub fn feature_on(&self, key: &str) -> bool {
+        self.overrides
+            .get(&ToolOverrides::feature_key(key))
+            .unwrap_or_else(|| self.feature_default(key))
     }
 
     pub fn server_on(&self, id: &str) -> bool {
@@ -142,6 +195,7 @@ impl ToolSelection {
             "calculator" => self.builtins.calculator,
             "tasks" => self.builtins.tasks,
             "fetch" => self.builtins.fetch,
+            "web_search" => self.builtins.web_search,
             ws if workspace::TOOLS.iter().any(|(name, _)| *name == ws) => self.builtins.workspace,
             "subagents" => self.subagents,
             _ => false,
@@ -168,6 +222,8 @@ pub struct Toolbox {
     fetch_private: bool,
     /// The chat's workspace, for the workspace tools.
     workspace: Option<workspace::Workspace>,
+    /// The web search service and its options.
+    search: crate::config::WebSearchSettings,
 }
 
 impl Toolbox {
@@ -184,6 +240,12 @@ impl Toolbox {
                 if let Some(desc) = &delegate {
                     specs.push(delegate_spec(desc));
                 }
+            } else if name == WEB_SEARCH {
+                specs.push(ToolSpec {
+                    name: WEB_SEARCH.into(),
+                    description: search::spec_description(&selection.builtins.search),
+                    parameters: search::spec_parameters(),
+                });
             } else {
                 specs.push(builtin_spec(name));
             }
@@ -196,6 +258,7 @@ impl Toolbox {
             http: None,
             fetch_private: selection.builtins.fetch_private_networks,
             workspace: None,
+            search: selection.builtins.search.clone(),
         }
     }
 
@@ -241,7 +304,17 @@ impl Toolbox {
         !is_builtin(function)
             || function == DELEGATE
             || function == FETCH
+            || function == WEB_SEARCH
             || workspace::changes_things(function)
+    }
+
+    /// Whether a call to `function` asks first in this toolbox: [`Self::needs_approval`],
+    /// except that web search follows its own setting.
+    pub fn asks(&self, function: &str) -> bool {
+        if function == WEB_SEARCH {
+            return self.search.ask;
+        }
+        Self::needs_approval(function)
     }
 
     /// Run a built-in (except `delegate`, which the agent handles) or an MCP tool.
@@ -272,6 +345,19 @@ impl Toolbox {
                 Err(e) => error_output(format!("Error: {e:#}")),
             };
         }
+        if function == WEB_SEARCH {
+            let Some(http) = &self.http else {
+                return error_output("Error: web search isn't available here.");
+            };
+            let result = match parse_args(arguments) {
+                Ok(args) => search::run(http, &self.search, &args, timeout).await,
+                Err(e) => Err(e),
+            };
+            return match result {
+                Ok(text) => text_output(text),
+                Err(e) => error_output(format!("Error: {e:#}")),
+            };
+        }
         if is_builtin(function) {
             return run_builtin(function, arguments);
         }
@@ -288,6 +374,7 @@ pub(crate) fn text_output(text: impl Into<String>) -> ToolOutput {
         is_error: false,
         images: Vec::new(),
         sandbox: None,
+        edit: None,
     }
 }
 
@@ -297,6 +384,7 @@ pub fn error_output(text: impl Into<String>) -> ToolOutput {
         is_error: true,
         images: Vec::new(),
         sandbox: None,
+        edit: None,
     }
 }
 
@@ -602,9 +690,16 @@ mod tests {
         let sel = ToolSelection::new(&settings, &ToolOverrides::default());
         let tb = Toolbox::new(ToolRouter::default(), &sel, Some("delegate".into()));
         let names: Vec<&str> = tb.specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, [TIME, CALCULATE, FETCH, DELEGATE]);
+        assert_eq!(names, [TIME, CALCULATE, FETCH, WEB_SEARCH, DELEGATE]);
         let tb = Toolbox::new(ToolRouter::default(), &sel, None);
         assert!(!tb.has(DELEGATE));
+        // Web search asks first unless its own setting says not to.
+        assert!(tb.asks(WEB_SEARCH));
+        settings.general.builtin_tools.search.ask = false;
+        let quiet = ToolSelection::new(&settings, &ToolOverrides::default());
+        let tb_quiet = Toolbox::new(ToolRouter::default(), &quiet, None);
+        assert!(!tb_quiet.asks(WEB_SEARCH));
+        assert!(tb_quiet.asks(FETCH));
         assert!(Toolbox::needs_approval(DELEGATE));
         assert!(Toolbox::needs_approval(FETCH));
         assert!(!Toolbox::needs_approval(CALCULATE));
@@ -679,6 +774,25 @@ mod tests {
         assert!(out.is_error);
         let out = tb.call("other__tool", "{}", t).await;
         assert!(out.is_error);
+    }
+
+    #[test]
+    fn features_follow_settings_and_chat_switches() {
+        let mut settings = Settings::default();
+        let sel = ToolSelection::new(&settings, &ToolOverrides::default());
+        assert!(sel.feature_on(COMPACTION) && sel.feature_on(INSTRUCTIONS));
+        assert!(sel.feature_on(CHECKPOINTS));
+        settings.general.compaction.enabled = false;
+        settings.general.file_edits.checkpoints = false;
+        let mut ov = ToolOverrides::default();
+        ov.set(ToolOverrides::feature_key(INSTRUCTIONS), false, true);
+        ov.set(ToolOverrides::feature_key(CHECKPOINTS), true, false);
+        let sel = ToolSelection::new(&settings, &ov);
+        assert!(!sel.feature_on(COMPACTION));
+        assert!(!sel.feature_on(INSTRUCTIONS));
+        assert!(sel.feature_on(CHECKPOINTS));
+        assert!(!sel.feature_default(CHECKPOINTS));
+        assert!(!sel.feature_on("unknown"));
     }
 
     #[test]

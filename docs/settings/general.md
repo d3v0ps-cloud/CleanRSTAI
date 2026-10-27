@@ -124,6 +124,16 @@ contents in the image address.
 [artifact](../using/chats.html#artifacts), the panel opens beside the chat. When off, open it with
 **Open in panel** by its link in the reply, or the panel button in the top bar.
 
+### Web page preview
+
+| Setting | Default | Description |
+|---|---|---|
+| **Show web pages live in the panel** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). Off: the panel shows the code, and **Open in browser** opens the page. Linux builds have no web view, so pages open in the browser there. |
+| **Let pages run their scripts** | on | Off blocks every script in the page. |
+| **Let pages load from the network** | off | Off: scripts, styles, fonts, images and requests from the web are blocked, so a page can't send chat content anywhere; what is written into the page itself still works. Pages that load a library from a CDN need this on. |
+
+Links in a previewed page open in your browser, never in the panel.
+
 ## Tool calls
 
 **Run MCP tools and subagents without asking for approval** (default off).

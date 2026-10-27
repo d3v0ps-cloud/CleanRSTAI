@@ -7,13 +7,14 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::compaction::{self, Compaction};
 use crate::config::{GeneralSettings, ProviderConfig};
 use crate::llm::{self, Delta};
 use crate::mcp::manager::McpManager;
 use crate::subagent::{Delegation, SubagentReport};
-use crate::tools::workspace::Workspace;
+use crate::tools::workspace::{EditOptions, Workspace};
 use crate::tools::{self, ToolSelection, Toolbox};
-use crate::types::{ChatMessage, Role, ToolCall};
+use crate::types::{ChatMessage, CompactionInfo, Role, ToolCall};
 
 pub enum ChatEvent {
     /// A new, empty assistant message begins.
@@ -28,8 +29,20 @@ pub enum ChatEvent {
         call: ToolCall,
         /// The MCP server id and tool name behind the call; `None` for built-ins.
         origin: Option<(String, String)>,
+        /// For a workspace file write or edit: the change it would make, as a diff.
+        preview: Option<String>,
         respond: oneshot::Sender<bool>,
     },
+    /// The older messages are being summarised.
+    Compacting,
+    /// The messages before the last `kept` ones were summarised as `summary`.
+    Compacted {
+        kept: usize,
+        summary: String,
+        info: CompactionInfo,
+    },
+    /// The project instruction files added to the system prompt.
+    Instructions(Vec<String>),
     ToolRunning(String),
     /// Live progress of the subagents started by a `delegate` call.
     SubagentProgress {
@@ -121,6 +134,12 @@ pub struct AgentRequest {
     pub workspace: Option<std::path::PathBuf>,
     /// The Docker sandbox that runs the workspace shell tool, while it's on.
     pub sandbox: Option<crate::sandbox::Sandbox>,
+    /// The summary of the messages before `history`, from an earlier compaction.
+    pub summary: Option<String>,
+    /// How to compact the chat; `None` when compaction is off for it.
+    pub compaction: Option<Compaction>,
+    /// Only compact the chat now ("Compact now"), without asking the model anything else.
+    pub compact_only: bool,
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -148,12 +167,20 @@ pub async fn run(
             return;
         }
     };
+    let edits = &req.general.file_edits;
+    let workspace = workspace.map(|ws| {
+        ws.with_edit_options(EditOptions {
+            diff: edits.diff_preview,
+            checkpoint: req.selection.feature_on(tools::CHECKPOINTS),
+            max_checkpoint_bytes: u64::from(edits.max_file_kb) * 1024,
+        })
+    });
     // Shell commands run in the chat's sandbox container, when the sandbox is on.
     let workspace = match (workspace, &req.sandbox) {
         (Some(ws), Some(sandbox)) => Some(ws.with_sandbox(sandbox.clone(), req.conv_id)),
         (ws, _) => ws,
     };
-    let system_prompt = match &workspace {
+    let mut system_prompt = match &workspace {
         Some(ws) => format!(
             "{}\n\n{}",
             req.general.system_prompt.trim(),
@@ -161,6 +188,21 @@ pub async fn run(
         ),
         None => req.general.system_prompt.clone(),
     };
+    // AGENTS.md and the like, from the workspace.
+    if let Some(ws) = &workspace
+        && req.selection.feature_on(tools::INSTRUCTIONS)
+    {
+        let (root, settings) = (ws.path().to_path_buf(), req.general.instructions.clone());
+        let loaded =
+            tokio::task::spawn_blocking(move || crate::instructions::load(&root, &settings))
+                .await
+                .ok()
+                .flatten();
+        if let Some(loaded) = loaded {
+            system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), loaded.prompt);
+            emit(ChatEvent::Instructions(loaded.files));
+        }
+    }
     // Subagents may get the workspace too, with commands in containers of their own.
     let delegation = req.delegation.map(|d| d.with_workspace(workspace.as_ref()));
     let mut history = req.history;
@@ -190,6 +232,27 @@ pub async fn run(
         context_size = Some(n);
     }
     let prices = litellm.and_then(|m| m.prices);
+    let mut summary = req.summary;
+    let compaction = req.compaction;
+    // Set once a compaction failed, so the rest of the run doesn't try again every round.
+    let mut compaction_failed = false;
+
+    if req.compact_only {
+        match &compaction {
+            Some(c) => {
+                let tokens =
+                    compaction::estimate_tokens(&system_prompt, &history, &[], summary.is_none());
+                if let Err(e) =
+                    compact(c, &http, &mut history, &mut summary, tokens, true, &emit).await
+                {
+                    emit(ChatEvent::Error(e));
+                }
+            }
+            None => emit(ChatEvent::Error("Compaction isn't available.".into())),
+        }
+        emit(ChatEvent::Done);
+        return;
+    }
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
@@ -207,7 +270,45 @@ pub async fn run(
         } else {
             Toolbox::default()
         };
-        let messages = llm::to_api_messages(&system_prompt, &history);
+        // Summarise older messages when this request would fill most of the context.
+        if let Some(c) = compaction.as_ref().filter(|c| c.auto && !compaction_failed) {
+            let size = context_size
+                .filter(|&n| n > 0)
+                .or(Some(u64::from(c.settings.context_tokens)).filter(|&n| n > 0));
+            let tokens = compaction::estimate_tokens(
+                &system_prompt,
+                &history,
+                &toolbox.specs,
+                summary.is_none(),
+            );
+            if let Some(size) = size
+                && tokens * 100 >= size * u64::from(c.settings.threshold_percent)
+                && compaction::split_point(&history, c.settings.keep_recent as usize).is_some()
+                && let Err(e) =
+                    compact(c, &http, &mut history, &mut summary, tokens, false, &emit).await
+            {
+                compaction_failed = true;
+                emit(ChatEvent::Error(e));
+            }
+        }
+        let mut sent = history.clone();
+        if let Some(c) = compaction.as_ref().filter(|c| c.settings.trim_tool_results) {
+            compaction::trim_tool_results(
+                &mut sent,
+                c.settings.keep_recent as usize,
+                c.settings.trim_chars as usize,
+            );
+        }
+        let system = match &summary {
+            Some(s) => {
+                if sent.first().is_some_and(|m| m.role != Role::User) {
+                    sent.insert(0, ChatMessage::new(Role::User, compaction::CONTINUE_NOTE));
+                }
+                compaction::system_with_summary(&system_prompt, s)
+            }
+            None => system_prompt.clone(),
+        };
+        let messages = llm::to_api_messages(&system, &sent);
 
         emit(ChatEvent::AssistantStart);
         let result = llm::chat_completion(
@@ -274,16 +375,30 @@ pub async fn run(
         }
 
         for call in &calls {
-            let approved = if req.general.auto_approve_tools || !Toolbox::needs_approval(&call.name)
-            {
+            let approved = if req.general.auto_approve_tools || !toolbox.asks(&call.name) {
                 true
             } else {
+                let preview = match &workspace {
+                    Some(ws) if req.general.file_edits.diff_preview => {
+                        let (ws, name, args) =
+                            (ws.clone(), call.name.clone(), call.arguments.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let args = serde_json::from_str(&args).ok()?;
+                            ws.preview(&name, &args)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    _ => None,
+                };
                 let (respond, rx) = oneshot::channel();
                 emit(ChatEvent::ToolApproval {
                     call: call.clone(),
                     origin: toolbox
                         .origin(&call.name)
                         .map(|(server, tool)| (server.to_owned(), tool.to_owned())),
+                    preview,
                     respond,
                 });
                 rx.await.unwrap_or(false)
@@ -315,6 +430,7 @@ pub async fn run(
                         let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
                         msg.attachments = out.images;
                         msg.sandbox = out.sandbox;
+                        msg.edit = out.edit;
                         msg
                     }
                 }
@@ -326,6 +442,41 @@ pub async fn run(
         }
     }
     emit(ChatEvent::Done);
+}
+
+/// Summarise the messages before the kept ones, and drop them from `history`. `tokens` is the
+/// estimate that set it off, kept on the marker. `manual` when started with "Compact now".
+async fn compact(
+    c: &Compaction,
+    http: &reqwest::Client,
+    history: &mut Vec<ChatMessage>,
+    summary: &mut Option<String>,
+    tokens: u64,
+    manual: bool,
+    emit: &impl Fn(ChatEvent),
+) -> Result<(), String> {
+    let Some(split) = compaction::split_point(history, c.settings.keep_recent as usize) else {
+        return Err("Nothing to compact yet: the chat is shorter than the messages kept.".into());
+    };
+    emit(ChatEvent::Compacting);
+    let mut new = compaction::summarise(http, c, summary.as_deref(), &history[..split])
+        .await
+        .map_err(|e| format!("Couldn't compact the chat: {e:#}"))?;
+    if let Some(tasks) = compaction::carried_tasks(&history[..split], &history[split..]) {
+        new = format!("{new}\n\n{tasks}");
+    }
+    history.drain(..split);
+    *summary = Some(new.clone());
+    emit(ChatEvent::Compacted {
+        kept: history.len(),
+        summary: new,
+        info: CompactionInfo {
+            messages: split,
+            tokens_before: tokens,
+            manual,
+        },
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -413,6 +564,9 @@ mod tests {
             delegation: None,
             workspace: None,
             sandbox: None,
+            summary: None,
+            compaction: None,
+            compact_only: false,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -492,6 +646,9 @@ mod tests {
             selection,
             workspace: None,
             sandbox: None,
+            summary: None,
+            compaction: None,
+            compact_only: false,
         }
     }
 
@@ -665,6 +822,7 @@ mod tests {
                 tools::CALCULATE,
                 tools::TASKS,
                 tools::FETCH,
+                tools::WEB_SEARCH,
                 tools::DELEGATE
             ]
         );
@@ -699,7 +857,10 @@ mod tests {
             .iter()
             .map(|t| t["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, [tools::TIME, tools::TASKS, tools::FETCH]);
+        assert_eq!(
+            names,
+            [tools::TIME, tools::TASKS, tools::FETCH, tools::WEB_SEARCH]
+        );
         // A call to a tool that is off for this chat is refused, not run.
         let mut result = None;
         while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
@@ -765,6 +926,274 @@ mod tests {
             result.content.contains("## Subagent 2\nTask: second"),
             "{}",
             result.content
+        );
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-{tag}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Collect a run's events, answering approvals with `true`.
+    async fn drive(req: AgentRequest) -> Vec<ChatEvent> {
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+        let mut events = Vec::new();
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            let done = matches!(event, ChatEvent::Done);
+            match event {
+                ChatEvent::ToolApproval {
+                    call,
+                    origin,
+                    preview,
+                    respond,
+                } => {
+                    respond.send(true).unwrap();
+                    let (tx, _) = oneshot::channel();
+                    events.push(ChatEvent::ToolApproval {
+                        call,
+                        origin,
+                        preview,
+                        respond: tx,
+                    });
+                }
+                other => events.push(other),
+            }
+            if done {
+                break;
+            }
+        }
+        agent.await.unwrap();
+        events
+    }
+
+    #[tokio::test]
+    async fn project_instructions_join_the_system_prompt_unless_switched_off() {
+        let dir = temp_dir("agent-ins");
+        std::fs::write(dir.join("AGENTS.md"), "Always run cargo fmt.").unwrap();
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.clone());
+        let events = drive(req).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Instructions(f) if f == &["AGENTS.md"]))
+        );
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(system.contains("Always run cargo fmt."), "{system}");
+
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::feature_key(tools::INSTRUCTIONS),
+            false,
+            true,
+        );
+        let mut req = request(&base, &settings, &ov);
+        req.workspace = Some(dir.clone());
+        let events = drive(req).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Instructions(_)))
+        );
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("cargo fmt"), "{system}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_edits_show_a_diff_before_approval_and_keep_a_checkpoint() {
+        let dir = temp_dir("agent-edit");
+        std::fs::write(dir.join("a.txt"), "hello world\n").unwrap();
+        let (base, _) = tool_calling_llm(
+            tools::workspace::EDIT_FILE,
+            r#"{"path": "a.txt", "old_string": "world", "new_string": "there"}"#,
+        )
+        .await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.clone());
+        let events = drive(req).await;
+        let preview = events
+            .iter()
+            .find_map(|e| match e {
+                ChatEvent::ToolApproval { preview, .. } => preview.clone(),
+                _ => None,
+            })
+            .expect("the approval carries a diff");
+        assert!(
+            preview.contains("-hello world\n+hello there\n"),
+            "{preview}"
+        );
+        let result = events
+            .iter()
+            .find_map(|e| match e {
+                ChatEvent::ToolResult(m) => Some(m.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let edit = result.edit.expect("the result records the edit");
+        assert!(edit.checkpoint);
+        assert_eq!(edit.before.as_deref(), Some("hello world\n"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "hello there\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A mock model that answers "ok", or writes a summary when asked for one.
+    async fn summarising_llm() -> (String, Arc<std::sync::Mutex<Vec<Request>>>) {
+        serve(|r| {
+            let body = r.json();
+            let system = body["messages"][0]["content"].as_str().unwrap_or("");
+            let text = if system.starts_with("Summarise the conversation") {
+                "SUMMARY-NOTES"
+            } else {
+                "ok"
+            };
+            Response::json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
+            }))
+        })
+        .await
+    }
+
+    fn long_history(turns: usize) -> Vec<ChatMessage> {
+        let mut h = Vec::new();
+        for i in 0..turns {
+            h.push(ChatMessage::new(
+                Role::User,
+                format!("question {i} {}", "x".repeat(400)),
+            ));
+            h.push(ChatMessage::new(Role::Assistant, format!("answer {i}")));
+        }
+        h.push(ChatMessage::new(Role::User, "latest question"));
+        h
+    }
+
+    fn with_compaction(req: &mut AgentRequest, settings: &crate::config::Settings) {
+        req.compaction = Some(Compaction {
+            settings: settings.general.compaction.clone(),
+            provider: req.provider.clone(),
+            auto: true,
+        });
+    }
+
+    #[tokio::test]
+    async fn compacts_when_the_context_fills_up_and_sends_the_summary() {
+        let (base, log) = summarising_llm().await;
+        let mut settings = crate::config::Settings::default();
+        settings.general.compaction.context_tokens = 1000;
+        settings.general.compaction.keep_recent = 3;
+        let mut req = request(&base, &settings, &Default::default());
+        req.history = long_history(6);
+        with_compaction(&mut req, &settings);
+        let events = drive(req).await;
+        let (kept, summary) = events
+            .iter()
+            .find_map(|e| match e {
+                ChatEvent::Compacted {
+                    kept,
+                    summary,
+                    info,
+                } => {
+                    assert_eq!(info.messages, 10);
+                    assert!(!info.manual);
+                    Some((*kept, summary.clone()))
+                }
+                _ => None,
+            })
+            .expect("compacted");
+        assert_eq!((kept, summary.as_str()), (3, "SUMMARY-NOTES"));
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 2, "one summary request, then the reply");
+        let reply = log[1].json();
+        let msgs = reply["messages"].as_array().unwrap();
+        let system = msgs[0]["content"].as_str().unwrap();
+        assert!(
+            system.contains("<summary_of_earlier_conversation>\nSUMMARY-NOTES"),
+            "{system}"
+        );
+        // The system prompt, then the kept messages; they start with the user's, so no note.
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(
+            msgs[1]["content"],
+            format!("question 5 {}", "x".repeat(400))
+        );
+        assert_eq!(msgs[3]["content"], "latest question");
+    }
+
+    #[tokio::test]
+    async fn no_compaction_below_the_threshold_or_when_switched_off() {
+        let (base, log) = summarising_llm().await;
+        let mut settings = crate::config::Settings::default();
+        settings.general.compaction.context_tokens = 100_000;
+        let mut req = request(&base, &settings, &Default::default());
+        req.history = long_history(6);
+        with_compaction(&mut req, &settings);
+        let events = drive(req).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Compacted { .. }))
+        );
+        assert_eq!(log.lock().unwrap().len(), 1);
+
+        // Off for the chat (no compaction), however full the context.
+        let (base, log) = summarising_llm().await;
+        settings.general.compaction.context_tokens = 100;
+        let mut req = request(&base, &settings, &Default::default());
+        req.history = long_history(6);
+        drive(req).await;
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compact_now_only_summarises_and_a_short_chat_says_so() {
+        let (base, log) = summarising_llm().await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        req.history = long_history(6);
+        req.summary = Some("OLDER".into());
+        req.compact_only = true;
+        with_compaction(&mut req, &settings);
+        let events = drive(req).await;
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::Compacted { info, kept, .. } if info.manual && *kept == 6)
+        ));
+        let (len, asked) = {
+            let log = log.lock().unwrap();
+            let asked = log[0].json()["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            (log.len(), asked)
+        };
+        assert_eq!(len, 1, "no reply, only the summary");
+        assert!(asked.contains("<earlier_summary>\nOLDER"), "{asked}");
+
+        let (base, _) = summarising_llm().await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.compact_only = true;
+        with_compaction(&mut req, &settings);
+        let events = drive(req).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Error(m) if m.starts_with("Nothing to compact")))
         );
     }
 

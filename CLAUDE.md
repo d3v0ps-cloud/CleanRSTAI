@@ -23,6 +23,10 @@ self-hosted runners (Gentoo Linux x64, Mac mini ARM64, DARKBASE Windows x64). A 
 `$CARGO_HOME/bin` first on `PATH` because the Gentoo box has an older system Rust (skipped on
 Windows). The runners are persistent machines, so the release workflow installs tools once
 (WiX into the runner's tool cache) and removes signing certificates in always-run steps.
+For the same reason both workflows build into a persistent `CARGO_TARGET_DIR` in the runner's
+tool cache (`.github/actions/cargo-target`, cleared when `rustc -vV` changes or past 30 GiB)
+instead of using the GitHub Actions cache, so paths in the release steps use
+`$CARGO_TARGET_DIR`, not `target/`.
 `.github/workflows/sandbox-image.yml` builds `assets/sandbox/full.Dockerfile` (amd64 + arm64 via
 QEMU, on any self-hosted Linux x64 runner with Docker) and pushes
 `ghcr.io/<owner>/cleanrstai-sandbox` (`full`/`latest` from main, `full-dev` from dev, plus
@@ -90,19 +94,40 @@ any tool calls and loops until the model answers without tools or hits `max_tool
 The toolbox is rebuilt every round so MCP servers that finish connecting are picked up.
 
 **Tools** (`tools/mod.rs`): a `Toolbox` for one request combines:
-- built-ins named `builtin__*` (time, calculate, update_tasks, fetch, delegate);
+- built-ins named `builtin__*` (time, calculate, update_tasks, fetch, web_search, delegate;
+  `tools/search.rs` asks DuckDuckGo's HTML page, SearXNG, Brave or Tavily with the app's own
+  client, since the service comes from Settings, never the model);
 - workspace tools with plain names (`read_file`, `file_glob_search`, `grep_search`,
   `get_info`, `write_file`, `edit_file`, `exec_shell_command`, in `tools/workspace.rs`),
   offered only when the chat has a `workspace` folder;
 - MCP tools routed as `<server>__<tool>` by `mcp::manager::ToolRouter`.
 
 `ToolSelection` resolves what is on: Settings defaults plus per-chat `ToolOverrides` keyed
-`builtin:<key>`, `server:<id>`, `tool:<server id>:<tool>`. `Toolbox::needs_approval` decides
-which calls ask first (MCP tools, `delegate`, `fetch`, and the workspace tools that write or
-run commands); everything else runs directly. Workspace paths are confined to the chosen
+`builtin:<key>`, `server:<id>`, `tool:<server id>:<tool>` (and `feature:<key>`, below).
+`Toolbox::needs_approval` decides which calls ask first (MCP tools, `delegate`, `fetch`,
+`web_search`, and the workspace tools that write or run commands; `Toolbox::asks` lets web
+search follow its own setting); everything else runs directly. Workspace paths are confined to the chosen
 folder (`..`, outside absolute paths and symlinks out are refused). `fetch` reaches only
 public addresses (its own client with a filtering DNS resolver and redirect policy) unless
 `fetch_private_networks` is on; tests against `testutil::serve` turn that on.
+
+**Chat features** (per-chat switches keyed `feature:<key>` in `ToolOverrides`, defaults in
+`GeneralSettings`, listed in `tools::FEATURES`):
+- `compaction.rs`: before each round `agent::run` estimates the request's tokens (the last
+  reply's server count plus chars/4, or chars/4 alone once a summary exists) and, past the
+  threshold of the context size (reported, or `compaction.context_tokens`), summarises
+  everything before `split_point` (which keeps tool results with their call). The app stores a
+  `Role::System` marker message with `compaction: Some(..)` whose content is the summary;
+  `start_run` sends only the messages after the latest marker and the summary goes into the
+  system prompt (`system_with_summary`, plus `CONTINUE_NOTE` when the kept part doesn't start
+  with a user message). "Compact now" is a run with `compact_only`.
+- `instructions.rs`: `AGENTS.md`/`CLAUDE.md` (configurable) from the workspace, appended to the
+  system prompt; `ChatEvent::Instructions` tells the tools menu which files were read.
+- `checkpoints.rs` with `tools::workspace`: `write_file`/`edit_file` go through
+  `Workspace::plan`, so the approval prompt's diff (`Workspace::preview`, carried on
+  `PendingApproval::preview`) and the edit match; the result's `ChatMessage::edit` (`FileEdit`)
+  holds the diff, the previous content and the SHA-256 of what was written. Undo restores a
+  turn newest first and skips files whose hash changed; `prune` drops old checkpoints.
 
 **Approvals** (`approval.rs`): the agent sends `ChatEvent::ToolApproval` with a oneshot
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers
@@ -205,7 +230,11 @@ which `ChatApp::server_status` refreshes in the background as an `AppEvent::Serv
   range for one-line links (`artifact_panel::card`, expandable inline), so both parse with
   `artifacts::markdown_options`. `ui/artifact_panel.rs` is the right-hand panel; `ChatApp`
   keeps the open `ArtifactView` and the chat's artifact list, re-found when messages change.
-  HTML isn't rendered in the app: "Open in browser" writes a temp file.
+  `ui/webview.rs` previews HTML live on macOS and Windows: a `wry` child web view (a
+  target-specific dependency; none on Linux, where "Open in browser" writes a temp file)
+  placed over the area `artifact_panel::show` returns, with a CSP `<meta>` from
+  `HtmlPreviewSettings`. It is a native window above egui, so `ChatApp::ui` hides it while
+  settings, the palette, a popup, a dialog or a file drop could cover it.
 - Widget ids inside a reply are scoped by message index (`push_id`), and tool results are
   matched to the tool messages that directly follow their assistant message, because some
   servers reuse call ids like `call_0` across turns.

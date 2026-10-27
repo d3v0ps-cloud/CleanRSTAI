@@ -61,6 +61,8 @@ pub mod icon {
     pub const CARET_RIGHT: &str = "\u{E13A}";
     pub const IMAGE: &str = "\u{E2CA}";
     pub const FLOW: &str = "\u{E67C}";
+    pub const UNDO: &str = "\u{E038}";
+    pub const STACK: &str = "\u{E466}";
 }
 
 /// The colours of one mode. Every text colour (ink to error) reads at WCAG AA contrast,
