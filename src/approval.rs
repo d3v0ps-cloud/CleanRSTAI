@@ -34,6 +34,8 @@ pub struct PendingApproval {
     pub origin: Option<(String, String)>,
     /// The server's display name, for the "Always allow" button.
     pub server_name: Option<String>,
+    /// For a workspace file write or edit: the change it would make, as a diff.
+    pub preview: Option<String>,
     respond: oneshot::Sender<bool>,
 }
 
@@ -48,8 +50,15 @@ impl PendingApproval {
             call,
             origin,
             server_name,
+            preview: None,
             respond,
         }
+    }
+
+    /// The diff shown on the prompt.
+    pub fn with_preview(mut self, preview: Option<String>) -> Self {
+        self.preview = preview;
+        self
     }
 
     pub fn answer(self, run: bool) {

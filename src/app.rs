@@ -42,6 +42,8 @@ pub(crate) struct Run {
     pub(crate) live_stats: Option<crate::stats::RequestStats>,
     /// Live subagent progress, by `delegate` call id.
     pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
+    /// Older messages are being summarised.
+    pub(crate) compacting: bool,
 }
 
 pub(crate) enum Action {
@@ -57,6 +59,8 @@ pub(crate) enum Action {
     CloseArtifact,
     SaveArtifact(crate::artifacts::Artifact),
     OpenArtifactInBrowser(crate::artifacts::Artifact),
+    /// Undo the file edits of the turn holding this message.
+    UndoTurn(Uuid, usize),
 }
 
 pub struct ChatApp {
@@ -81,6 +85,10 @@ pub struct ChatApp {
     artifact: Option<ArtifactView>,
     /// The open chat's artifacts, re-found when its messages change.
     artifacts: ArtifactList,
+    /// The project instruction files each chat's latest request read.
+    instructions: HashMap<Uuid, Vec<String>>,
+    /// The web view for live previews of web page artifacts.
+    html_preview: crate::ui::webview::HtmlPreview,
     settings_ui: Option<SettingsUi>,
     renaming: Option<(Uuid, String)>,
     search: String,
@@ -314,6 +322,8 @@ impl ChatApp {
             drawings: Default::default(),
             artifact: None,
             artifacts: ArtifactList::default(),
+            instructions: HashMap::new(),
+            html_preview: Default::default(),
             settings_ui: None,
             renaming: None,
             search: String::new(),
@@ -478,6 +488,12 @@ impl ChatApp {
 
         let mut changes: Vec<(String, bool, bool)> = Vec::new();
         let mut reset = false;
+        let mut compact = false;
+        let loaded = self
+            .current
+            .and_then(|id| self.instructions.get(&id))
+            .cloned()
+            .unwrap_or_default();
         let dark = ui.visuals().dark_mode;
         let label =
             RichText::new(format!("{}  {}", icon::SLIDERS, builtins_on + mcp_on)).size(14.0);
@@ -511,6 +527,7 @@ impl ChatApp {
                                     "calculator" => icon::CALCULATOR,
                                     "tasks" => icon::LIST_CHECKS,
                                     "fetch" => icon::GLOBE,
+                                    "web_search" => icon::SEARCH,
                                     _ => icon::ROBOT,
                                 };
                                 if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
@@ -540,6 +557,55 @@ impl ChatApp {
                                         ));
                                     }
                                 }
+                            }
+                            ui.add_space(4.0);
+                            ui.separator();
+                            ui.label(RichText::new("Chat features").small().weak());
+                            for (key, name, desc) in crate::tools::FEATURES {
+                                let mut on = sel.feature_on(key);
+                                let ic = match key {
+                                    crate::tools::COMPACTION => icon::STACK,
+                                    crate::tools::INSTRUCTIONS => icon::FILE,
+                                    _ => icon::UNDO,
+                                };
+                                let mut hover = desc.to_owned();
+                                if key == crate::tools::INSTRUCTIONS && !loaded.is_empty() {
+                                    hover.push_str(&format!(". Last read: {}", loaded.join(", ")));
+                                }
+                                if ui
+                                    .checkbox(&mut on, format!("{ic}  {name}"))
+                                    .on_hover_text(hover)
+                                    .changed()
+                                {
+                                    changes.push((
+                                        ToolOverrides::feature_key(key),
+                                        on,
+                                        sel.feature_default(key),
+                                    ));
+                                }
+                                if key == crate::tools::INSTRUCTIONS && on && !loaded.is_empty() {
+                                    ui.indent("instructions-loaded", |ui| {
+                                        ui.label(
+                                            RichText::new(format!("Read: {}", loaded.join(", ")))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    });
+                                }
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.current.is_some_and(|id| !self.runs.contains_key(&id)),
+                                    egui::Button::new(format!("{}  Compact now", icon::STACK))
+                                        .small(),
+                                )
+                                .on_hover_text(
+                                    "Summarise this chat's older messages now; the latest ones \
+                                     are kept word for word",
+                                )
+                                .clicked()
+                            {
+                                compact = true;
                             }
                             for (id, name) in &servers {
                                 ui.add_space(4.0);
@@ -613,6 +679,12 @@ impl ChatApp {
         if reset {
             self.reset_tool_overrides();
         }
+        if compact
+            && let Some(id) = self.current
+            && let Err(e) = self.compact_now(id, &ui.ctx().clone())
+        {
+            self.notice = Some(e);
+        }
     }
 
     fn delete_chat(&mut self, id: Uuid) {
@@ -676,25 +748,44 @@ impl ChatApp {
     }
 
     fn start_run(&mut self, id: Uuid, ctx: &egui::Context) {
+        self.start_run_with(id, ctx, false);
+    }
+
+    /// Starts a reply in a chat, or with `compact_only` only summarises its older messages.
+    fn start_run_with(&mut self, id: Uuid, ctx: &egui::Context, compact_only: bool) {
         let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
             return;
         };
         self.errors.remove(&id);
         let selection = ToolSelection::new(&self.settings, &conv.tool_overrides);
+        // After a compaction only its summary and the messages since are sent.
+        let marker = crate::types::last_compaction(&conv.messages);
+        let summary = marker.map(|i| conv.messages[i].content.clone());
+        let from = marker.map_or(0, |i| i + 1);
+        let provider = self.settings.provider().clone();
+        let compaction = (compact_only || selection.feature_on(tools::COMPACTION)).then(|| {
+            crate::compaction::Compaction {
+                settings: self.settings.general.compaction.clone(),
+                provider: self.settings.compaction_provider(&provider),
+                auto: selection.feature_on(tools::COMPACTION),
+            }
+        });
         let req = AgentRequest {
             conv_id: id,
-            provider: self.settings.provider().clone(),
+            provider,
             general: self.settings.general.clone(),
-            history: conv
-                .messages
+            history: conv.messages[from..]
                 .iter()
-                .filter(|m| !m.cancelled)
+                .filter(|m| !m.cancelled && m.compaction.is_none())
                 .cloned()
                 .collect(),
             delegation: Delegation::new(&self.settings, &selection),
             selection,
             workspace: conv.workspace.clone(),
             sandbox: self.sandbox.clone(),
+            summary,
+            compaction,
+            compact_only,
         };
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
@@ -713,8 +804,54 @@ impl ChatApp {
                 running_tool: None,
                 live_stats: None,
                 subagents: HashMap::new(),
+                compacting: false,
             },
         );
+    }
+
+    /// Summarise a chat's older messages now.
+    fn compact_now(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
+        if self.runs.contains_key(&id) {
+            return Err("A reply is still running in this chat".into());
+        }
+        let conv = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("Chat not found")?;
+        let from = crate::types::last_compaction(&conv.messages).map_or(0, |i| i + 1);
+        let n = conv.messages[from..]
+            .iter()
+            .filter(|m| !m.cancelled && m.compaction.is_none())
+            .count();
+        if n <= self.settings.general.compaction.keep_recent as usize {
+            return Err(format!(
+                "Nothing to compact yet: the chat has {n} message(s) since the last summary, \
+                 and the latest {} are always kept (Settings → Context).",
+                self.settings.general.compaction.keep_recent
+            ));
+        }
+        self.start_run_with(id, ctx, true);
+        Ok(())
+    }
+
+    /// Undo the file edits of the turn holding message `idx`.
+    fn undo_turn(&mut self, id: Uuid, idx: usize) -> Result<String, String> {
+        if self.runs.contains_key(&id) {
+            return Err("Wait for the reply to finish first".into());
+        }
+        let conv = self.conv_mut(id).ok_or("Chat not found")?;
+        let root = conv
+            .workspace
+            .clone()
+            .ok_or("This chat has no working folder")?;
+        if idx >= conv.messages.len() {
+            return Err("Message not found".into());
+        }
+        let turn = crate::checkpoints::turn_of(&conv.messages, idx);
+        let report = crate::checkpoints::undo(&mut conv.messages, turn, &root);
+        conv.save();
+        Ok(report.summary())
     }
 
     /// Cancel a generation. The prompt it was answering stays in the chat, marked cancelled, so
@@ -943,6 +1080,7 @@ impl ChatApp {
             ChatEvent::ToolApproval {
                 call,
                 origin,
+                preview,
                 respond,
             } => {
                 let server_name = origin.as_ref().and_then(|(server, _)| {
@@ -952,7 +1090,8 @@ impl ChatApp {
                         .find(|s| &s.id == server)
                         .map(|s| s.name.clone())
                 });
-                let pending = PendingApproval::new(call, origin, server_name, respond);
+                let pending =
+                    PendingApproval::new(call, origin, server_name, respond).with_preview(preview);
                 if self
                     .always_allow
                     .get(&id)
@@ -984,11 +1123,25 @@ impl ChatApp {
                 self.errors.insert(id, e);
                 return;
             }
+            ChatEvent::Compacting => {
+                self.runs.get_mut(&id).unwrap().compacting = true;
+                return;
+            }
+            ChatEvent::Instructions(files) => {
+                self.instructions.insert(id, files);
+                return;
+            }
             _ => {}
         }
         let done = matches!(event, ChatEvent::Done);
         let is_tool_result = matches!(event, ChatEvent::ToolResult(_));
+        if matches!(event, ChatEvent::Compacted { .. })
+            && let Some(run) = self.runs.get_mut(&id)
+        {
+            run.compacting = false;
+        }
         let is_final = matches!(event, ChatEvent::AssistantFinal(_));
+        let keep_turns = self.settings.general.file_edits.keep_turns;
         let Some(conv) = self.conv_mut(id) else {
             return;
         };
@@ -1022,12 +1175,24 @@ impl ChatApp {
                 }
             }
             ChatEvent::ToolResult(msg) => conv.messages.push(*msg),
+            ChatEvent::Compacted {
+                kept,
+                summary,
+                info,
+            } => {
+                let at = compaction_marker_at(&conv.messages, kept);
+                let mut marker = ChatMessage::new(Role::System, summary);
+                marker.compaction = Some(info);
+                conv.messages.insert(at, marker);
+                conv.save();
+            }
             ChatEvent::Done => {
                 if conv.messages.last().is_some_and(|m| {
                     m.role == Role::Assistant && m.content.is_empty() && m.tool_calls.is_empty()
                 }) {
                     conv.messages.pop();
                 }
+                crate::checkpoints::prune(&mut conv.messages, keep_turns);
                 conv.updated_at = chrono::Utc::now();
                 conv.save();
             }
@@ -1073,6 +1238,9 @@ impl ChatApp {
 
     fn apply_settings(&mut self, new: Settings, ctx: &egui::Context) {
         let sandbox_before = self.settings.sandbox.clone();
+        if new.general.html_preview != self.settings.general.html_preview {
+            self.html_preview.reset();
+        }
         self.settings = new;
         self.settings.normalize();
         if self.settings.sandbox != sandbox_before {
@@ -1502,6 +1670,18 @@ impl ChatApp {
                 Command::ExportChatMarkdown,
             ),
             Entry::new(
+                icon::STACK,
+                "Compact this chat (summarise older messages)",
+                "Chat",
+                Command::CompactChat,
+            ),
+            Entry::new(
+                icon::UNDO,
+                "Undo the last turn's file edits",
+                "Chat",
+                Command::UndoLastEdits,
+            ),
+            Entry::new(
                 icon::SIDEBAR,
                 "Toggle sidebar",
                 "View",
@@ -1548,6 +1728,12 @@ impl ChatApp {
                 "Built-in tools",
                 "Settings",
                 Command::OpenSettings(Tab::Tools),
+            ),
+            Entry::new(
+                icon::STACK,
+                "Context & files",
+                "Settings",
+                Command::OpenSettings(Tab::Context),
             ),
             Entry::new(
                 icon::ROBOT,
@@ -1649,6 +1835,26 @@ impl ChatApp {
             Command::ExportChatMarkdown => {
                 if let Some(id) = self.current {
                     self.export_markdown(id);
+                }
+            }
+            Command::CompactChat => {
+                if let Some(id) = self.current
+                    && let Err(e) = self.compact_now(id, ctx)
+                {
+                    self.notice = Some(e);
+                }
+            }
+            Command::UndoLastEdits => {
+                if let Some(id) = self.current {
+                    let last = self
+                        .conversations
+                        .iter()
+                        .find(|c| c.id == id)
+                        .and_then(|c| c.messages.len().checked_sub(1));
+                    self.notice = Some(match last.map(|i| self.undo_turn(id, i)) {
+                        Some(Ok(msg)) | Some(Err(msg)) => msg,
+                        None => "This chat has no messages.".into(),
+                    });
                 }
             }
             Command::ExportSettings
@@ -2637,6 +2843,11 @@ impl ChatApp {
                         });
                     }
                 }
+                Action::UndoTurn(conv, idx) => {
+                    self.notice = Some(match self.undo_turn(conv, idx) {
+                        Ok(msg) | Err(msg) => msg,
+                    });
+                }
                 Action::OpenArtifactInBrowser(a) => {
                     if let Err(e) = crate::artifacts::open_in_browser(&a) {
                         self.notice = Some(format!("Couldn't open it in the browser: {e}"));
@@ -2999,6 +3210,21 @@ fn throttle(sent: &mut HashMap<Uuid, Instant>, id: Uuid, now: Instant) -> Option
 
 /// Drops the reply being regenerated and anything after the last user message, which is kept
 /// for the new reply. Nothing changes when there is no user message.
+/// Where a compaction marker goes so that `kept` messages (not counting cancelled prompts or
+/// earlier markers, which the agent never saw) follow it.
+fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
+    let mut seen = 0;
+    for (i, m) in messages.iter().enumerate().rev() {
+        if seen == kept {
+            return i + 1;
+        }
+        if !m.cancelled && m.compaction.is_none() {
+            seen += 1;
+        }
+    }
+    if seen == kept { 0 } else { messages.len() }
+}
+
 fn cut_for_regenerate(messages: &mut Vec<ChatMessage>) -> Result<(), String> {
     let last_user = messages
         .iter()
@@ -3178,8 +3404,10 @@ impl eframe::App for ChatApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Where the live preview of a web page goes this frame, if anywhere.
+        let mut web_area: Option<(egui::Rect, String)> = None;
 
         let dark = ui.visuals().dark_mode;
         if self.window_icon_dark != Some(dark) {
@@ -3216,6 +3444,15 @@ impl eframe::App for ChatApp {
 
         if !settings_open {
             let remote_images = self.settings.general.load_remote_images;
+            let live_html = if !crate::ui::webview::SUPPORTED {
+                Err("Web pages open in your browser: this build has no web view.")
+            } else if !self.settings.general.html_preview.enabled {
+                Err("Live preview is off (Settings → General); web pages open in your browser.")
+            } else if self.html_preview.error.is_some() {
+                Err("The web view couldn't start, so web pages open in your browser.")
+            } else {
+                Ok(())
+            };
             if let Some(view) = self
                 .artifact
                 .as_mut()
@@ -3223,7 +3460,7 @@ impl eframe::App for ChatApp {
             {
                 let mut actions = Vec::new();
                 let width = ui.available_width();
-                egui::Panel::right("artifact")
+                let panel = egui::Panel::right("artifact")
                     .resizable(true)
                     .default_size(width * 0.45)
                     .size_range(300.0..=(width * 0.7).max(300.0))
@@ -3240,9 +3477,11 @@ impl eframe::App for ChatApp {
                             view,
                             &self.artifacts.list,
                             remote_images,
+                            live_html,
                             &mut actions,
                         )
                     });
+                web_area = web_area.or(panel.inner);
                 self.apply_actions(actions, &ctx);
             }
             // A fresh chat shows the composer under the greeting instead.
@@ -3392,6 +3631,25 @@ impl eframe::App for ChatApp {
             self.run_command(cmd, &ctx);
         }
         self.focus_ring(&ctx);
+
+        // The web view is a native window above egui: show it only while nothing could be
+        // drawn over its area.
+        let covered = self.settings_ui.is_some()
+            || self.palette.open
+            || self.viewing.is_some()
+            || self.prompt_form.is_some()
+            || ctx.any_popup_open()
+            || ctx.input(|i| !i.raw.hovered_files.is_empty());
+        match web_area.filter(|_| !covered) {
+            Some((area, html)) => self.html_preview.show(
+                frame,
+                area,
+                ctx.pixels_per_point(),
+                &html,
+                &self.settings.general.html_preview,
+            ),
+            None => self.html_preview.hide(),
+        }
     }
 }
 
@@ -3513,6 +3771,7 @@ mod remote_tests {
             running_tool: None,
             live_stats: None,
             subagents: HashMap::new(),
+            compacting: false,
         }
     }
 
@@ -3594,6 +3853,31 @@ mod remote_tests {
         let (notify, _) = chat_notices(&[(a, 1)], &mut seen, &mut sent, quick);
         assert_eq!(notify, vec![b]);
         assert!(!seen.contains_key(&b) && !sent.contains_key(&b));
+    }
+
+    #[test]
+    fn compaction_marker_goes_before_the_kept_messages() {
+        let mut cancelled = ChatMessage::new(Role::User, "stopped");
+        cancelled.cancelled = true;
+        let mut marker = ChatMessage::new(Role::System, "old summary");
+        marker.compaction = Some(crate::types::CompactionInfo {
+            messages: 2,
+            tokens_before: 0,
+            manual: false,
+        });
+        let messages = vec![
+            ChatMessage::new(Role::User, "a"),
+            marker,
+            ChatMessage::new(Role::Assistant, "b"),
+            cancelled,
+            ChatMessage::new(Role::User, "c"),
+            ChatMessage::new(Role::Assistant, "d"),
+        ];
+        // The cancelled prompt and the old marker don't count.
+        assert_eq!(compaction_marker_at(&messages, 2), 4);
+        assert_eq!(compaction_marker_at(&messages, 3), 2);
+        assert_eq!(compaction_marker_at(&messages, 0), 6);
+        assert_eq!(compaction_marker_at(&messages, 4), 0);
     }
 
     #[test]

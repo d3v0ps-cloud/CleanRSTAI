@@ -10,10 +10,11 @@ opens on **General** and takes over the main window.
 
 | Page | What you can set |
 |---|---|
-| [General](general.html) | System prompt, theme, UI scale, send key, secrets, updates, reasoning display, stats, web images, tool approval, tool rounds and timeout, remote access and Cloudflare Tunnel, export and import |
+| [General](general.html) | System prompt, theme, UI scale, send key, secrets, updates, reasoning display, stats, web images, artifacts and live web page preview, tool approval, tool rounds and timeout, remote access and Cloudflare Tunnel, export and import |
 | [Providers](providers.html) | Endpoints: base URL, API key, model, temperature, max tokens, server type, token usage, streaming, timeout, extra headers |
 | [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
-| [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
+| [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch, web search (service, key, results) and workspace tools on or off by default |
+| [Context & files](context.html) | Context compaction (threshold, kept messages, context size, summary model and instructions, shortening older tool results), project instructions (`AGENTS.md`, `CLAUDE.md`), diffs and undo for file edits |
 | [Subagents](subagents.html) | Delegation on or off; provider and model; tools, including the workspace in sandbox containers of their own; parallelism and limits; system prompt |
 | [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or custom Dockerfile (small and full examples), network (none, normal, or allowed hosts, protocols and ports), CPU, memory and process limits, read-only folder |
 

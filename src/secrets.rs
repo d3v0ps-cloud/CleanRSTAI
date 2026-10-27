@@ -251,6 +251,10 @@ fn slots(settings: &mut Settings) -> Vec<(String, &mut String)> {
         "remote:tunnel_token".into(),
         &mut settings.general.remote.tunnel.token,
     ));
+    out.push((
+        "search:api_key".into(),
+        &mut settings.general.builtin_tools.search.api_key,
+    ));
     for s in &mut settings.mcp_servers {
         match &mut s.transport {
             McpTransportConfig::Stdio { env, .. } => {
@@ -501,9 +505,12 @@ pub mod tests {
         let mut settings = sample();
         settings.general.remote.password = "pw".into();
         settings.general.remote.tunnel.token = "tunnel-token".into();
+        settings.general.builtin_tools.search.api_key = "search-key".into();
         let accounts = externalize(&mut settings, &store).unwrap();
         assert!(accounts.contains(&"remote:password".to_string()));
         assert!(accounts.contains(&"remote:tunnel_token".to_string()));
+        assert!(accounts.contains(&"search:api_key".to_string()));
+        assert!(settings.general.builtin_tools.search.api_key.is_empty());
         assert!(settings.general.remote.password.is_empty());
         assert!(settings.general.remote.tunnel.token.is_empty());
         assert_eq!(
@@ -519,5 +526,6 @@ pub mod tests {
         assert!(internalize(&mut back, &store, &accounts).is_empty());
         assert_eq!(back.general.remote.password, "pw");
         assert_eq!(back.general.remote.tunnel.token, "tunnel-token");
+        assert_eq!(back.general.builtin_tools.search.api_key, "search-key");
     }
 }

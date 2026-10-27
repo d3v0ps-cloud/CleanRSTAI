@@ -52,6 +52,20 @@ const DEFAULT_SHELL_SECS: u64 = 120;
 const MAX_SHELL_SECS: u64 = 600;
 const MAX_LISTING: usize = 200;
 
+/// Diffs and checkpoints for `write_file` and `edit_file`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EditOptions {
+    /// Record the change as a unified diff.
+    pub diff: bool,
+    /// Keep the previous content so the change can be undone.
+    pub checkpoint: bool,
+    /// Files larger than this get no checkpoint.
+    pub max_checkpoint_bytes: u64,
+}
+
+/// Longest diff kept for one edit; a longer one is cut with a note.
+const MAX_DIFF_CHARS: usize = 200_000;
+
 /// A folder the model may work in.
 #[derive(Clone, Debug)]
 pub struct Workspace {
@@ -61,6 +75,7 @@ pub struct Workspace {
     sandbox: Option<Place>,
     /// A subagent's workspace: its writes and commands run without asking.
     subagent: bool,
+    edits: EditOptions,
 }
 
 impl Workspace {
@@ -75,7 +90,19 @@ impl Workspace {
             root,
             sandbox: None,
             subagent: false,
+            edits: EditOptions::default(),
         })
+    }
+
+    /// Record diffs and keep checkpoints for file writes and edits, as `edits` says.
+    pub fn with_edit_options(mut self, edits: EditOptions) -> Self {
+        self.edits = edits;
+        self
+    }
+
+    /// The canonical folder.
+    pub fn path(&self) -> &Path {
+        &self.root
     }
 
     /// Run shell commands in the Docker `sandbox`, in the container of `chat`.
@@ -92,6 +119,7 @@ impl Workspace {
             root: self.root.clone(),
             sandbox: Some(self.sandbox.as_ref()?.for_subagent()),
             subagent: true,
+            edits: self.edits,
         })
     }
 
@@ -236,10 +264,9 @@ impl Workspace {
     fn call_blocking(&self, function: &str, args: &Value) -> Result<ToolOutput> {
         let text = match function {
             READ_FILE => return self.read_file(args),
+            WRITE_FILE | EDIT_FILE => return self.change_file(function, args),
             GLOB => self.glob(args)?,
             GREP => self.grep(args)?,
-            WRITE_FILE => self.write_file(args)?,
-            EDIT_FILE => self.edit_file(args)?,
             INFO => self.info(args)?,
             other => bail!("'{other}' is not a workspace tool"),
         };
@@ -270,6 +297,7 @@ impl Workspace {
                     &bytes,
                 )],
                 sandbox: None,
+                edit: None,
             });
         }
         if is_binary(&bytes) {
@@ -410,29 +438,27 @@ impl Workspace {
         Ok(out)
     }
 
-    fn write_file(&self, args: &Value) -> Result<String> {
+    /// What a `write_file` or `edit_file` call would do, without doing it.
+    fn plan(&self, function: &str, args: &Value) -> Result<Plan> {
         let rel = str_arg(args, "path")?;
-        let content = args
-            .get("content")
-            .and_then(Value::as_str)
-            .context("missing \"content\"")?;
-        let path = self.writable(rel)?;
-        let existed = path.exists();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if function == WRITE_FILE {
+            let content = args
+                .get("content")
+                .and_then(Value::as_str)
+                .context("missing \"content\"")?;
+            let path = self.writable(rel)?;
+            let before = if path.exists() {
+                Before::Existing(std::fs::read(&path).ok())
+            } else {
+                Before::Missing
+            };
+            return Ok(Plan {
+                summary: String::new(),
+                path,
+                before,
+                after: content.to_owned(),
+            });
         }
-        std::fs::write(&path, content)?;
-        Ok(format!(
-            "{} {} ({} bytes, {} lines).",
-            if existed { "Overwrote" } else { "Created" },
-            self.show(&path),
-            content.len(),
-            content.lines().count()
-        ))
-    }
-
-    fn edit_file(&self, args: &Value) -> Result<String> {
-        let rel = str_arg(args, "path")?;
         let old = args
             .get("old_string")
             .and_then(Value::as_str)
@@ -463,18 +489,96 @@ impl Workspace {
             ),
             _ => {}
         }
-        let updated = if all {
+        let after = if all {
             text.replace(old, new)
         } else {
             text.replacen(old, new, 1)
         };
-        std::fs::write(&path, updated)?;
-        Ok(format!(
-            "Replaced {} occurrence{} in {}.",
-            n,
-            if n == 1 { "" } else { "s" },
-            self.show(&path)
-        ))
+        Ok(Plan {
+            summary: format!(
+                "Replaced {} occurrence{} in {}.",
+                n,
+                if n == 1 { "" } else { "s" },
+                self.show(&path)
+            ),
+            path,
+            before: Before::Existing(Some(text.into_bytes())),
+            after,
+        })
+    }
+
+    /// The diff a `write_file` or `edit_file` call would make, for the approval prompt.
+    /// `None` when the call would fail or the file isn't text.
+    pub fn preview(&self, function: &str, args: &Value) -> Option<String> {
+        if !matches!(function, WRITE_FILE | EDIT_FILE) {
+            return None;
+        }
+        let plan = self.plan(function, args).ok()?;
+        let before = match &plan.before {
+            Before::Missing => String::new(),
+            Before::Existing(bytes) => String::from_utf8(bytes.clone()?).ok()?,
+        };
+        Some(unified_diff(&self.show(&plan.path), &before, &plan.after))
+    }
+
+    fn change_file(&self, function: &str, args: &Value) -> Result<ToolOutput> {
+        let plan = self.plan(function, args)?;
+        let path = &plan.path;
+        let shown = self.show(path);
+        let before_text = match &plan.before {
+            Before::Existing(Some(bytes)) => String::from_utf8(bytes.clone()).ok(),
+            _ => None,
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, &plan.after)?;
+        let created = matches!(plan.before, Before::Missing);
+        let text = if function == WRITE_FILE {
+            format!(
+                "{} {} ({} bytes, {} lines).",
+                if created { "Created" } else { "Overwrote" },
+                shown,
+                plan.after.len(),
+                plan.after.lines().count()
+            )
+        } else {
+            plan.summary.clone()
+        };
+        // A checkpoint needs the old content as text, within the size limit (a new file
+        // always has one: undoing it deletes the file).
+        let fits = before_text
+            .as_ref()
+            .is_some_and(|t| t.len() as u64 <= self.edits.max_checkpoint_bytes);
+        let checkpoint = self.edits.checkpoint && (created || fits);
+        let diff = match (&before_text, created) {
+            _ if !self.edits.diff => String::new(),
+            (Some(before), _) => unified_diff(&shown, before, &plan.after),
+            (None, true) => unified_diff(&shown, "", &plan.after),
+            (None, false) => String::new(),
+        };
+        let edit = (self.edits.diff || self.edits.checkpoint).then(|| crate::types::FileEdit {
+            path: shown,
+            abs: path.clone(),
+            diff,
+            created,
+            before: if checkpoint && !created {
+                before_text
+            } else {
+                None
+            },
+            checkpoint,
+            after_sha256: if checkpoint {
+                sha256_hex(plan.after.as_bytes())
+            } else {
+                String::new()
+            },
+            undone: false,
+        });
+        Ok(ToolOutput {
+            edit,
+            ..super::text_output(text)
+        })
     }
 
     fn info(&self, args: &Value) -> Result<String> {
@@ -579,6 +683,7 @@ impl Workspace {
             is_error: !output.status.success(),
             images: Vec::new(),
             sandbox: None,
+            edit: None,
         })
     }
 
@@ -606,6 +711,7 @@ impl Workspace {
                 image: run.image,
                 container: run.container,
             }),
+            edit: None,
         })
     }
 }
@@ -886,6 +992,49 @@ fn base_spec(name: &str) -> ToolSpec {
         description: description.into(),
         parameters,
     }
+}
+
+/// A planned write: the file, what it holds now and what it will hold.
+struct Plan {
+    /// What an edit reports ("Replaced 1 occurrence in …"); empty for a write.
+    summary: String,
+    path: PathBuf,
+    before: Before,
+    after: String,
+}
+
+enum Before {
+    /// The file doesn't exist yet.
+    Missing,
+    /// Its bytes, or `None` when it couldn't be read.
+    Existing(Option<Vec<u8>>),
+}
+
+/// `before` → `after` as a unified diff with three lines of context, cut when very long.
+pub fn unified_diff(name: &str, before: &str, after: &str) -> String {
+    let diff = similar::TextDiff::from_lines(before, after);
+    let mut out = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("a/{name}"), &format!("b/{name}"))
+        .to_string();
+    if out.len() > MAX_DIFF_CHARS {
+        let mut end = MAX_DIFF_CHARS;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+        out.push_str("\n… (diff cut short)\n");
+    }
+    out
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[cfg(test)]

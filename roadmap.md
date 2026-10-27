@@ -143,7 +143,8 @@ source):
 - [x] Support for rendering SVGs in chat
 - [x] Artifacts: web pages, drawings, documents and longer code open in a side panel beside
   the chat, with preview and code tabs, versions, copy, save and "Open in browser"
-- [ ] Live HTML preview inside the panel (needs an embedded webview)
+- [x] Live HTML preview inside the panel, in an embedded web view (macOS and Windows; see
+  section 24)
 
 ## 8. Broader MCP support
 
@@ -255,24 +256,27 @@ in them follows the same rule:
 
 ## 15. Context management
 
-- [ ] Compact a chat automatically when it nears the model's context size: summarise the older
+- [x] Compact a chat automatically when it nears the model's context size: summarise the older
   turns and keep the recent ones and the task list
-- [ ] Settings: on/off, the threshold (percentage of the context), the model that summarises
-  (the chat's model, or a provider profile), the summary prompt, and how many recent turns to keep
-- [ ] A **Compact now** command (and ⌘K entry), and a marker in the chat where compaction
+- [x] Settings (**Context & files**): on/off, the threshold (percentage of the context), the
+  model that summarises (the chat's model, or a provider profile), the summary prompt, and how
+  many recent messages to keep; per chat in the tools menu
+- [x] A **Compact now** command (and ⌘K entry), and a marker in the chat where compaction
   happened, with the summary expandable
-- [ ] Optional trimming of old tool results (keep the call, drop the long output) as a cheaper
+- [x] Optional trimming of old tool results (keep the call, drop the long output) as a cheaper
   alternative, switched separately
-- [ ] Fall back to the context size from the provider (llama.cpp, LiteLLM, Ollama, …) or a
-  per-model setting when the server doesn't report one
+- [x] Use the context size the provider reports (llama.cpp, LiteLLM, Ollama, LM Studio, vLLM,
+  OpenRouter), or one set in Settings when the server doesn't report one
+- [ ] A context size per provider or model, instead of the one setting
+- [ ] Count compaction requests in the chat's stats and cost
 
 ## 16. Project instructions
 
-- [ ] Read `AGENTS.md` (and optionally `CLAUDE.md` and other names) from the chat's workspace
+- [x] Read `AGENTS.md` (and optionally `CLAUDE.md` and other names) from the chat's workspace
   folder and add it to the system prompt
-- [ ] Settings: on/off, the file names to look for and their order, whether to include files in
-  parent folders, and a size limit
-- [ ] Per chat: turn instruction files off, and see which file was loaded and when
+- [x] Settings: on/off, the file names to look for and their order, the first or every file
+  found, whether to include files in parent folders, and a size limit
+- [x] Per chat: turn instruction files off, and see which files the latest request read
 
 ## 17. Projects
 
@@ -291,11 +295,13 @@ in them follows the same rule:
 
 ## 19. Safe file edits
 
-- [ ] Show a diff on the approval card for `write_file` and `edit_file`, and after the edit in the
+- [x] Show a diff on the approval card for `write_file` and `edit_file`, and after the edit in the
   tool card
-- [ ] Checkpoints: keep the files' previous content for each turn, with **Undo this turn's edits**
-  and a list of changed files per chat
-- [ ] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep
+- [x] Checkpoints: keep the files' previous content for each turn, with **Undo file edits** under
+  the turn's reply (and in ⌘K); files changed again since are left alone
+- [ ] A list of the files a chat changed, with their diffs together
+- [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
+  in the tools menu
 - [ ] Optional Git awareness when the workspace is a repository: `git_status` and `git_diff`
   tools, and commit (with approval), each switched separately
 
@@ -310,11 +316,12 @@ in them follows the same rule:
 
 ## 21. Web search
 
-- [ ] A built-in `web_search` tool with a choice of backend (SearXNG, Brave, Tavily, Kagi, or the
-  provider's own search when it has one), with the API key in the keychain
-- [ ] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
+- [x] A built-in `web_search` tool with a choice of backend (DuckDuckGo without a key, SearXNG,
+  Brave, Tavily), with the API key in the keychain
+- [ ] More backends: Kagi, and the provider's own search when it has one
+- [x] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
   subagents may use it
-- [ ] Per chat: on/off in the tools menu, like the other built-in tools
+- [x] Per chat: on/off in the tools menu, like the other built-in tools
 
 ## 22. Conversation branching
 
@@ -335,8 +342,10 @@ in them follows the same rule:
 
 ## 24. Live HTML preview, voice and generated files
 
-- [ ] Live HTML preview in the artifact panel (the open item in section 7): a switch to keep
-  "Open in browser" only, and a setting for whether scripts may run
+- [x] Live HTML preview in the artifact panel on macOS (WebKit) and Windows (WebView2): a switch
+  to keep "Open in browser" only, and settings for whether scripts may run and whether the page
+  may load from the network (off by default); links open in the browser
+- [ ] Live HTML preview on Linux (WebKitGTK, which the release builds don't link yet)
 - [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
