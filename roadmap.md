@@ -239,6 +239,142 @@ Run the commands and code the model triggers inside a local Docker container, no
 - [x] Show in the chat which container ran a command, with its exit code and output
 - [x] Document the Docker settings and what the sandbox does and doesn't protect against
 
+## Features from Claude Desktop and Codex
+
+Sections 15–27 come from comparing CleanRSTAI with Claude Desktop and Codex. Every feature
+in them follows the same rule:
+
+- Each one has a switch in Settings and its own options there (limits, prompts, models, paths),
+  with a sensible default.
+- Each one that acts on a chat can also be turned on or off for that chat. Use the tools menu
+  next to the message box, or the chat's menu. As with tools, Settings keeps the default for
+  new chats.
+- Turning a feature off removes its UI and its tools and changes nothing else. Data it saved
+  (memories, checkpoints, branches) stays until the user deletes it.
+- Each one is documented on the matching settings page, with its default and ranges.
+
+## 15. Context management
+
+- [ ] Compact a chat automatically when it nears the model's context size: summarise the older
+  turns and keep the recent ones and the task list
+- [ ] Settings: on/off, the threshold (percentage of the context), the model that summarises
+  (the chat's model, or a provider profile), the summary prompt, and how many recent turns to keep
+- [ ] A **Compact now** command (and ⌘K entry), and a marker in the chat where compaction
+  happened, with the summary expandable
+- [ ] Optional trimming of old tool results (keep the call, drop the long output) as a cheaper
+  alternative, switched separately
+- [ ] Fall back to the context size from the provider (llama.cpp, LiteLLM, Ollama, …) or a
+  per-model setting when the server doesn't report one
+
+## 16. Project instructions
+
+- [ ] Read `AGENTS.md` (and optionally `CLAUDE.md` and other names) from the chat's workspace
+  folder and add it to the system prompt
+- [ ] Settings: on/off, the file names to look for and their order, whether to include files in
+  parent folders, and a size limit
+- [ ] Per chat: turn instruction files off, and see which file was loaded and when
+
+## 17. Projects
+
+- [ ] Group chats into projects with shared instructions, attached files and a default
+  workspace folder, provider, model and tool switches
+- [ ] Settings: on/off (off hides projects from the sidebar), and the default for new projects
+- [ ] Move chats in and out of a project; export and import projects with the chats
+
+## 18. Memory
+
+- [ ] Facts the model saves across chats (a `memory` built-in tool and a list in Settings),
+  added to the system prompt of new chats
+- [ ] Settings: on/off, saving with or without approval, a size limit, and global or per-project
+  scope
+- [ ] View, edit and delete memories in Settings; per chat: turn memory off (an "incognito" chat)
+
+## 19. Safe file edits
+
+- [ ] Show a diff on the approval card for `write_file` and `edit_file`, and after the edit in the
+  tool card
+- [ ] Checkpoints: keep the files' previous content for each turn, with **Undo this turn's edits**
+  and a list of changed files per chat
+- [ ] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep
+- [ ] Optional Git awareness when the workspace is a repository: `git_status` and `git_diff`
+  tools, and commit (with approval), each switched separately
+
+## 20. Approval modes
+
+- [ ] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
+  workspace** (writes and sandboxed commands run freely, the rest asks) and **Full access**
+- [ ] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
+  before it changes anything
+- [ ] Settings: the default mode and which modes are offered; per chat: pick the mode under
+  the message box (and with ⌘K)
+
+## 21. Web search
+
+- [ ] A built-in `web_search` tool with a choice of backend (SearXNG, Brave, Tavily, Kagi, or the
+  provider's own search when it has one), with the API key in the keychain
+- [ ] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
+  subagents may use it
+- [ ] Per chat: on/off in the tools menu, like the other built-in tools
+
+## 22. Conversation branching
+
+- [ ] Keep the old reply when regenerating and the old turns when editing a message, as
+  branches, with ‹ 1/3 › arrows to switch between them
+- [ ] Fork a chat from any message into a new chat
+- [ ] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
+  branches kept per message
+
+## 23. Model options
+
+- [ ] Reasoning effort and thinking budget per provider and model (`reasoning_effort`,
+  `thinking`, llama.cpp and vLLM options), with a switch under the message box per chat
+- [ ] Other sampling settings (temperature, top-p, max tokens, stop sequences) per provider,
+  model and chat, each left unset unless the user changes it
+- [ ] Optional native APIs alongside OpenAI-compatible chat completions: the Anthropic Messages
+  API (prompt caching, thinking) and the OpenAI Responses API, chosen per provider
+
+## 24. Live HTML preview, voice and generated files
+
+- [ ] Live HTML preview in the artifact panel (the open item in section 7): a switch to keep
+  "Open in browser" only, and a setting for whether scripts may run
+- [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
+  reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
+  and shortcut
+- [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
+
+## 25. Commands, skills and hooks
+
+- [ ] Slash commands: saved prompts with arguments, typed as `/name` in the message box, kept in
+  Settings and optionally in the workspace (`.cleanrstai/commands/`)
+- [ ] Skills: folders of instructions and files the model loads when a task matches, each
+  with its own on/off switch
+- [ ] Hooks: run a command before or after a tool call, or when a reply finishes (for example
+  a formatter after `edit_file`), each with its own switch, in the sandbox when it is on
+- [ ] Settings: each of the three on/off, and the list of commands, skills and hooks
+
+## 26. Headless and background work
+
+- [ ] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
+  settings and prints the reply, for scripts and CI; turned on in Settings, with its own
+  approval mode (read only by default)
+- [ ] Background tasks: start a request that keeps running when the chat is closed, and notify
+  when it finishes or needs approval
+- [ ] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
+- [ ] Settings: on/off for each, and limits (how many at once, time limit)
+
+## 27. Code review
+
+- [ ] **Review changes**: send the workspace's uncommitted diff, or a branch against its base,
+  to the model with a review prompt and show findings as a list
+- [ ] Settings: on/off, review prompt, model (the chat's or a provider profile) and how strict
+  to be
+
+Smaller items from the same comparison:
+
+- [ ] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
+  Settings
+- [ ] Share a chat as a single HTML file alongside the Markdown export
+
 ## Maintenance
 
 - [x] Move GitHub Actions off the deprecated Node.js 20 runtime
