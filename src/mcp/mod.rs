@@ -81,6 +81,8 @@ pub struct ToolOutput {
     pub images: Vec<crate::attach::Attachment>,
     /// The Docker sandbox container the command ran in, if it ran in one.
     pub sandbox: Option<crate::types::SandboxInfo>,
+    /// For a workspace file write or edit: what changed, and how to undo it.
+    pub edit: Option<crate::types::FileEdit>,
 }
 
 enum Transport {
@@ -675,6 +677,7 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
         is_error,
         images,
         sandbox: None,
+        edit: None,
     }
 }
 

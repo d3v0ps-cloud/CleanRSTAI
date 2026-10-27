@@ -16,7 +16,8 @@ nav_order: 2
 |---|---|
 | Settings | `settings.json` (see [Where settings are stored](../settings/#where-settings-are-stored)) |
 | Conversations | one JSON file per chat in the `conversations` folder |
-| API keys, header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
+| API keys (including the web search key), header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
+| Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
 
 On macOS and Linux, settings, export files and the remote access key are created readable only
@@ -30,8 +31,15 @@ when the server restarts ([Remote access](../using/remote-access.html)).
 
 - **Your messages and attachments** go to the provider you chose, along with the system
   prompt and the descriptions of the tools that are on.
-- **Tool calls**: MCP tools go to their servers; web fetch requests the URL the model chose.
-  Both ask for approval unless you turned that off.
+- **Tool calls**: MCP tools go to their servers; web fetch requests the URL the model chose;
+  web search sends the model's query to the search service chosen in
+  [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave and
+  Tavily also get your API key). They ask for approval unless you turned that off.
+- **Context compaction** sends the older messages of a long chat (shortened where they are
+  long) to the provider and model chosen in [Context & files](../settings/context.html), to
+  have them summarised.
+- **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
+  chat's workspace folder, go to the provider with the system prompt.
 - **Update checks** ask the [update source](../using/updates.html#update-source) for its latest
   release, at startup if enabled and when you check by hand.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
@@ -57,6 +65,9 @@ when the server restarts ([Remote access](../using/remote-access.html)).
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
   system's temporary folder and run in the browser, where a page can load anything it links to.
   The app only does this when you click **Open in browser**.
+- **Web pages previewed in the panel** (macOS and Windows) can't load anything from the network
+  unless **Let pages load from the network** is on in
+  [General](../settings/general.html#web-page-preview).
 
 Nothing else is sent: there is no telemetry.
 

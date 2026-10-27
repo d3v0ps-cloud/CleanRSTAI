@@ -81,13 +81,16 @@ impl Delegation {
         }
         let sa = &settings.subagents;
         // Subagents never get the task list or `delegate` (no recursion); the time,
-        // calculator and fetch tools only when allowed for subagents and on in this chat.
+        // calculator, fetch and web search tools only when allowed for subagents and on in
+        // this chat (web search also needs its own subagent switch).
         let mut selection = chat.clone();
         let force = |sel: &mut ToolSelection, key: &str, on: bool| {
             sel.overrides.0.insert(ToolOverrides::builtin_key(key), on);
         };
-        for key in ["time", "calculator", "fetch"] {
-            let on = sa.builtin_tools && chat.builtin_on(key);
+        for key in ["time", "calculator", "fetch", "web_search"] {
+            let on = sa.builtin_tools
+                && chat.builtin_on(key)
+                && (key != "web_search" || chat.builtins.search.subagents);
             force(&mut selection, key, on);
         }
         force(&mut selection, "tasks", false);
@@ -140,6 +143,7 @@ impl Delegation {
             ("time", "time"),
             ("calculator", "calculator"),
             ("fetch", "web fetch"),
+            ("web_search", "web search"),
         ]
         .into_iter()
         .filter(|(key, _)| self.selection.builtin_on(key))
@@ -457,6 +461,7 @@ fn summarize(reports: &[SubagentReport]) -> ToolOutput {
         is_error: reports.iter().all(|r| r.state != SubagentState::Done),
         images: Vec::new(),
         sandbox: None,
+        edit: None,
     }
 }
 

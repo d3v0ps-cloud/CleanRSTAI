@@ -1,6 +1,6 @@
 [package]
 name = "cleanrstai"
-version = "0.9.0"
+version = "0.9.1-dev.1"
 edition = "2024"
 rust-version = "1.95"
 description = "A cross-platform desktop AI chat client for OpenAI-compatible endpoints with MCP support"
@@ -25,7 +25,7 @@ rfd = "0.17"
 keyring = "4"
 egui_extras = { version = "0.37", features = ["image", "gif", "webp", "svg", "svg_text"] }
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
-pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 sha2 = "0.10"
@@ -33,6 +33,7 @@ html2text = "0.17"
 ignore = "0.4"
 globset = "0.4"
 regex = "1"
+similar = "2"
 open = "5"
 # Document attachments: text extraction for PDF, Office (OOXML and legacy binary),
 # OpenDocument and RTF files.
@@ -49,6 +50,12 @@ rcgen = "0.13"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The live preview of web page artifacts: WKWebView on macOS, WebView2 on Windows. Linux has
+# no preview (WebKitGTK would need GTK's event loop and system libraries the release builds
+# don't link), so web pages open in the browser there.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry = { version = "0.57", default-features = false }
 
 [profile.release]
 lto = "thin"

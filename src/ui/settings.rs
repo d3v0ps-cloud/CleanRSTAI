@@ -106,6 +106,7 @@ pub enum Tab {
     Providers,
     Mcp,
     Tools,
+    Context,
     Docker,
     Subagents,
 }
@@ -141,6 +142,7 @@ pub struct SettingsUi {
     selected_server: usize,
     show_key: bool,
     show_remote_password: bool,
+    show_search_key: bool,
     import_open: bool,
     import_text: String,
     import_error: Option<String>,
@@ -486,6 +488,104 @@ fn tunnel_rows(
     ui.end_row();
 }
 
+/// Weak text in a grid cell, wrapped at the width of the fields.
+fn weak_note(ui: &mut egui::Ui, text: &str) {
+    ui.scope(|ui| {
+        ui.set_max_width(FIELD_WIDTH);
+        ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
+    });
+}
+
+/// The web search tool's service and options (Settings → Built-in Tools).
+fn web_search_rows(
+    ui: &mut egui::Ui,
+    s: &mut crate::config::WebSearchSettings,
+    show_key: &mut bool,
+) {
+    use crate::config::SearchBackend;
+    ui.strong("Web search");
+    egui::Grid::new("web-search-grid")
+        .num_columns(2)
+        .spacing([12.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Service");
+            egui::ComboBox::from_id_salt("search-backend")
+                .selected_text(s.backend.label())
+                .width(FIELD_WIDTH)
+                .show_ui(ui, |ui| {
+                    for b in SearchBackend::ALL {
+                        ui.selectable_value(&mut s.backend, b, b.label());
+                    }
+                });
+            ui.end_row();
+
+            match s.backend {
+                SearchBackend::DuckDuckGo => {
+                    ui.label("");
+                    weak_note(
+                        ui,
+                        "No account or key. DuckDuckGo may ask for a human check when it sees \
+                         many searches; choose another service then.",
+                    );
+                    ui.end_row();
+                }
+                SearchBackend::Searxng => {
+                    ui.label("Instance");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut s.searxng_url)
+                            .hint_text("https://searx.example.org or http://localhost:8888")
+                            .desired_width(FIELD_WIDTH),
+                    )
+                    .on_hover_text(
+                        "The instance must allow JSON results: add `json` to `search.formats` \
+                         in its settings.yml",
+                    );
+                    ui.end_row();
+                }
+                SearchBackend::Brave | SearchBackend::Tavily => {
+                    ui.label("API key");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut s.api_key)
+                                .password(!*show_key)
+                                .desired_width(FIELD_WIDTH - 60.0),
+                        )
+                        .on_hover_text("Kept in the system keychain when that is on (General)");
+                        ui.checkbox(show_key, "Show");
+                    });
+                    ui.end_row();
+                }
+            }
+
+            ui.label("Results");
+            ui.add(
+                egui::DragValue::new(&mut s.max_results)
+                    .range(1..=crate::config::MAX_SEARCH_RESULTS)
+                    .suffix(" per search"),
+            )
+            .on_hover_text("The model may ask for more, up to 20");
+            ui.end_row();
+
+            ui.label("Options");
+            ui.vertical(|ui| {
+                ui.add_enabled(
+                    s.backend != SearchBackend::Tavily,
+                    egui::Checkbox::new(&mut s.safe_search, "Safe search"),
+                );
+                ui.checkbox(&mut s.ask, "Ask before each search")
+                    .on_hover_text(
+                        "The query leaves this computer and can contain parts of the chat. \
+                         Subagents and auto-approved calls never ask.",
+                    );
+                ui.checkbox(
+                    &mut s.subagents,
+                    "Subagents may search (when they may use the built-in tools)",
+                );
+            });
+            ui.end_row();
+        });
+}
+
 const PRESETS: &[(&str, &str)] = &[
     ("OpenAI", "https://api.openai.com/v1"),
     ("OpenRouter", "https://openrouter.ai/api/v1"),
@@ -520,6 +620,7 @@ impl SettingsUi {
             selected_server: 0,
             show_key: false,
             show_remote_password: false,
+            show_search_key: false,
             import_open: false,
             import_text: String::new(),
             import_error: None,
@@ -594,6 +695,7 @@ impl SettingsUi {
                         (Tab::Providers, "Providers"),
                         (Tab::Mcp, "MCP servers"),
                         (Tab::Tools, "Built-in tools"),
+                        (Tab::Context, "Context & files"),
                         (Tab::Docker, "Docker sandbox"),
                         (Tab::Subagents, "Subagents"),
                     ] {
@@ -664,6 +766,7 @@ impl SettingsUi {
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
                 Tab::Tools => "Built-in Tools",
+                Tab::Context => "Context & files",
                 Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
                 Tab::General => "General",
@@ -672,6 +775,7 @@ impl SettingsUi {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
+                Tab::Context => "Context compaction, project instructions from the workspace, and diffs and undo for file edits.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
@@ -681,6 +785,7 @@ impl SettingsUi {
                 Tab::Providers => self.providers_tab(ui, &mut actions),
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
+                Tab::Context => self.context_tab(ui),
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
@@ -1310,6 +1415,12 @@ impl SettingsUi {
                         "Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch.",
                     ),
                     (
+                        &mut b.web_search,
+                        icon::SEARCH,
+                        "Web search",
+                        "Searches the web with the service below and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
+                    ),
+                    (
                         &mut b.workspace,
                         icon::FOLDER,
                         "Workspace tools",
@@ -1338,11 +1449,300 @@ impl SettingsUi {
                         );
                     });
                 });
+                ui.add_space(12.0);
+                ui.add_enabled_ui(b.web_search, |ui| {
+                    web_search_rows(ui, &mut b.search, &mut self.show_search_key);
+                });
                 ui.add_space(8.0);
                 ui.weak(format!(
-                    "{}  The subagent tool has its own page: Subagents.",
+                    "{}  The subagent tool has its own page: Subagents. Context compaction, \
+                     project instructions and undo for file edits are on Context & files.",
                     icon::ROBOT
                 ));
+            });
+    }
+
+    fn context_tab(&mut self, ui: &mut egui::Ui) {
+        let providers: Vec<(String, String, Vec<String>)> = self
+            .draft
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone(), p.models.clone()))
+            .collect();
+        let g = &mut self.draft.general;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(
+                    "These are the defaults for new chats; switch each one for one chat under \
+                     Chat features in the tools menu next to the message box.",
+                );
+                ui.add_space(10.0);
+
+                // ---- compaction
+                let c = &mut g.compaction;
+                ui.checkbox(
+                    &mut c.enabled,
+                    egui::RichText::new(format!(
+                        "{}  Compact long chats automatically",
+                        icon::STACK
+                    ))
+                    .strong(),
+                );
+                ui.indent("compaction-help", |ui| {
+                    ui.weak(
+                        "When the next request would fill most of the model's context, the older \
+                         messages are summarised by a model and only the summary and the latest \
+                         messages are sent from then on. The chat keeps every message, with a \
+                         marker where the summary starts. \"Compact now\" in the tools menu and \
+                         the command palette works even when this is off.",
+                    );
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("compaction-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Compact at");
+                        ui.add(
+                            egui::Slider::new(&mut c.threshold_percent, 50..=95)
+                                .suffix("% of the context"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Keep word for word");
+                        ui.add(
+                            egui::DragValue::new(&mut c.keep_recent)
+                                .range(2..=50)
+                                .suffix(" latest messages"),
+                        )
+                        .on_hover_text(
+                            "Tool results stay with the call that asked for them, so a few more \
+                             may be kept",
+                        );
+                        ui.end_row();
+
+                        ui.label("Context size");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut c.context_tokens)
+                                    .range(0..=10_000_000)
+                                    .speed(256.0)
+                                    .suffix(" tokens"),
+                            );
+                            ui.weak(if c.context_tokens == 0 {
+                                "0: only when the server reports its size"
+                            } else {
+                                "used when the server doesn't report one"
+                            });
+                        })
+                        .response
+                        .on_hover_text(
+                            "llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter report \
+                             the context size; for other servers set the model's size here",
+                        );
+                        ui.end_row();
+
+                        ui.label("Summary by");
+                        let current = providers
+                            .iter()
+                            .find(|(id, ..)| *id == c.provider_id)
+                            .map_or("The chat's provider".to_owned(), |(_, n, _)| n.clone());
+                        egui::ComboBox::from_id_salt("compaction-provider")
+                            .selected_text(current)
+                            .width(FIELD_WIDTH)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut c.provider_id,
+                                    String::new(),
+                                    "The chat's provider",
+                                );
+                                for (id, name, _) in &providers {
+                                    ui.selectable_value(&mut c.provider_id, id.clone(), name);
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("Summary model");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut c.model)
+                                    .hint_text("the provider's selected model")
+                                    .desired_width(FIELD_WIDTH - 40.0),
+                            );
+                            let models = providers
+                                .iter()
+                                .find(|(id, ..)| *id == c.provider_id)
+                                .map(|(.., m)| m.clone())
+                                .unwrap_or_default();
+                            if !models.is_empty() {
+                                ui.menu_button(icon::CARET_DOWN, |ui| {
+                                    ui.set_max_height(320.0);
+                                    egui::ScrollArea::vertical().show(ui, |ui| {
+                                        for m in models {
+                                            if ui.button(&m).clicked() {
+                                                c.model = m;
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Older tool results");
+                        ui.vertical(|ui| {
+                            ui.checkbox(
+                                &mut c.trim_tool_results,
+                                "Shorten long results of older tool calls in what is sent",
+                            )
+                            .on_hover_text(
+                                "A cheaper step before a summary: results older than the kept \
+                                 messages are cut to the length below. The chat keeps them whole.",
+                            );
+                            ui.add_enabled(
+                                c.trim_tool_results,
+                                egui::DragValue::new(&mut c.trim_chars)
+                                    .range(200..=100_000)
+                                    .speed(50.0)
+                                    .suffix(" characters"),
+                            );
+                        });
+                        ui.end_row();
+                    });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Summary instructions");
+                    if c.prompt != crate::config::DEFAULT_COMPACTION_PROMPT
+                        && ui.small_button("Reset").clicked()
+                    {
+                        c.prompt = crate::config::DEFAULT_COMPACTION_PROMPT.into();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut c.prompt)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(16.0);
+
+                // ---- project instructions
+                let ins = &mut g.instructions;
+                ui.checkbox(
+                    &mut ins.enabled,
+                    egui::RichText::new(format!(
+                        "{}  Read project instructions from the workspace",
+                        icon::FILE
+                    ))
+                    .strong(),
+                );
+                ui.indent("instructions-help", |ui| {
+                    ui.weak(
+                        "When a chat has a working folder, files such as AGENTS.md (used by Codex \
+                         and others) or CLAUDE.md in it are added to the system prompt, so the \
+                         model follows the project's own conventions. The tools menu shows which \
+                         files the latest request read.",
+                    );
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("instructions-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("File names");
+                        let mut names = ins.file_names.join(", ");
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut names)
+                                    .hint_text("AGENTS.md, CLAUDE.md")
+                                    .desired_width(FIELD_WIDTH),
+                            )
+                            .on_hover_text("Looked for in this order, separated by commas")
+                            .changed()
+                        {
+                            // Empty names stay while typing (so a comma can be typed);
+                            // saving drops them.
+                            ins.file_names =
+                                names.split(',').map(|n| n.trim().to_owned()).collect();
+                        }
+                        ui.end_row();
+
+                        ui.label("Which files");
+                        ui.vertical(|ui| {
+                            ui.radio_value(&mut ins.all_files, false, "The first one found");
+                            ui.radio_value(&mut ins.all_files, true, "Every one found, in order");
+                        });
+                        ui.end_row();
+
+                        ui.label("Parent folders");
+                        ui.checkbox(
+                            &mut ins.parent_folders,
+                            "Also read them from the folders above the workspace",
+                        )
+                        .on_hover_text(
+                            "Outermost first, so the workspace's own file reads as the most \
+                             specific",
+                        );
+                        ui.end_row();
+
+                        ui.label("Size limit");
+                        ui.add(
+                            egui::DragValue::new(&mut ins.max_kb)
+                                .range(1..=1024)
+                                .suffix(" KB"),
+                        )
+                        .on_hover_text("Text beyond this, in all files together, is left out");
+                        ui.end_row();
+                    });
+                ui.add_space(16.0);
+
+                // ---- file edits
+                let fe = &mut g.file_edits;
+                ui.label(
+                    egui::RichText::new(format!("{}  Workspace file edits", icon::UNDO)).strong(),
+                );
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut fe.diff_preview,
+                    "Show the change as a diff on the approval prompt and in the tool card",
+                );
+                ui.checkbox(
+                    &mut fe.checkpoints,
+                    "Keep checkpoints so a turn's write_file and edit_file changes can be undone",
+                )
+                .on_hover_text(
+                    "Each edit keeps the file's previous content in the chat. \"Undo file edits\" \
+                     under the turn's reply puts the files back, newest first; a file that \
+                     changed again since is left alone. Shell commands aren't undone.",
+                );
+                ui.add_enabled_ui(fe.checkpoints, |ui| {
+                    egui::Grid::new("file-edits-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Largest file");
+                            ui.add(
+                                egui::DragValue::new(&mut fe.max_file_kb)
+                                    .range(16..=65_536)
+                                    .speed(16.0)
+                                    .suffix(" KB"),
+                            )
+                            .on_hover_text("Bigger files are changed without a checkpoint");
+                            ui.end_row();
+
+                            ui.label("Keep for");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut fe.keep_turns)
+                                        .range(0..=1000)
+                                        .suffix(" turns"),
+                                );
+                                ui.weak("0 keeps them all");
+                            });
+                            ui.end_row();
+                        });
+                });
             });
     }
 
@@ -1930,6 +2330,38 @@ impl SettingsUi {
                         );
                         ui.end_row();
 
+                        ui.label("Web page preview");
+                        let hp = &mut g.html_preview;
+                        ui.vertical(|ui| {
+                            ui.add_enabled_ui(crate::ui::webview::SUPPORTED, |ui| {
+                                ui.checkbox(&mut hp.enabled, "Show web pages live in the panel")
+                                    .on_hover_text(
+                                        "Off: the panel shows the code and \"Open in browser\" \
+                                         opens the page",
+                                    );
+                                ui.add_enabled_ui(hp.enabled, |ui| {
+                                    ui.checkbox(&mut hp.scripts, "Let pages run their scripts");
+                                    ui.checkbox(
+                                        &mut hp.network,
+                                        "Let pages load from the network",
+                                    )
+                                    .on_hover_text(
+                                        "Off: scripts, styles, images and requests from the web \
+                                         are blocked, so a page can't send chat content anywhere. \
+                                         Pages that use a CDN library need this on.",
+                                    );
+                                });
+                            });
+                            if !crate::ui::webview::SUPPORTED {
+                                weak_note(
+                                    ui,
+                                    "Needs the macOS or Windows app; on Linux web pages open in \
+                                     your browser.",
+                                );
+                            }
+                        });
+                        ui.end_row();
+
                         ui.label("Tool calls");
                         ui.checkbox(
                             &mut g.auto_approve_tools,
@@ -2127,6 +2559,43 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (
         Tab::Tools,
         "Tools",
+        "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily)",
+    ),
+    (Tab::Tools, "Tools", "Web search API key"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Context compaction (summarise long chats)",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Compaction threshold and context size",
+    ),
+    (Tab::Context, "Context & files", "Compaction summary model"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Project instructions (AGENTS.md, CLAUDE.md)",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Diff preview for file edits",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Undo file edits (checkpoints)",
+    ),
+    (
+        Tab::General,
+        "General",
+        "Live web page preview (scripts, network)",
+    ),
+    (
+        Tab::Tools,
+        "Tools",
         "Workspace tools (files, search, shell)",
     ),
     (
@@ -2185,6 +2654,10 @@ mod tests {
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
+        assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
+        assert_eq!(search_settings("compaction")[0].0, Tab::Context);
+        assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert!(search_settings("zzzz").is_empty());
     }
 }

@@ -315,6 +315,7 @@ pub async fn run(
             is_error: !status.is_success(),
             images: vec![Attachment::image(name, mime.into(), &body)],
             sandbox: None,
+            edit: None,
         });
     }
     let text = match kind {
@@ -354,6 +355,7 @@ pub async fn run(
         is_error: !status.is_success(),
         images: Vec::new(),
         sandbox: None,
+        edit: None,
     })
 }
 

@@ -16,6 +16,7 @@ default.
 | **Calculator** | Exact arithmetic and functions (powers, roots, logarithms, trigonometry, rounding, min/max/avg). |
 | **Task list** | For multi-step requests the model breaks the work into tasks, shows them as a checklist in the chat and ticks them off as it goes. |
 | **Web fetch** | Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch. |
+| **Web search** | Searches the web with the service below and lists the results (title, address, snippet), so the model can read the useful pages with web fetch. Asks for approval before each search by default. |
 | **Workspace tools** | When a chat has a working folder: `read_file`, `file_glob_search`, `grep_search` and `get_info` run freely inside it; `write_file`, `edit_file` and `exec_shell_command` ask for approval. Paths can't leave the folder. |
 
 ## Let web fetch reach this computer and private networks
@@ -26,5 +27,21 @@ link-local addresses, such as cloud metadata endpoints, also after a redirect.
 {: .warning }
 > Subagents and auto-approved calls fetch without asking, so leave this off unless you need it.
 
-The `delegate` tool has its own page: [Subagents](subagents.html). See
+## Web search
+
+| Setting | Default | Description |
+|---|---|---|
+| **Service** | DuckDuckGo | **DuckDuckGo** (its HTML results page; no account or key, but it may ask for a human check after many searches), **SearXNG** (your own or a public instance), **Brave Search API** or **Tavily** (both need an API key). |
+| **Instance** | (empty) | SearXNG only: the instance's address, such as `https://searx.example.org` or `http://localhost:8888`. The instance must allow JSON results: add `json` to `search.formats` in its `settings.yml`. |
+| **API key** | (empty) | Brave and Tavily only. Kept in the system keychain when **Store API keys and secrets in the system keychain** is on ([General](general.html#secrets)). |
+| **Results** | 5 per search | 1–20. The model may ask for more in a call, up to 20. |
+| **Safe search** | on | Asks the service to filter adult results (Tavily has no such option). |
+| **Ask before each search** | on | The query leaves your computer and can contain parts of the chat. Subagents and auto-approved calls never ask. |
+| **Subagents may search** | on | When subagents may use the built-in tools ([Subagents](subagents.html)). |
+
+The service and its address come from these settings, never from the model, so a SearXNG
+instance on your own computer or network works.
+
+The `delegate` tool has its own page: [Subagents](subagents.html). Context compaction, project
+instructions and undo for file edits are on [Context & files](context.html). See
 [Tools and approvals](../using/tools.html) for how the tools behave in a chat.

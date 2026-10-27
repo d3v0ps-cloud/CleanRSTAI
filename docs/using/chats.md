@@ -139,8 +139,23 @@ also show how full the model's context is:
 
 The figure counts the prompt, the tokens reused from the server's cache and the reply. When
 the context is full, the server may drop older parts of the chat or refuse the request, so
-start a new chat before it gets there. Other server types don't report their context size,
-so no figure is shown for them.
+start a new chat before it gets there, or let the app compact it (below). Other server types
+don't report their context size, so no figure is shown for them.
+
+## Long chats
+
+When a request would fill most of the model's context, the app *compacts* the chat: a model
+summarises the older messages, and from then on only that summary (in the system prompt) and
+the latest messages are sent. A marker in the chat, **Earlier messages summarised**, shows
+where; it says how many messages it stands for and how many tokens the request had, and
+expands to show the summary. Everything above it stays in the chat for you to read, but the
+model no longer sees it. While the summary is written, *Summarising older messages…* shows.
+
+**Compact now** in the tools menu (under **Chat features**) or **Compact this chat** in the
+command palette does it straight away. Switch automatic compaction off for a chat in the tools
+menu, and set when it happens, how much is kept and which model writes the summary in
+[Context & files](../settings/context.html#context-compaction). For servers that don't report
+their context size, set **Context size** there, or compaction only happens when you ask.
 
 ## Editing and retrying
 
@@ -185,9 +200,12 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
 - **Versions**: artifacts with the same given name and type are versions of one another (the
   same file name in a later reply, say); the arrows step between them, keeping the tab you are
   on. Made-up names like "Flowchart" never make versions.
-- **Web pages** don't run inside the app: **Open in browser** writes the page to a temporary
-  file and opens it in your default browser, where its scripts run as in any local file. SVGs
-  can open there too.
+- **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
+  that runs the page's scripts but, by default, blocks everything from the network (set in
+  [General](../settings/general.html#web-page-preview)); links open in your browser. **Open in
+  browser** writes the page to a temporary file and opens it in your default browser, where its
+  scripts run as in any local file and it can load anything; on Linux that is the only way to
+  see a page. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
   panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar
@@ -216,16 +234,19 @@ can't be read.
 Chats are saved automatically. In the sidebar:
 
 - Type in the search box to filter chats.
-- Right-click a chat for **Pin** / **Unpin**, **Rename**, **Export as Markdown…** and
-  **Delete**.
+- Right-click a chat for **Pin** / **Unpin**, **Rename**, **Export as Markdown…**,
+  **Share as HTML…** and **Delete**.
 
-**Export as Markdown** includes tool calls, results and images. To back up every chat at once,
-use **Export conversations…** in [General](../settings/general.html#export--import).
+**Export as Markdown** includes tool calls, results and images. **Share as HTML…** writes the
+same chat as a single, self-contained `.html` file styled like the app: it opens in any browser
+with no network, fonts or scripts, so it is easy to send to someone. To back up every chat at
+once, use **Export conversations…** in [General](../settings/general.html#export--import).
 
 ## Command palette
 
 **⌘/Ctrl + K** opens a searchable list of commands: new chat, attach files, export this chat,
-toggle the sidebar, change theme, open each settings page, export and import, check for
-updates, switch provider or model, and open any chat.
+compact this chat, undo the last turn's file edits, toggle the sidebar, change theme, open each
+settings page, export and import, check for updates, switch provider or model, and open any
+chat.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.html) for the rest.

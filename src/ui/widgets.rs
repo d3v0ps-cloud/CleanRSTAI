@@ -112,6 +112,71 @@ pub fn code_block(ui: &mut egui::Ui, text: &str) {
     );
 }
 
+/// A unified diff, with added lines in green and removed lines in red; a long one scrolls.
+pub fn diff_block(ui: &mut egui::Ui, diff: &str) {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    let lines: Vec<&str> = diff.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let color = if line.starts_with("+++") || line.starts_with("---") {
+            p.pencil
+        } else if line.starts_with('+') {
+            p.ok
+        } else if line.starts_with('-') {
+            p.error
+        } else if line.starts_with("@@") {
+            p.signal
+        } else {
+            p.ink2
+        };
+        let text = if i + 1 < lines.len() {
+            format!("{line}\n")
+        } else {
+            (*line).to_owned()
+        };
+        job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), color));
+    }
+    job.wrap.max_width = f32::INFINITY;
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(8)
+        .inner_margin(8)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if lines.len() <= 24 {
+                ui.add(egui::Label::new(job).selectable(true).wrap());
+                return;
+            }
+            // A long diff scrolls; its own id keeps it apart from the chat's scroll area.
+            let mut h = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(diff, &mut h);
+            egui::ScrollArea::vertical()
+                .id_salt(("diff", std::hash::Hasher::finish(&h)))
+                .min_scrolled_height(360.0)
+                .max_height(360.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(job).selectable(true).wrap());
+                });
+        });
+}
+
+/// "+3 −1" for a unified diff.
+pub fn diff_stat(diff: &str) -> (usize, usize) {
+    diff.lines().fold((0, 0), |(add, del), l| {
+        if l.starts_with("+++") || l.starts_with("---") {
+            (add, del)
+        } else if l.starts_with('+') {
+            (add + 1, del)
+        } else if l.starts_with('-') {
+            (add, del + 1)
+        } else {
+            (add, del)
+        }
+    })
+}
+
 /// Optional numeric value with an enable checkbox.
 pub fn optional_value<T: egui::emath::Numeric>(
     ui: &mut egui::Ui,

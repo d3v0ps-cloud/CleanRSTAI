@@ -190,6 +190,198 @@ pub fn conversation_markdown(c: &Conversation) -> String {
     out
 }
 
+/// Escape the few characters that are special in HTML text and attribute values.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Render the conversation's Markdown to the HTML body, dropping markup that could run code
+/// or load content in the shared file. A reply, a fetched page or an attachment could carry a
+/// `<script>`, an event handler, an `<iframe>` or a `javascript:` link, so instead of regexing
+/// the rendered text (which a crafted tag can defeat) the parser's event stream is filtered:
+/// raw HTML is dropped outright, and every link and image destination is checked against a
+/// scheme allow-list before it is emitted. Code blocks and ordinary text are escaped by the
+/// renderer, so only real markup reaches the output.
+fn render_body(markdown: &str) -> String {
+    use pulldown_cmark::{CowStr, Event, Tag};
+
+    let options = crate::artifacts::markdown_options();
+    let parser = pulldown_cmark::Parser::new_ext(markdown, options);
+
+    // Filter the event stream, then hand the whole result to the renderer in one pass: the
+    // renderer consumes an image's inner text from the same iterator to build its `alt`, so the
+    // events it sees must be a single, complete sequence. Raw HTML is dropped; an unsafe link or
+    // image destination is rewritten to an inert `#`, so the tag still renders but can neither
+    // run code nor load anything.
+    let events: Vec<Event<'static>> = parser
+        .filter_map(|event| match event {
+            // The only raw HTML kept is the app's own <details> wrapper.
+            Event::Html(ref html) if trusted_details_fragment(html) => Some(event.into_static()),
+            // Any other raw HTML — <script>, <img onerror>, <a href="javascript:">, <iframe> …
+            // — is dropped, so it can neither run nor load anything.
+            Event::Html(_) | Event::InlineHtml(_) => None,
+            // An unsafe link or image destination is rewritten to an inert `#`.
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) if !url_is_safe(&dest_url, false) => Some(
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url: CowStr::Borrowed("#"),
+                    title,
+                    id,
+                })
+                .into_static(),
+            ),
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) if !url_is_safe(&dest_url, true) => Some(
+                Event::Start(Tag::Image {
+                    link_type,
+                    dest_url: CowStr::Borrowed("#"),
+                    title,
+                    id,
+                })
+                .into_static(),
+            ),
+            other => Some(other.into_static()),
+        })
+        .collect();
+
+    let mut out = String::new();
+    pulldown_cmark::html::push_html(&mut out, events.into_iter());
+    out
+}
+
+/// The only raw HTML fragments the Markdown carries are the `<details>`/`</details>` pair that
+/// wraps the model's reasoning. Everything else is untrusted and dropped.
+fn trusted_details_fragment(html: &str) -> bool {
+    let t = html.trim();
+    t == "<details><summary>Thinking</summary>" || t == "</details>"
+}
+
+/// Whether a link or image destination may be emitted. Links may use `http(s):` or `mailto:`;
+/// images may only be embedded `data:image/…` URLs of the raster types the app itself attaches
+/// (PNG, JPEG, GIF, WebP). Everything else — `javascript:`, `file:`, `data:text/html`,
+/// executable `data:image/svg+xml`, and any remote image — is dropped, so the shared file never
+/// reaches the network. Leading control characters are stripped first, matching how a browser
+/// reads an `href`, so they cannot hide a scheme.
+fn url_is_safe(dest_url: &str, is_image: bool) -> bool {
+    let u: String = dest_url
+        .chars()
+        .skip_while(|c| c.is_ascii_control() || c.is_ascii_whitespace())
+        .collect();
+    let lower = u.to_ascii_lowercase();
+    // The scheme is the run before the first `:`, provided that run holds no `/`, `?` or `#`
+    // (a `:` after any of those is not a scheme separator, as in `a/b:c`).
+    let scheme = u
+        .find(':')
+        .filter(|&i| !u[..i].contains(['/', '?', '#']))
+        .map_or("", |i| &u[..i]);
+    let scheme = scheme.to_ascii_lowercase();
+    if is_image {
+        // Only embedded raster images, exactly the types the app attaches. The media type is
+        // the run after `data:` up to the first `;` or `,`, so a longer type (or
+        // `data:image/svg+xml`) cannot slip in.
+        const IMAGE_TYPES: &[&str] = &[
+            "image/png",
+            "image/jpeg",
+            "image/jpg",
+            "image/gif",
+            "image/webp",
+        ];
+        let Some(rest) = lower.strip_prefix("data:") else {
+            return false;
+        };
+        let media_type = rest.split_once([';', ',']).map_or(rest, |(t, _)| t);
+        IMAGE_TYPES.contains(&media_type)
+    } else if scheme.is_empty() {
+        // No scheme: a relative link is fine, but a protocol-relative `//host/…` would reach
+        // the network.
+        !u.starts_with("//")
+    } else {
+        matches!(scheme.as_str(), "http" | "https" | "mailto")
+    }
+}
+
+/// A self-contained HTML document, styled like the app, for sharing one chat. It reuses the
+/// Markdown rendering so both exports carry the same data; the result needs no network, fonts
+/// or scripts to open.
+pub fn conversation_html(c: &Conversation) -> String {
+    let markdown = conversation_markdown(c);
+    let body = render_body(&markdown);
+    // A quiet, centred column with the app's warm palette, in light and dark.
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+:root {{
+  --paper:#FAF9F5; --raised:#FFFFFF; --ink:#1F1E1D; --ink2:#3D3C38;
+  --pencil:#6F6C64; --rule:#E3E0D7; --code:#F3F1EA; --signal:#9E5A38;
+}}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --paper:#151515; --raised:#20201F; --ink:#F0EFED; --ink2:#B9B9AF;
+    --pencil:#8A8984; --rule:#292929; --code:#1C1C1B; --signal:#BC815F;
+  }}
+}}
+* {{ box-sizing:border-box; }}
+body {{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:16px/1.65 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}}
+main {{ max-width:760px; margin:0 auto; padding:48px 24px 96px; }}
+h1 {{ font-size:28px; line-height:1.25; margin:0 0 4px; }}
+h2 {{
+  font-size:13px; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+  color:var(--pencil); margin:36px 0 10px;
+}}
+p {{ margin:0 0 14px; }}
+a {{ color:var(--signal); }}
+hr {{ border:0; border-top:1px solid var(--rule); margin:28px 0; }}
+blockquote {{ margin:0 0 14px; padding:2px 0 2px 14px; border-left:3px solid var(--rule); color:var(--ink2); }}
+code {{
+  font:13px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  background:var(--code); border-radius:4px; padding:1px 5px;
+}}
+pre {{
+  background:var(--code); border:1px solid var(--rule); border-radius:8px;
+  padding:12px 14px; overflow-x:auto; margin:0 0 14px;
+}}
+pre code {{ background:none; padding:0; font-size:13px; }}
+img {{ max-width:100%; border-radius:8px; }}
+table {{ border-collapse:collapse; width:100%; margin:0 0 14px; font-size:15px; }}
+th,td {{ border:1px solid var(--rule); padding:6px 10px; text-align:left; }}
+th {{ color:var(--ink2); }}
+details {{ margin:0 0 14px; }}
+summary {{ cursor:pointer; color:var(--pencil); font-size:14px; }}
+</style>
+</head>
+<body>
+<main>
+{body}
+</main>
+</body>
+</html>
+"#,
+        title = esc(&c.title),
+        body = body
+    )
+}
+
 /// Ask for a file to import with the native open dialog. `None` if the user cancelled.
 pub fn pick_open_path() -> Option<std::path::PathBuf> {
     let mut dialog = rfd::FileDialog::new()
@@ -559,6 +751,108 @@ mod tests {
         assert!(md.contains("````\nhas ``` inside\n````"), "{md}");
         assert_eq!(safe_file_name(&c.title, "md"), "My - chat-.md");
         assert_eq!(safe_file_name("..", "md"), "chat.md");
+    }
+
+    #[test]
+    fn html_export_is_self_contained() {
+        use crate::types::{ChatMessage, Role};
+        let mut c = Conversation::new();
+        c.title = "My chat & friends".into();
+        c.messages = vec![
+            ChatMessage::new(Role::User, "Look at **this**"),
+            ChatMessage::new(Role::Assistant, "Here you go: `code`"),
+        ];
+        let html = conversation_html(&c);
+        // A standalone document that opens without a network, fonts or scripts.
+        assert!(html.starts_with("<!doctype html>"), "{html}");
+        assert!(
+            html.contains("<title>My chat &amp; friends</title>"),
+            "{html}"
+        );
+        assert!(!html.contains("<script"), "{html}");
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "{html}"
+        );
+        // The same data as the Markdown export, rendered to HTML.
+        assert!(html.contains("<h1>My chat &amp; friends</h1>"), "{html}");
+        assert!(html.contains("<strong>this</strong>"), "{html}");
+        assert!(html.contains("<code>code</code>"), "{html}");
+        assert!(html.contains("<h2>You</h2>"), "{html}");
+        assert!(html.contains("<h2>Assistant</h2>"), "{html}");
+    }
+
+    #[test]
+    fn html_export_neutralises_dangerous_markup() {
+        use crate::types::{ChatMessage, Role};
+        let payloads = [
+            // Raw HTML blocks and inline tags are dropped outright.
+            "<script>alert(1)</script>",
+            "<img src=x onerror=alert(2)>",
+            // Handler with no whitespace before it (defeats `\son…` regexes).
+            "<div><img src=\"x\"/onerror=\"alert(1)\"></div>",
+            "<img src=\"x\"onerror=\"alert(1)\">",
+            // Tag stripping that rebuilds an earlier-checked tag.
+            "<div><ifr<svg>ame srcdoc=\"&lt;script&gt;alert(1)&lt;/script&gt;\"></iframe></div>",
+            "<iframe srcdoc=\"&lt;script&gt;alert(1)&lt;/script&gt;\"></iframe>",
+            // Raw anchor with a dangerous scheme.
+            "<a href=\"javascript:alert(1)\">x</a>",
+            // Markdown links with dangerous or obfuscated schemes.
+            "[x](javascript:alert(1))",
+            "[x](&#106;avascript:alert(1))",
+            "[x](javascript&colon;alert(1))",
+            "[x](java&#9;script:alert(1))",
+            "[x](\x01javascript:alert(1))",
+            // Protocol-relative links reach the network.
+            "[x](//evil.example/x)",
+            // Remote and executable images are dropped (the file must stay offline).
+            "![x](https://evil.example/x.png)",
+            "<img src=\"https://evil.example/x.png\" onerror=\"alert(1)\">",
+            "![x](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+)",
+            "![x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+        ];
+        let mut c = Conversation::new();
+        c.messages = vec![
+            ChatMessage::new(Role::User, "hi"),
+            ChatMessage::new(Role::Assistant, payloads.join("\n\n")),
+        ];
+        let html = conversation_html(&c);
+        // No executable markup survives: raw HTML is dropped (only the app's own <details>
+        // wrapper is kept), and no rendered link or image carries a dangerous scheme, handler,
+        // or remote source.
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.contains("<iframe"), "{html}");
+        assert!(!html.contains("srcdoc"), "{html}");
+        assert!(!html.contains("href=\"javascript"), "{html}");
+        assert!(!html.contains("src=\"javascript"), "{html}");
+        assert!(!html.contains("src=\"https://evil"), "{html}");
+        assert!(!html.contains("src=\"data:image/svg"), "{html}");
+        assert!(!html.contains("src=\"data:text/html"), "{html}");
+        assert!(!html.contains("href=\"//evil"), "{html}");
+        // The no-space handler payload is not recognised as a tag, so it is emitted as escaped
+        // text the browser will display literally, not execute.
+        assert!(html.contains("&lt;img src=\"x\"onerror"), "{html}");
+        // Ordinary content and the app's own heading survive.
+        assert!(html.contains("<h2>Assistant</h2>"), "{html}");
+    }
+
+    #[test]
+    fn html_export_keeps_safe_links_and_embedded_images() {
+        use crate::types::{ChatMessage, Role};
+        let mut c = Conversation::new();
+        c.messages = vec![ChatMessage::new(
+            Role::Assistant,
+            "[docs](https://docs.example/x) [me](mailto:a@b.c) \
+             ![p](data:image/png;base64,AAAA) [rel](x/y.md)",
+        )];
+        let html = conversation_html(&c);
+        assert!(html.contains("href=\"https://docs.example/x\""), "{html}");
+        assert!(html.contains("href=\"mailto:a@b.c\""), "{html}");
+        assert!(
+            html.contains("src=\"data:image/png;base64,AAAA\""),
+            "{html}"
+        );
+        assert!(html.contains("href=\"x/y.md\""), "{html}");
     }
 
     #[test]

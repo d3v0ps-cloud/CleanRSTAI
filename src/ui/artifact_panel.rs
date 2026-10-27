@@ -32,7 +32,8 @@ impl ArtifactView {
             conv,
             message: artifact.message,
             index: artifact.index,
-            tab: if artifact.kind.has_preview() {
+            // Web pages too: the panel falls back to the code where it can't show them.
+            tab: if artifact.kind.has_preview() || artifact.kind == Kind::Html {
                 Tab::Preview
             } else {
                 Tab::Code
@@ -208,7 +209,10 @@ pub fn toggle_button(ui: &mut egui::Ui, open: bool, enabled: bool) -> egui::Resp
     resp
 }
 
-/// The panel's contents. Asks to close the panel when the chat has no artifacts left.
+/// The panel's contents. Asks to close the panel when the chat has no artifacts left. With
+/// `live_html`, a web page's Preview tab leaves its area empty and returns it with the page,
+/// for the web view laid over it.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     md_cache: &mut CommonMarkCache,
@@ -216,11 +220,12 @@ pub fn show(
     view: &mut ArtifactView,
     artifacts: &[Artifact],
     remote_images: bool,
+    live_html: Result<(), &str>,
     actions: &mut Vec<Action>,
-) {
+) -> Option<(egui::Rect, String)> {
     let Some(newest) = artifacts.len().checked_sub(1) else {
         actions.push(Action::CloseArtifact);
-        return;
+        return None;
     };
     let mut current = if view.follow {
         newest
@@ -284,8 +289,9 @@ pub fn show(
     });
 
     // Tabs on the left, versions of this artifact on the right.
+    let previews = a.kind.has_preview() || (a.kind == Kind::Html && live_html.is_ok());
     ui.horizontal(|ui| {
-        if a.kind.has_preview() {
+        if previews {
             ui.selectable_value(&mut view.tab, Tab::Preview, "Preview");
             ui.selectable_value(&mut view.tab, Tab::Code, "Code");
         }
@@ -323,19 +329,22 @@ pub fn show(
     view.show(&artifacts[current], current == newest);
     let a = &artifacts[current];
 
-    if a.kind == Kind::Html {
+    if a.kind == Kind::Html
+        && let Err(why) = live_html
+    {
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Web pages run in your browser, not in the app.")
-                    .small()
-                    .color(p.pencil),
-            );
+            ui.label(RichText::new(why).small().color(p.pencil));
             if ui.small_button("Open in browser").clicked() {
                 actions.push(Action::OpenArtifactInBrowser(a.clone()));
             }
         });
     }
     ui.separator();
+    if a.kind == Kind::Html && live_html.is_ok() && view.tab == Tab::Preview {
+        let area = ui.available_rect_before_wrap();
+        ui.allocate_rect(area, egui::Sense::hover());
+        return Some((area, a.source.clone()));
+    }
 
     let id = ui.make_persistent_id(("artifact-body", view.conv, a.message, a.index));
     egui::ScrollArea::vertical()
@@ -364,4 +373,5 @@ pub fn show(
             ),
             _ => markdown::code_view(ui, md_cache, id, &a.lang, &a.source),
         });
+    None
 }

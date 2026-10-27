@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::attachments::{self as attach_ui, ImageCache};
 use super::markdown::{self, DrawingCache};
 use super::theme::{self, icon};
-use super::widgets::{code_block, quiet_icons};
+use super::widgets::{code_block, diff_block, diff_stat, quiet_icons};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::artifacts::Artifact;
@@ -106,10 +106,34 @@ pub fn show(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             ui.add_space(12.0);
+            // The last assistant message of each turn, and how many of its edits can be undone.
+            let mut undo_at: HashMap<usize, usize> = HashMap::new();
+            if v.run.is_none() && conv.workspace.is_some() {
+                let mut i = 0;
+                while i < conv.messages.len() {
+                    let turn = crate::checkpoints::turn_of(&conv.messages, i);
+                    let n = crate::checkpoints::undoable(&conv.messages, turn.clone());
+                    if n > 0
+                        && let Some(last) = conv.messages[turn.clone()]
+                            .iter()
+                            .rposition(|m| m.role == Role::Assistant)
+                    {
+                        undo_at.insert(turn.start + last, n);
+                    }
+                    i = turn.end.max(i + 1);
+                }
+            }
             centered(ui, |ui| {
                 for (i, msg) in conv.messages.iter().enumerate() {
                     match msg.role {
-                        Role::Tool | Role::System => continue,
+                        Role::System => {
+                            if let Some(info) = &msg.compaction {
+                                compaction_marker(ui, i, info, &msg.content);
+                                ui.add_space(18.0);
+                            }
+                            continue;
+                        }
+                        Role::Tool => continue,
                         Role::User => {
                             user_message(ui, images, conv.id, i, msg, v.run.is_some(), &mut actions)
                         }
@@ -133,6 +157,7 @@ pub fn show(
                                     artifacts: v.artifacts,
                                     open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
+                                    undo: undo_at.get(&i).copied(),
                                 },
                                 msg,
                                 &mut actions,
@@ -140,6 +165,13 @@ pub fn show(
                         }
                     }
                     ui.add_space(18.0);
+                }
+                if v.run.is_some_and(|r| r.compacting) {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Summarising older messages…").weak());
+                    });
+                    ui.add_space(12.0);
                 }
                 if let Some(err) = v.error {
                     error_box(ui, err, v.run.is_none().then_some(conv.id), &mut actions);
@@ -238,6 +270,8 @@ struct AssistantCtx<'a> {
     open_artifact: Option<(usize, usize)>,
     /// The final reply: show Regenerate.
     last: bool,
+    /// The last reply of a turn whose file edits can be undone: how many.
+    undo: Option<usize>,
 }
 
 fn assistant_message(
@@ -343,6 +377,24 @@ fn assistant_body(
                 Some("Retry") => actions.push(Action::Regenerate(cx.conv)),
                 _ => {}
             }
+            if let Some(n) = cx.undo {
+                let label = if n == 1 {
+                    "Undo file edit".to_owned()
+                } else {
+                    format!("Undo {n} file edits")
+                };
+                if ui
+                    .small_button(theme::labelled(icon::UNDO, &label))
+                    .on_hover_text(
+                        "Put back the files this turn changed with write_file or edit_file \
+                         (newest first). Files changed again since are left alone; shell \
+                         commands aren't undone.",
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::UndoTurn(cx.conv, cx.idx));
+                }
+            }
             if cx.show_stats
                 && let Some(s) = &msg.stats
             {
@@ -447,6 +499,16 @@ fn tool_card(
                     ui.label(RichText::new(icon::TOOL).color(p.pencil));
                     ui.label(RichText::new(tools::display_name(&call.name)).color(p.ink));
                     ui.label(RichText::new(status).small().color(color));
+                    if let Some(e) = result.and_then(|r| r.edit.as_ref()) {
+                        if !e.diff.is_empty() {
+                            let (add, del) = diff_stat(&e.diff);
+                            ui.label(RichText::new(format!("+{add}")).small().color(p.ok));
+                            ui.label(RichText::new(format!("−{del}")).small().color(p.error));
+                        }
+                        if e.undone {
+                            ui.label(RichText::new("Undone").small().color(p.pencil));
+                        }
+                    }
                     if let Some(sb) = result.and_then(|r| r.sandbox.as_ref()) {
                         ui.label(RichText::new(format!("in {}", sb.image)).small().weak())
                             .on_hover_text(format!("Ran in the Docker container {}", sb.container));
@@ -461,6 +523,13 @@ fn tool_card(
                     }
                 })
                 .body(|ui| {
+                    if let Some(e) = result
+                        .and_then(|r| r.edit.as_ref())
+                        .filter(|e| !e.diff.is_empty())
+                    {
+                        ui.label(RichText::new("Change").small().color(p.pencil));
+                        diff_block(ui, &e.diff);
+                    }
                     ui.label(RichText::new("Arguments").small().color(p.pencil));
                     code_block(ui, &pretty_args);
                     if let Some(r) = result {
@@ -507,13 +576,74 @@ fn tool_card(
                 }
             }
             if let Some(pending) = pending {
-                if !state_is_open(ui, id) {
-                    code_block(ui, &pretty_args);
+                match &pending.preview {
+                    Some(diff) if diff.is_empty() => {
+                        ui.label(RichText::new("No change to the file").small().weak());
+                    }
+                    Some(diff) => {
+                        let (add, del) = diff_stat(diff);
+                        ui.label(
+                            RichText::new(format!("Change: +{add} −{del}"))
+                                .small()
+                                .color(p.pencil),
+                        );
+                        diff_block(ui, diff);
+                    }
+                    None if !state_is_open(ui, id) => code_block(ui, &pretty_args),
+                    None => {}
                 }
                 approval_prompt(ui, conv, pending, actions);
             }
         },
     );
+}
+
+/// Where older messages were summarised: a divider with the summary to expand.
+fn compaction_marker(
+    ui: &mut egui::Ui,
+    idx: usize,
+    info: &crate::types::CompactionInfo,
+    summary: &str,
+) {
+    let p = theme::palette(ui.visuals().dark_mode);
+    card(ui, p.rule, |ui| {
+        let id = ui.make_persistent_id(("compaction", idx));
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| {
+                ui.label(RichText::new(icon::STACK).color(p.pencil));
+                ui.label(RichText::new("Earlier messages summarised").color(p.ink));
+                let tokens = if info.tokens_before > 0 {
+                    format!(
+                        " · ~{} tokens before",
+                        crate::stats::fmt_tokens(info.tokens_before)
+                    )
+                } else {
+                    String::new()
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "{} message{}{}{}",
+                        info.messages,
+                        if info.messages == 1 { "" } else { "s" },
+                        tokens,
+                        if info.manual { " · by hand" } else { "" }
+                    ))
+                    .small()
+                    .color(p.pencil),
+                )
+                .on_hover_text(
+                    "Messages above this line are no longer sent to the model; it gets this \
+                     summary instead. They stay here for you.",
+                );
+            })
+            .body(|ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(summary).color(p.ink2))
+                        .selectable(true)
+                        .wrap(),
+                );
+            });
+    });
 }
 
 /// "Allow this tool call?" with Run, the two "Always allow" choices, and Deny.
