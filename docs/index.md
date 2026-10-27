@@ -26,10 +26,16 @@ too, as an installer and a portable `.exe`.
   it, asking before anything that writes.
 - **MCP client**: stdio and Streamable HTTP servers, OAuth sign-in, resources and prompts.
 - **Subagents**: the model can hand independent tasks to agents that work in parallel.
+- **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code from a
+  reply open in a side panel, with a link in the chat.
 - **Attachments**: images for vision models; PDF, Office, OpenDocument, RTF and text files as
   text.
+- **Docker sandbox**: run the model's shell commands in a container with only the chat's
+  folder, resource limits, and no network or only the hosts, ports and protocols you allow;
+  subagents can get containers of their own.
 - **Remote access in the browser**: use your chats from a phone or another computer on your
-  network, with a password and HTTPS; models, tools and approvals stay on this computer.
+  network, with a password and HTTPS; models, tools and approvals stay on this computer. A
+  Cloudflare Tunnel makes it reachable from anywhere.
 - **Private by default**: API keys and secrets live in the system keychain, and conversations
   are plain JSON files on your computer.
 
@@ -42,5 +48,7 @@ too, as an installer and a portable `.exe`.
 | Learn the chat window | [Chats](using/chats.html) |
 | Let the model use tools or a folder | [Tools and approvals](using/tools.html) |
 | Add MCP servers | [MCP servers](using/mcp.html) |
+| Run the model's commands in a container | [Docker sandbox](settings/docker.html) |
 | Use your chats from a phone or another computer | [Remote access](using/remote-access.html) |
+| Reach your chats from anywhere | [Cloudflare Tunnel](using/cloudflare-tunnel.html) |
 | Look up a setting | [Settings](settings/) |

@@ -73,8 +73,10 @@ too, as an installer and a portable `.exe`.
   **Settings → Built-in Tools** or per chat.
 - **Docker sandbox** (off by default): run the workspace shell commands in a Docker container
   with only the chat's folder mounted, no network by default (or only the hosts, ports and
-  protocols you allow), and CPU, memory and process limits. Use a published image or a custom Dockerfile (a small and a full example, with
-  Python, Node.js, build tools and network tools, are built in). See the
+  protocols you allow), and CPU, memory and process limits. Use a published image or a custom
+  Dockerfile (a small and a full example, with Python, Node.js, build tools and network tools,
+  are built in); the full image is also published as
+  `ghcr.io/d3v0ps-cloud/cleanrstai-sandbox:full`. See the
   [Docker sandbox settings](https://d3v0ps-cloud.github.io/CleanRSTAI/settings/docker.html).
 - **Subagents**: a `delegate` tool lets the model hand independent tasks to subagents that work
   in parallel and report back. Each subagent's progress, tools and result show in the chat, and
@@ -281,11 +283,12 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates (and their source), export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
 | Providers | Name, base URL (with presets), API key, model, temperature, max tokens, server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
-| Subagents | Enable delegation; provider and model; per-task provider choice; tools; parallelism, task, round and time limits; system prompt |
+| Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
+| Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
 connection settings changed are reconnected.
@@ -385,7 +388,13 @@ cargo test -- --ignored     # end-to-end tests: mock LLM + the reference MCP "ev
                             # server over stdio and Streamable HTTP (needs Node/npx)
 ```
 
-CI runs the same checks on every push and pull request.
+CI runs the same checks on pushes to `main` and `dev` and on pull requests. The Docker sandbox
+has tests against a real Docker daemon, off by default:
+
+```sh
+CLEANRSTAI_DOCKER_TESTS=1 cargo test real_tests -- --ignored    # add CLEANRSTAI_DOCKER_FULL=1 to build
+                                                                # and test the full example image
+```
 
 Source layout:
 
@@ -408,6 +417,8 @@ src/
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
+  remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client
+  sandbox/        Docker sandbox: docker CLI, per-chat and subagent containers, network gateway
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
   testutil.rs     tiny scripted HTTP server for tests

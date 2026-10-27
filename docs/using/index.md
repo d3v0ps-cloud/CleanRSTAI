@@ -13,6 +13,8 @@ How to work with CleanRSTAI day to day.
 - [MCP servers](mcp.html): connecting Model Context Protocol servers, signing in, resources
   and prompts.
 - [Subagents](subagents.html): letting the model delegate tasks to parallel agents.
+- [Docker sandbox](../settings/docker.html): running the model's shell commands in a container,
+  with network rules.
 - [Updates](updates.html): checking for and installing new versions.
 - [Remote access](remote-access.html): using your chats from a browser on a phone or another
   computer, and its security.

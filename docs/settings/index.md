@@ -10,12 +10,12 @@ opens on **General** and takes over the main window.
 
 | Page | What you can set |
 |---|---|
-| [General](general.html) | System prompt, theme, UI scale, send key, secrets, updates, reasoning display, stats, web images, tool approval, tool rounds and timeout, export and import |
+| [General](general.html) | System prompt, theme, UI scale, send key, secrets, updates, reasoning display, stats, web images, tool approval, tool rounds and timeout, remote access and Cloudflare Tunnel, export and import |
 | [Providers](providers.html) | Endpoints: base URL, API key, model, temperature, max tokens, server type, token usage, streaming, timeout, extra headers |
 | [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
 | [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
-| [Subagents](subagents.html) | Delegation on or off; provider and model; tools; parallelism and limits; system prompt |
-| [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or custom Dockerfile, network, CPU, memory and process limits, read-only folder |
+| [Subagents](subagents.html) | Delegation on or off; provider and model; tools, including the workspace in sandbox containers of their own; parallelism and limits; system prompt |
+| [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or custom Dockerfile (small and full examples), network (none, normal, or allowed hosts, protocols and ports), CPU, memory and process limits, read-only folder |
 
 ## Finding a setting
 
