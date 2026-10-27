@@ -15,7 +15,8 @@ longer code in a side panel, with a link in the chat) in **v0.7.11**, and remote
 named tunnels) in **v0.8.1**, with named tunnels needing only the tunnel token (the tunnel and
 its route set up in the Cloudflare dashboard) in **v0.8.2**, and the Docker sandbox (custom
 images and Dockerfiles, a custom network with host, protocol and port rules, and subagent
-containers) in **v0.9.0**.
+containers) in **v0.9.0**, and context compaction, project instructions, diffs and undo for
+file edits, web search and the live web page preview (macOS and Windows) in **v0.9.1-dev.1**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
