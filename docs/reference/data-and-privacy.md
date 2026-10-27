@@ -37,8 +37,10 @@ when the server restarts ([Remote access](../using/remote-access.html)).
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
 - **Docker sandbox**: while it is on, the app runs the `docker` command on your computer to run
   shell commands in containers. Docker may download images from a registry (Docker Hub unless
-  the image names another one), and a custom Dockerfile's `FROM` and `RUN` lines download what
-  they name. Containers get only the chat's workspace folder, not the rest of your files, and no
+  the image names another one; the published full image comes from GitHub's registry,
+  `ghcr.io`), and a custom Dockerfile's `FROM` and `RUN` lines download what they name. With
+  **Only the hosts and ports below**, the app also builds a small network image from
+  `ubuntu:24.04` and Ubuntu's package mirrors. Containers get only the chat's workspace folder, not the rest of your files, and no
   API keys or other secrets. With **Normal network (can reach this computer, your local network and the internet)** on, commands can reach the internet;
   with **Only the hosts and ports below**, only the hosts and ports you list, and the domains in
   those rules are looked up through your computer's DNS servers

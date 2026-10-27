@@ -82,6 +82,10 @@ shows the tool and its arguments and asks **Allow this tool to run?**:
 
 "Always allow" lasts until the app quits.
 
+Approving a `delegate` call also approves what its subagents do: they call their tools without
+asking, including, when they may use the workspace, writing files and running commands in their
+own sandbox containers (see [Subagents](subagents.html)).
+
 {: .warning }
 > **Run MCP tools and subagents without asking for approval** in
 > [General](../settings/general.html#tool-calls) skips every approval, including web fetch

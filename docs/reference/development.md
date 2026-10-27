@@ -20,7 +20,7 @@ cargo run --release
 
 ## Checks
 
-CI runs these on every push and pull request:
+CI runs these on pushes to `main` and `dev` and on pull requests:
 
 ```sh
 cargo fmt --check
@@ -28,6 +28,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test                  # unit tests
 cargo test -- --ignored     # end-to-end tests: mock LLM + the reference MCP "everything"
                             # server over stdio and Streamable HTTP (needs Node/npx)
+```
+
+The Docker sandbox also has tests against a real Docker daemon. They are ignored, and do nothing
+unless `CLEANRSTAI_DOCKER_TESTS=1` is set (add `CLEANRSTAI_DOCKER_FULL=1` to build and test the
+full example image, which takes minutes):
+
+```sh
+CLEANRSTAI_DOCKER_TESTS=1 cargo test real_tests -- --ignored
 ```
 
 ## Source layout
@@ -51,7 +59,9 @@ src/
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
-  remote/         remote access: web server, login sessions, TLS, and the browser client (web/)
+  remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, and the
+                  browser client (web/)
+  sandbox/        Docker sandbox: docker CLI, per-chat and subagent containers, network gateway
   types.rs        messages and conversation storage
   env_path.rs     login-shell PATH import for GUI launches
   testutil.rs     tiny scripted HTTP server for tests
@@ -81,6 +91,11 @@ markdown renderer has tests of its own: `node src/remote/web/markdown.test.js`.
 `scripts/release-local.sh [--publish] [--skip-tests]` does the same from a local machine; see
 the [README](https://github.com/d3v0ps-cloud/CleanRSTAI#releasing-without-github-actions) for
 what each target needs, and for code signing.
+
+The **Sandbox image** workflow builds `assets/sandbox/full.Dockerfile` for amd64 and arm64 and
+pushes `ghcr.io/d3v0ps-cloud/cleanrstai-sandbox` (`full` and `latest` from `main`, `full-dev` from
+`dev`, plus `full-<hash>` and `sha-<commit>`). It runs only when that Dockerfile changes, or by
+hand.
 
 ## Writing these docs
 

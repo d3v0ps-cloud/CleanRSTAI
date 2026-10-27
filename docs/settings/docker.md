@@ -53,7 +53,7 @@ present.
 | **Image** | Docker image | **Docker image** uses an image you name. **Custom Dockerfile** builds one from the text you write. See [Images](#images). |
 | **Image name** | `python:3.13-slim` | Shown for **Docker image**. Any image name and tag. An empty name is replaced by the default. |
 | **Get the image** | Pull when missing | Shown for **Docker image**. **Pull when missing**, **Pull every time the app starts**, or **Only use an image already on this computer**. |
-| **Dockerfile** | An example | Shown for **Custom Dockerfile**. The Dockerfile text, with **Reset to example** to put back the default. |
+| **Dockerfile** | The small example | Shown for **Custom Dockerfile**. The Dockerfile text, with **Small example** and **Full example** buttons to load either example. See [Custom Dockerfile](#custom-dockerfile). |
 | **Network** | None (no network) | **None (no network)**, **Normal network (can reach this computer, your local network and the internet)** or **Only the hosts and ports below**. See [Custom network](#custom-network) and [Limits and hardening](#limits-and-hardening). |
 | **Allowed outbound** | none | With **Only the hosts and ports below**: the rules, each a host, a protocol and ports. See [Custom network](#custom-network). |
 | **CPUs** | 2 | How many CPUs a container may use, from 0.25 to 64. |
@@ -196,8 +196,9 @@ container shares its network, and:
 - the sandbox has no Linux capabilities, so commands can't change the firewall. Only the
   companion has the network capabilities it needs to set it up.
 
-The companion is removed with the sandbox container. **Test** also says whether its image is
-built, and **Pull now** / **Build now** rebuilds it too.
+A chat has one companion, shared by its container and its subagents' containers (see
+[Subagent containers](#subagent-containers)); it is removed with the chat's last container.
+**Test** also says whether its image is built, and **Pull now** / **Build now** rebuilds it too.
 
 Limits:
 
@@ -273,10 +274,12 @@ The **Status** row at the bottom of the page has these buttons:
 
 - **Test** checks that Docker is running and the image is present. A successful result looks
   like "Docker 27.3.1 is running · image python:3.13-slim is present". For a Dockerfile it reads
-  "image <tag> is built" or "isn't built yet". A failure shows the error message.
+  "image <tag> is built" or "isn't built yet". With **Only the hosts and ports below** it also
+  checks the rules and adds "network image is built" or "isn't built yet".
 - **Pull now** (for **Docker image**) or **Build now** (for **Custom Dockerfile**) prepares the
-  image. A spinner shows while it works. The result appears under the buttons: "Pulled <image>"
-  or "Built <image>", or the error.
+  image, and with a custom network rebuilds the network image too. A spinner shows while it
+  works. The result appears under the buttons: "Pulled <image>" or "Built <image>" (with "and
+  the network image"), or the error.
 
 Pulling and building have their own limit of 15 minutes. That time does not count against a
 command's time limit.
