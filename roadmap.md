@@ -383,7 +383,7 @@ Smaller items from the same comparison:
 
 - [ ] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
   Settings
-- [ ] Share a chat as a single HTML file alongside the Markdown export
+- [x] Share a chat as a single HTML file alongside the Markdown export
 
 ## Maintenance
 
