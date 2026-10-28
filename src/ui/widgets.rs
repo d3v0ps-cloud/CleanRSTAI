@@ -354,6 +354,79 @@ pub fn model_options_grid(
         });
 }
 
+/// The permission picker at the top of the chat's tools menu: a drop-down (a submenu there,
+/// so clicks in it keep the tools menu open) with the modes and the terminal sandbox switch.
+pub fn permissions_picker(
+    ui: &mut egui::Ui,
+    permissions: &mut crate::approval::ChatPermissions,
+    sandbox_on: bool,
+) {
+    use super::theme::icon;
+    use crate::approval::ApprovalMode;
+    let mode_icon = |m: ApprovalMode| match m {
+        ApprovalMode::Default => icon::SHIELD,
+        ApprovalMode::AutoWorkspace => icon::SHIELD_CHECK,
+        ApprovalMode::AllowAll => icon::LIGHTNING,
+        ApprovalMode::ReadOnly => icon::EYE,
+    };
+    let current = permissions.mode;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Permissions").small().weak());
+        ui.menu_button(
+            format!(
+                "{}  {}  {}",
+                mode_icon(current),
+                current.label(),
+                icon::CARET_DOWN
+            ),
+            |ui| {
+                ui.set_min_width(300.0);
+                let body = ui.style().text_styles[&egui::TextStyle::Body].clone();
+                let small = ui.style().text_styles[&egui::TextStyle::Small].clone();
+                let strong = ui.visuals().strong_text_color();
+                let weak = ui.visuals().weak_text_color();
+                for m in ApprovalMode::ALL {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(
+                        &format!("{}  {}\n", mode_icon(m), m.label()),
+                        0.0,
+                        egui::TextFormat::simple(body.clone(), strong),
+                    );
+                    job.append(
+                        m.description(),
+                        24.0,
+                        egui::TextFormat::simple(small.clone(), weak),
+                    );
+                    if ui.selectable_label(permissions.mode == m, job).clicked() {
+                        permissions.mode = m;
+                    }
+                }
+                ui.separator();
+                let mut sandboxed = sandbox_on && !permissions.no_sandbox;
+                let resp = ui.add_enabled(
+                    sandbox_on,
+                    egui::Checkbox::new(&mut sandboxed, "Sandboxing for terminal"),
+                );
+                let resp = if sandbox_on {
+                    resp.on_hover_text(
+                        "Run this chat's commands in the Docker sandbox. Off runs them on this \
+                         computer (and Auto in workspace then asks before each one).",
+                    )
+                } else {
+                    resp.on_disabled_hover_text(
+                        "Turn on the Docker sandbox in Settings → Docker first",
+                    )
+                };
+                if resp.changed() {
+                    permissions.no_sandbox = !sandboxed;
+                }
+            },
+        )
+        .response
+        .on_hover_text(current.description());
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,10 +452,100 @@ mod tests {
             .collect()
     }
 
+    fn click(pos: egui::Pos2) -> Vec<Vec<egui::Event>> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        vec![
+            vec![egui::Event::PointerMoved(pos)],
+            vec![button(true)],
+            vec![button(false)],
+            vec![],
+            vec![],
+        ]
+    }
+
     fn find(w: &[(String, egui::Pos2)], label: &str) -> Option<egui::Pos2> {
         w.iter()
             .find(|(l, _)| l.starts_with(label))
             .map(|(_, p)| *p)
+    }
+
+    #[test]
+    fn permissions_picker_works_inside_the_tools_menu() {
+        use crate::approval::{ApprovalMode, ChatPermissions};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut p = ChatPermissions::default();
+        let frame = |events: Vec<egui::Event>, p: &mut ChatPermissions| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                use egui::containers::menu::{MenuButton, MenuConfig};
+                MenuButton::new("Tools")
+                    .config(
+                        MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| {
+                        ui.label("Tools for this chat");
+                        permissions_picker(ui, p, true);
+                    });
+            });
+            out.textures_delta.clear();
+            out
+        };
+        let run = |steps: Vec<Vec<egui::Event>>, p: &mut ChatPermissions| {
+            let mut last = None;
+            for events in steps {
+                last = Some(frame(events, p));
+            }
+            widgets(&last.unwrap())
+        };
+        let w = run(vec![vec![], vec![]], &mut p);
+        let w = run(click(find(&w, "Tools").unwrap()), &mut p);
+        let w = run(
+            click(find(&w, "Permissions").unwrap() + egui::vec2(100.0, 0.0)),
+            &mut p,
+        );
+        let w = if find(&w, "Allow all").is_none() {
+            // The label's centre missed the button: click the button itself.
+            let b = w
+                .iter()
+                .find(|(l, _)| l.contains("Default permissions"))
+                .map(|(_, p)| *p)
+                .unwrap();
+            run(click(b), &mut p)
+        } else {
+            w
+        };
+        let allow = find(&w, "\u{E2DE}").or_else(|| {
+            w.iter()
+                .find(|(l, _)| l.contains("Allow all"))
+                .map(|(_, p)| *p)
+        });
+        let w = run(click(allow.expect("modes show")), &mut p);
+        assert_eq!(p.mode, ApprovalMode::AllowAll);
+        assert!(
+            find(&w, "Tools for this chat").is_some(),
+            "tools menu stays open"
+        );
+        let sb = w
+            .iter()
+            .find(|(l, _)| l.contains("Sandboxing for terminal"))
+            .map(|(_, p)| *p)
+            .unwrap();
+        run(click(sb), &mut p);
+        assert!(p.no_sandbox);
     }
 
     /// The reasoning effort drop-down inside the chat's options menu (a popup, closed by a
@@ -421,25 +584,6 @@ mod tests {
             });
             out.textures_delta.clear();
             out
-        };
-        let click = |pos: egui::Pos2| {
-            vec![
-                vec![egui::Event::PointerMoved(pos)],
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: Default::default(),
-                }],
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                }],
-                vec![],
-                vec![],
-            ]
         };
         let run = |steps: Vec<Vec<egui::Event>>, options: &mut ModelOptions| {
             let mut last = None;

@@ -198,6 +198,12 @@ pub struct Conversation {
         skip_serializing_if = "crate::model_options::ModelOptions::is_empty"
     )]
     pub model_options: crate::model_options::ModelOptions,
+    /// How this chat's tool calls are approved, and whether its commands use the sandbox.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::approval::ChatPermissions::is_default"
+    )]
+    pub permissions: crate::approval::ChatPermissions,
 }
 
 impl Conversation {
@@ -213,6 +219,7 @@ impl Conversation {
             tool_overrides: Default::default(),
             workspace: None,
             model_options: Default::default(),
+            permissions: Default::default(),
         }
     }
 

@@ -110,6 +110,8 @@ pub struct ChatApp {
     draft_tool_overrides: ToolOverrides,
     /// Reasoning and sampling options picked before the chat exists.
     draft_model_options: crate::model_options::ModelOptions,
+    /// Tool permissions picked before the chat exists.
+    draft_permissions: crate::approval::ChatPermissions,
     /// A newer release found on GitHub.
     update: Option<crate::update::Release>,
     /// Progress of installing `update`, once the user starts it.
@@ -342,6 +344,7 @@ impl ChatApp {
             sidebar_open: true,
             draft_tool_overrides: ToolOverrides::default(),
             draft_model_options: Default::default(),
+            draft_permissions: Default::default(),
             update: None,
             update_install: None,
             window_icon_dark: None,
@@ -411,6 +414,12 @@ impl ChatApp {
         {
             c.tool_overrides = draft;
         }
+        let permissions = std::mem::take(&mut self.draft_permissions);
+        if !permissions.is_default()
+            && let Some(c) = self.conv_mut(id)
+        {
+            c.permissions = permissions;
+        }
         let options = std::mem::take(&mut self.draft_model_options);
         if !options.is_empty()
             && let Some(c) = self.conv_mut(id)
@@ -418,6 +427,25 @@ impl ChatApp {
             c.model_options = options;
         }
         id
+    }
+
+    /// The current chat's tool permissions (or the draft ones).
+    fn permissions(&self) -> &crate::approval::ChatPermissions {
+        self.current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .map_or(&self.draft_permissions, |c| &c.permissions)
+    }
+
+    fn set_permissions(&mut self, permissions: crate::approval::ChatPermissions) {
+        match self.current.and_then(|id| self.conv_mut(id)) {
+            Some(conv) => {
+                conv.permissions = permissions;
+                if !conv.messages.is_empty() {
+                    conv.save();
+                }
+            }
+            None => self.draft_permissions = permissions,
+        }
     }
 
     /// The current chat's reasoning and sampling options (or the draft ones).
@@ -548,7 +576,11 @@ impl ChatApp {
         use egui::containers::menu::{MenuButton, MenuConfig};
 
         let overrides = self.tool_overrides().clone();
-        let sel = ToolSelection::new(&self.settings, &overrides);
+        let mut permissions = self.permissions().clone();
+        let permissions_before = permissions.clone();
+        let read_only = permissions.mode == crate::approval::ApprovalMode::ReadOnly;
+        let sandbox_on = self.settings.sandbox.enabled;
+        let sel = ToolSelection::new(&self.settings, &overrides).with_mode(permissions.mode);
         let views = self.mcp_views();
         let servers: Vec<(String, String)> = self
             .settings
@@ -596,7 +628,7 @@ impl ChatApp {
         let dark = ui.visuals().dark_mode;
         let label =
             RichText::new(format!("{}  {}", icon::SLIDERS, builtins_on + mcp_on)).size(14.0);
-        let label = if overrides.is_empty() {
+        let label = if overrides.is_empty() && permissions.is_default() {
             label
         } else {
             label.color(theme::accent(dark))
@@ -614,6 +646,8 @@ impl ChatApp {
                             .small()
                             .weak(),
                     );
+                    ui.separator();
+                    crate::ui::widgets::permissions_picker(ui, &mut permissions, sandbox_on);
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .max_height(420.0)
@@ -648,7 +682,18 @@ impl ChatApp {
                                     } else {
                                         icon::FOLDER
                                     };
-                                    if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
+                                    let locked =
+                                        read_only && crate::tools::workspace::changes_things(key);
+                                    let resp = ui.add_enabled(
+                                        !locked,
+                                        egui::Checkbox::new(&mut on, format!("{ic}  {name}")),
+                                    );
+                                    let resp = if locked {
+                                        resp.on_disabled_hover_text("Off in Read only mode")
+                                    } else {
+                                        resp
+                                    };
+                                    if resp.changed() {
                                         changes.push((
                                             ToolOverrides::builtin_key(key),
                                             on,
@@ -764,14 +809,18 @@ impl ChatApp {
                     }
                 });
         resp.on_hover_text(format!(
-            "Tools for this chat: {} on{}",
+            "Tools for this chat: {} on{} · {}",
             builtins_on + mcp_on,
             if overrides.is_empty() {
                 ""
             } else {
                 " (changed from the defaults)"
-            }
+            },
+            permissions.mode.label()
         ));
+        if permissions != permissions_before {
+            self.set_permissions(permissions);
+        }
         for (key, on, default) in changes {
             self.set_tool_override(key, on, default);
         }
@@ -856,7 +905,9 @@ impl ChatApp {
             return;
         };
         self.errors.remove(&id);
-        let selection = ToolSelection::new(&self.settings, &conv.tool_overrides);
+        let permissions = conv.permissions.clone();
+        let selection =
+            ToolSelection::new(&self.settings, &conv.tool_overrides).with_mode(permissions.mode);
         // After a compaction only its summary and the messages since are sent.
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
@@ -881,10 +932,11 @@ impl ChatApp {
             delegation: Delegation::new(&self.settings, &selection),
             selection,
             workspace: conv.workspace.clone(),
-            sandbox: self.sandbox.clone(),
+            sandbox: self.sandbox.clone().filter(|_| !permissions.no_sandbox),
             summary,
             compaction,
             compact_only,
+            approval_mode: permissions.mode,
         };
         let (http, mcp, tx, ctx) = (
             self.http.clone(),

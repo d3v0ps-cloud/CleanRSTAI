@@ -128,7 +128,9 @@ too, as an installer and a portable `.exe`.
 - **Tool calling loop**: the model can call tools across multiple rounds. Each call shows its
   arguments and result, and asks for your approval unless you turn on auto-approve. On the
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
-  for that tool or MCP server for the rest of the chat (until the app quits).
+  for that tool or MCP server for the rest of the chat (until the app quits). **Permissions**
+  in each chat's tools menu picks Default, Auto in workspace (file edits and sandboxed commands
+  run without asking), Allow all or Read only, and can switch the terminal sandbox off for it.
 - **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
   accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
   the model picker beneath; your messages sit in bubbles on the right, replies run full

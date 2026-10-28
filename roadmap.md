@@ -308,7 +308,7 @@ in them follows the same rule:
 
 ## 20. Approval modes
 
-- [ ] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
+- [x] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
   workspace** (writes and sandboxed commands run freely, the rest asks) and **Full access**
 - [ ] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
   before it changes anything
