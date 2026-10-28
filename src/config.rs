@@ -100,6 +100,47 @@ impl ProviderKind {
     }
 }
 
+/// The API a provider speaks.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderApi {
+    /// OpenAI-compatible `/chat/completions`, which almost every server offers.
+    #[default]
+    ChatCompletions,
+    /// OpenAI's `/responses`.
+    Responses,
+    /// Anthropic's `/messages`, with prompt caching and extended thinking.
+    Anthropic,
+}
+
+impl ProviderApi {
+    pub const ALL: [ProviderApi; 3] = [Self::ChatCompletions, Self::Responses, Self::Anthropic];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "Chat Completions (OpenAI-compatible)",
+            Self::Responses => "OpenAI Responses",
+            Self::Anthropic => "Anthropic Messages",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => {
+                "POST /chat/completions. Works with OpenAI and almost every other server."
+            }
+            Self::Responses => {
+                "POST /responses, OpenAI's newer API: reasoning summaries and reasoning kept \
+                 between tool calls. Stop sequences aren't supported."
+            }
+            Self::Anthropic => {
+                "POST /messages with an x-api-key header: prompt caching and extended thinking. \
+                 Base URL https://api.anthropic.com/v1."
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -111,8 +152,17 @@ pub struct ProviderConfig {
     pub model: String,
     /// Models discovered via `GET /models`, cached for the model picker.
     pub models: Vec<String>,
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
+    /// Reasoning and sampling options for every model of this provider. Flattened, so the
+    /// `temperature` and `max_tokens` of older settings files still load.
+    #[serde(flatten)]
+    pub options: crate::model_options::ModelOptions,
+    /// Options for single models (by name), over the provider's.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_options: std::collections::BTreeMap<String, crate::model_options::ModelOptions>,
+    /// Which API the provider speaks.
+    pub api: ProviderApi,
+    /// Anthropic Messages API: mark the system prompt, tools and latest message for caching.
+    pub prompt_caching: bool,
     pub stream: bool,
     pub extra_headers: Vec<KeyValue>,
     pub timeout_secs: u64,
@@ -130,14 +180,34 @@ impl Default for ProviderConfig {
             api_key: String::new(),
             model: "gpt-4o-mini".into(),
             models: Vec::new(),
-            temperature: None,
-            max_tokens: None,
+            options: Default::default(),
+            model_options: Default::default(),
+            api: ProviderApi::default(),
+            prompt_caching: true,
             stream: true,
             extra_headers: Vec::new(),
             timeout_secs: 300,
             kind: ProviderKind::Generic,
             request_usage: true,
         }
+    }
+}
+
+impl ProviderConfig {
+    /// The options for the current model: the provider's, with the model's own over them.
+    pub fn resolved_options(&self) -> crate::model_options::ModelOptions {
+        match self.model_options.get(self.model.trim()) {
+            Some(m) => m.over(&self.options),
+            None => self.options.clone(),
+        }
+    }
+
+    /// This provider with a chat's options over its own, for that chat's requests.
+    pub fn with_chat_options(&self, chat: &crate::model_options::ModelOptions) -> Self {
+        let mut p = self.clone();
+        p.options = chat.over(&self.resolved_options());
+        p.model_options.clear();
+        p
     }
 }
 
@@ -1446,6 +1516,61 @@ mod tests {
             s.general.builtin_tools.search.searxng_url,
             "https://searx.example"
         );
+    }
+
+    #[test]
+    fn older_provider_sampling_settings_still_load() {
+        let p: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "Old", "model": "m", "temperature": 0.5, "max_tokens": 100}))
+        .unwrap();
+        assert_eq!(p.options.temperature, Some(0.5));
+        assert_eq!(p.options.max_tokens, Some(100));
+        assert_eq!(p.api, ProviderApi::ChatCompletions);
+        assert!(p.prompt_caching);
+        let p: ProviderConfig =
+            serde_json::from_value(serde_json::json!({"temperature": null})).unwrap();
+        assert_eq!(p.options.temperature, None);
+        let back: ProviderConfig =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn options_layer_provider_model_and_chat() {
+        use crate::model_options::{ModelOptions, ReasoningEffort};
+        let mut p = ProviderConfig {
+            model: "big".into(),
+            options: ModelOptions {
+                temperature: Some(0.1),
+                top_p: Some(0.5),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        p.model_options.insert(
+            "big".into(),
+            ModelOptions {
+                temperature: Some(0.2),
+                reasoning_effort: Some(ReasoningEffort::Low),
+                ..Default::default()
+            },
+        );
+        let r = p.resolved_options();
+        assert_eq!(
+            (r.temperature, r.top_p, r.reasoning_effort),
+            (Some(0.2), Some(0.5), Some(ReasoningEffort::Low))
+        );
+        let chat = ModelOptions {
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        };
+        let c = p.with_chat_options(&chat).resolved_options();
+        assert_eq!(
+            (c.temperature, c.reasoning_effort),
+            (Some(0.2), Some(ReasoningEffort::High))
+        );
+        p.model = "small".into();
+        assert_eq!(p.resolved_options().temperature, Some(0.1));
     }
 
     #[test]

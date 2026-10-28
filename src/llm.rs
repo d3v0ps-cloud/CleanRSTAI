@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 
-use crate::config::{ProviderConfig, ProviderKind};
+use crate::config::{ProviderApi, ProviderConfig, ProviderKind};
 use crate::sse::SseParser;
 use crate::stats::{Collector, RequestStats};
 use crate::types::{ChatMessage, Role, ToolCall};
@@ -29,6 +29,8 @@ pub struct AssistantTurn {
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
     pub stats: RequestStats,
+    /// Items a native API needs back with the next request.
+    pub native: Option<crate::types::NativeItems>,
 }
 
 pub fn build_http_client() -> reqwest::Client {
@@ -47,7 +49,12 @@ pub(crate) fn authorize(
     mut req: reqwest::RequestBuilder,
     p: &ProviderConfig,
 ) -> reqwest::RequestBuilder {
-    if !p.api_key.trim().is_empty() {
+    if p.api == ProviderApi::Anthropic {
+        req = req.header("anthropic-version", "2023-06-01");
+        if !p.api_key.trim().is_empty() {
+            req = req.header("x-api-key", p.api_key.trim());
+        }
+    } else if !p.api_key.trim().is_empty() {
         req = req.bearer_auth(p.api_key.trim());
     }
     for h in &p.extra_headers {
@@ -58,7 +65,7 @@ pub(crate) fn authorize(
     req
 }
 
-async fn error_from_response(resp: reqwest::Response) -> anyhow::Error {
+pub(crate) async fn error_from_response(resp: reqwest::Response) -> anyhow::Error {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     let detail = serde_json::from_str::<Value>(&body)
@@ -616,8 +623,10 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
                 }
             }
             Role::Assistant if m.tool_calls.is_empty() => {
-                if !m.content.is_empty() {
-                    out.push(json!({"role": "assistant", "content": m.content}));
+                if !m.content.is_empty() || m.native.is_some() {
+                    let mut v = json!({"role": "assistant", "content": m.content});
+                    add_native(&mut v, m);
+                    out.push(v);
                 }
             }
             Role::Assistant => {
@@ -629,11 +638,13 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
                                "function": {"name": c.name, "arguments": c.arguments}})
                     })
                     .collect();
-                out.push(json!({
+                let mut v = json!({
                     "role": "assistant",
                     "content": if m.content.is_empty() { Value::Null } else { json!(m.content) },
                     "tool_calls": calls,
-                }));
+                });
+                add_native(&mut v, m);
+                out.push(v);
                 // Gather the tool results that follow, then add placeholders for missing ones.
                 let mut j = i + 1;
                 let mut answered = Vec::new();
@@ -660,6 +671,16 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
         i += 1;
     }
     out
+}
+
+/// Keep a native API's items with the message; only that API reads them, and
+/// `chat_completion` removes them before sending to any other.
+fn add_native(v: &mut Value, m: &ChatMessage) {
+    if let Some(n) = &m.native
+        && let Ok(n) = serde_json::to_value(n)
+    {
+        v[crate::native::NATIVE_KEY] = n;
+    }
 }
 
 #[derive(Default)]
@@ -738,11 +759,42 @@ pub async fn chat_completion(
     p: &ProviderConfig,
     messages: Vec<Value>,
     tools: &[ToolSpec],
-    mut on_delta: impl FnMut(Delta<'_>),
-    mut on_stats: impl FnMut(RequestStats),
+    mut on_delta: impl FnMut(Delta<'_>) + Send,
+    mut on_stats: impl FnMut(RequestStats) + Send,
 ) -> Result<AssistantTurn> {
     if p.model.trim().is_empty() {
         bail!("No model selected. Choose one in Settings → Providers.");
+    }
+    match p.api {
+        ProviderApi::Anthropic => {
+            return crate::native::anthropic(
+                http,
+                p,
+                messages,
+                tools,
+                &mut on_delta,
+                &mut on_stats,
+            )
+            .await;
+        }
+        ProviderApi::Responses => {
+            return crate::native::responses(
+                http,
+                p,
+                messages,
+                tools,
+                &mut on_delta,
+                &mut on_stats,
+            )
+            .await;
+        }
+        ProviderApi::ChatCompletions => {}
+    }
+    let mut messages = messages;
+    for m in &mut messages {
+        if let Some(o) = m.as_object_mut() {
+            o.remove(crate::native::NATIVE_KEY);
+        }
     }
     let mut body = json!({
         "model": p.model.trim(),
@@ -758,12 +810,8 @@ pub async fn chat_completion(
             })
             .collect();
     }
-    if let Some(t) = p.temperature {
-        body["temperature"] = json!(t);
-    }
-    if let Some(m) = p.max_tokens {
-        body["max_tokens"] = json!(m);
-    }
+    p.resolved_options()
+        .apply_chat_completions(&mut body, p.kind);
     // llama.cpp reports how far it has got reading the prompt, which can take minutes on
     // a long one. Other servers may refuse fields they don't know, so only for llama.cpp.
     // OpenRouter reports the cost and cached tokens when asked to account for usage.

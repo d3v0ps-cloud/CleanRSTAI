@@ -30,7 +30,11 @@ when the server restarts ([Remote access](../using/remote-access.html)).
 ## What leaves your computer
 
 - **Your messages and attachments** go to the provider you chose, along with the system
-  prompt and the descriptions of the tools that are on.
+  prompt and the descriptions of the tools that are on. With the OpenAI Responses API the app
+  asks OpenAI not to store the response (`store: false`); the model's reasoning then comes back
+  encrypted and is kept in the chat file to send back. With the Anthropic Messages API, the
+  model's signed thinking is kept in the chat file the same way, and prompt caching (on by
+  default) lets Anthropic hold the cached prompt briefly (minutes) to reuse it.
 - **Tool calls**: MCP tools go to their servers; web fetch requests the URL the model chose;
   web search sends the model's query to the search service chosen in
   [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave and

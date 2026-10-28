@@ -4,7 +4,7 @@
 use eframe::egui;
 
 use super::theme::icon;
-use super::widgets::{code_block, icon_button, kv_editor, list_editor, optional_value};
+use super::widgets::{code_block, icon_button, kv_editor, list_editor};
 use crate::config::{
     DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
     McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
@@ -941,13 +941,33 @@ impl SettingsUi {
                             ui.end_row();
                         }
 
-                        ui.label("Temperature");
-                        optional_value(ui, &mut p.temperature, 0.7, 0.0..=2.0, 0.01);
+                        ui.label("API");
+                        ui.vertical(|ui| {
+                            egui::ComboBox::from_id_salt("provider-api")
+                                .selected_text(p.api.label())
+                                .width(260.0)
+                                .show_ui(ui, |ui| {
+                                    for api in crate::config::ProviderApi::ALL {
+                                        ui.selectable_value(&mut p.api, api, api.label())
+                                            .on_hover_text(api.description());
+                                    }
+                                });
+                            ui.weak(p.api.description());
+                        });
                         ui.end_row();
 
-                        ui.label("Max tokens");
-                        optional_value(ui, &mut p.max_tokens, 4096, 1..=1_000_000, 16.0);
-                        ui.end_row();
+                        if p.api == crate::config::ProviderApi::Anthropic {
+                            ui.label("Prompt caching");
+                            ui.checkbox(
+                                &mut p.prompt_caching,
+                                "Cache the system prompt, tools and conversation so far",
+                            )
+                            .on_hover_text(
+                                "Later requests read the cached part at a tenth of the price; \
+                                 writing it costs a quarter more once.",
+                            );
+                            ui.end_row();
+                        }
 
                         ui.label("Server type");
                         ui.vertical(|ui| {
@@ -1017,6 +1037,48 @@ impl SettingsUi {
                         });
                         ui.end_row();
                     });
+
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new("Reasoning and sampling").strong());
+                ui.weak(
+                    "Unset options leave the server's default. A chat can change them under \
+                     the message box.",
+                );
+                ui.add_space(4.0);
+                crate::ui::widgets::model_options_grid(
+                    ui,
+                    "provider-options",
+                    &mut p.options,
+                    &Default::default(),
+                    p.api,
+                );
+                let model = p.model.trim().to_owned();
+                if !model.is_empty() {
+                    ui.add_space(6.0);
+                    let mut own = p.model_options.get(&model).cloned().unwrap_or_default();
+                    let title = if own.is_empty() {
+                        format!("Only for {model}")
+                    } else {
+                        format!("Only for {model} (changed)")
+                    };
+                    egui::CollapsingHeader::new(title)
+                        .id_salt(("model-options", idx))
+                        .show(ui, |ui| {
+                            ui.weak("These win over the options above for this model.");
+                            crate::ui::widgets::model_options_grid(
+                                ui,
+                                "model-options-grid",
+                                &mut own,
+                                &p.options,
+                                p.api,
+                            );
+                        });
+                    if own.is_empty() {
+                        p.model_options.remove(&model);
+                    } else {
+                        p.model_options.insert(model, own);
+                    }
+                }
 
                 ui.add_space(8.0);
                 if is_active {

@@ -379,6 +379,7 @@ impl Delegation {
 
             let mut msg = ChatMessage::new(Role::Assistant, turn.content.clone());
             msg.tool_calls = turn.tool_calls.clone();
+            msg.native = turn.native.clone();
             history.push(msg);
             if turn.tool_calls.is_empty() {
                 if turn.content.trim().is_empty() {

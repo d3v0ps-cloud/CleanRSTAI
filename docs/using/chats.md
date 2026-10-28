@@ -21,7 +21,8 @@ nav_order: 1
 - **Chat**: your messages sit in bubbles on the right; replies run full width, and tool calls
   show as collapsible cards.
 - **Message box** (bottom, or centred under the greeting in a new chat): **+** to attach
-  files, the tools menu (sliders icon), the MCP menu (books icon), the model picker and
+  files, the tools menu (sliders icon), the model options menu (sparkle icon), the MCP menu
+  (books icon), the model picker and
   **Set working directory**.
 
 ## Sending messages
@@ -35,6 +36,15 @@ While a reply is streaming, the send button becomes **Stop**.
 The model picker under the message box lists your provider profiles and the models fetched
 for each, and you can type a model name. **⌘/Ctrl + K** opens the command palette, where you
 can also switch provider or model.
+
+### Model options
+
+The sparkle menu under the message box sets **Reasoning effort**, **Thinking budget**,
+**Temperature**, **Top-p**, **Max tokens** and **Stop sequences** for this chat only. Unset
+options show the default they inherit from the provider and model
+([Settings → Providers](../settings/providers.html#reasoning-and-sampling)), or "server default".
+The button shows the effort and temperature in use, and turns the accent colour when the chat
+changes any; **Reset to defaults** clears the chat's own. Changes apply from the next message.
 
 ### Reasoning
 

@@ -29,6 +29,12 @@ too, as an installer and a portable `.exe`.
   or local servers such as Ollama, LM Studio, llama.cpp and vLLM. You can configure several
   provider profiles and switch provider and model from the picker under the message box (or
   with ⌘K).
+- **Native APIs** beside Chat Completions, chosen per provider: OpenAI's **Responses** API
+  (reasoning summaries, reasoning kept between tool calls) and Anthropic's **Messages** API
+  (extended thinking, prompt caching).
+- **Reasoning effort and sampling**: reasoning effort, thinking budget, temperature, top-p,
+  max tokens and stop sequences per provider, per model and per chat (from the sparkle menu
+  under the message box), each left to the server until you set it.
 - **Model discovery**: *Fetch models* calls `GET /models` and fills the model picker.
 - **Streaming** responses (SSE), with a non-streaming fallback for servers that don't support it.
 - **Speed and token stats**: under every reply, prefill and decode speed, prompt time and
@@ -122,7 +128,9 @@ too, as an installer and a portable `.exe`.
 - **Tool calling loop**: the model can call tools across multiple rounds. Each call shows its
   arguments and result, and asks for your approval unless you turn on auto-approve. On the
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
-  for that tool or MCP server for the rest of the chat (until the app quits).
+  for that tool or MCP server for the rest of the chat (until the app quits). **Permissions**
+  in each chat's tools menu picks Default, Auto in workspace (file edits and sandboxed commands
+  run without asking), Allow all or Read only, and can switch the terminal sandbox off for it.
 - **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
   accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
   the model picker beneath; your messages sit in bubbles on the right, replies run full
@@ -301,7 +309,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 | Tab | What you can set |
 |---|---|
 | General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
-| Providers | Name, base URL (with presets), API key, model, temperature, max tokens, server type (with detection), token usage, streaming, timeout, extra headers |
+| Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
@@ -425,6 +433,8 @@ src/
   tools/          built-in tools (time, calculator, task list, fetch, workspace), per-chat switches
   subagent.rs     the delegate tool: parallel subagents with their own model/tool loop
   llm.rs          OpenAI-compatible /chat/completions and /models client
+  native.rs       Anthropic Messages and OpenAI Responses clients
+  model_options.rs reasoning and sampling options per provider, model and chat
   sse.rs          incremental Server-Sent Events parser
   mcp/            MCP client: stdio and Streamable HTTP transports, OAuth, connection manager
   config.rs       settings model, persistence, mcpServers JSON import

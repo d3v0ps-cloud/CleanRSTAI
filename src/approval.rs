@@ -27,6 +27,80 @@ impl Approval {
     }
 }
 
+/// How a chat's tool calls are approved, picked in the chat's tools menu.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Ask for the calls that need approval, unless Settings or "Always allow" say otherwise.
+    #[default]
+    Default,
+    /// File writes and edits, and commands in the Docker sandbox, run without asking.
+    AutoWorkspace,
+    /// Every tool call runs without asking.
+    AllowAll,
+    /// No workspace writes or commands; other tools ask as by default.
+    ReadOnly,
+}
+
+impl ApprovalMode {
+    pub const ALL: [ApprovalMode; 4] = [
+        Self::Default,
+        Self::AutoWorkspace,
+        Self::AllowAll,
+        Self::ReadOnly,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default permissions",
+            Self::AutoWorkspace => "Auto in workspace",
+            Self::AllowAll => "Allow all",
+            Self::ReadOnly => "Read only",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Default => "Asks when approval settings don't apply",
+            Self::AutoWorkspace => "Edits files and runs sandboxed commands without asking",
+            Self::AllowAll => "Runs tool calls without asking",
+            Self::ReadOnly => "No file changes or commands; other tools ask",
+        }
+    }
+
+    /// Whether a call that would ask for approval runs without asking. `sandboxed`: shell
+    /// commands run in the Docker sandbox.
+    pub fn runs_unasked(self, function: &str, sandboxed: bool) -> bool {
+        use crate::tools::workspace::{SHELL, changes_things};
+        match self {
+            Self::AllowAll => true,
+            Self::AutoWorkspace => changes_things(function) && (function != SHELL || sandboxed),
+            Self::Default | Self::ReadOnly => false,
+        }
+    }
+}
+
+/// A chat's tool permissions.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatPermissions {
+    #[serde(skip_serializing_if = "is_default_mode")]
+    pub mode: ApprovalMode,
+    /// Run this chat's shell commands on this computer even when the Docker sandbox is on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_sandbox: bool,
+}
+
+fn is_default_mode(m: &ApprovalMode) -> bool {
+    *m == ApprovalMode::Default
+}
+
+impl ChatPermissions {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// A tool call waiting for the user's approval.
 pub struct PendingApproval {
     pub call: ToolCall,
@@ -176,5 +250,25 @@ mod tests {
             serde_json::from_str::<Approval>("\"always_server\"").unwrap(),
             Approval::AlwaysServer
         );
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn modes_decide_which_calls_ask() {
+        use ApprovalMode::*;
+        assert!(!Default.runs_unasked("write_file", true));
+        assert!(AllowAll.runs_unasked("srv__anything", false));
+        assert!(AutoWorkspace.runs_unasked("edit_file", false));
+        assert!(AutoWorkspace.runs_unasked("exec_shell_command", true));
+        assert!(!AutoWorkspace.runs_unasked("exec_shell_command", false));
+        assert!(!AutoWorkspace.runs_unasked("srv__tool", true));
+        assert!(!ReadOnly.runs_unasked("builtin__fetch", true));
+        let p: ChatPermissions = serde_json::from_str("{}").unwrap();
+        assert!(p.is_default());
+        assert_eq!(serde_json::to_string(&p).unwrap(), "{}");
     }
 }

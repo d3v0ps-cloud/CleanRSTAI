@@ -108,6 +108,23 @@ the change as a diff) and asks **Allow this tool to run?**:
 
 "Always allow" lasts until the app quits.
 
+### Permissions
+
+**Permissions** at the top of the tools menu picks how this chat's tool calls are approved,
+from the next call on. The tools menu icon turns the accent colour when a chat changes it.
+
+| Mode | What happens |
+|---|---|
+| **Default permissions** (default) | Calls ask as described above, unless the setting below or "Always allow" says otherwise. |
+| **Auto in workspace** | `write_file`, `edit_file` and commands in the Docker sandbox run without asking; commands on this computer, MCP tools, web fetch and `delegate` still ask. |
+| **Allow all** | Every tool call runs without asking, as with the setting below but for this chat only. |
+| **Read only** | The workspace tools that write files or run commands are off (also for subagents); other tools ask as by default. |
+
+**Sandboxing for terminal** (on when the [Docker sandbox](#docker-sandbox) is on) runs this
+chat's commands in the sandbox. Turn it off to run them on this computer; subagents then get no
+workspace, since they only run commands in containers. It can't be turned on while the sandbox
+is off in [Settings → Docker](../settings/docker.html).
+
 Approving a `delegate` call also approves what its subagents do: they call their tools without
 asking, including, when they may use the workspace, writing files and running commands in their
 own sandbox containers (see [Subagents](subagents.html)).

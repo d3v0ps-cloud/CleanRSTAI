@@ -308,7 +308,7 @@ in them follows the same rule:
 
 ## 20. Approval modes
 
-- [ ] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
+- [x] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
   workspace** (writes and sandboxed commands run freely, the rest asks) and **Full access**
 - [ ] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
   before it changes anything
@@ -334,11 +334,11 @@ in them follows the same rule:
 
 ## 23. Model options
 
-- [ ] Reasoning effort and thinking budget per provider and model (`reasoning_effort`,
+- [x] Reasoning effort and thinking budget per provider and model (`reasoning_effort`,
   `thinking`, llama.cpp and vLLM options), with a switch under the message box per chat
-- [ ] Other sampling settings (temperature, top-p, max tokens, stop sequences) per provider,
+- [x] Other sampling settings (temperature, top-p, max tokens, stop sequences) per provider,
   model and chat, each left unset unless the user changes it
-- [ ] Optional native APIs alongside OpenAI-compatible chat completions: the Anthropic Messages
+- [x] Optional native APIs alongside OpenAI-compatible chat completions: the Anthropic Messages
   API (prompt caching, thinking) and the OpenAI Responses API, chosen per provider
 
 ## 24. Live HTML preview, voice and generated files

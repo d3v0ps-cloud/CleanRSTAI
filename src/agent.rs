@@ -140,6 +140,8 @@ pub struct AgentRequest {
     pub compaction: Option<Compaction>,
     /// Only compact the chat now ("Compact now"), without asking the model anything else.
     pub compact_only: bool,
+    /// The chat's permission mode: which calls run without asking.
+    pub approval_mode: crate::approval::ApprovalMode,
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -337,6 +339,7 @@ pub async fn run(
             msg.reasoning = Some(turn.reasoning);
         }
         msg.tool_calls = turn.tool_calls;
+        msg.native = turn.native;
         let mut stats = turn.stats;
         // Only llama.cpp sends `timings` (source Server). Ask for the context size after such
         // a reply too: when Server type is left on Generic, or when a router had not loaded
@@ -375,7 +378,12 @@ pub async fn run(
         }
 
         for call in &calls {
-            let approved = if req.general.auto_approve_tools || !toolbox.asks(&call.name) {
+            let approved = if req.general.auto_approve_tools
+                || !toolbox.asks(&call.name)
+                || req
+                    .approval_mode
+                    .runs_unasked(&call.name, req.sandbox.is_some())
+            {
                 true
             } else {
                 let preview = match &workspace {
@@ -567,6 +575,7 @@ mod tests {
             summary: None,
             compaction: None,
             compact_only: false,
+            approval_mode: Default::default(),
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -649,6 +658,7 @@ mod tests {
             summary: None,
             compaction: None,
             compact_only: false,
+            approval_mode: Default::default(),
         }
     }
 
