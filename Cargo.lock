@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "cleanrstai"
-version = "0.9.1-dev.5"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "axum",
