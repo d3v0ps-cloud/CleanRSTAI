@@ -203,6 +203,13 @@ read (`stats.rs`: server timings vs. measured prefill/decode, cost, served model
 size). llama.cpp and LiteLLM extras live in `llm.rs`; the other four in `servers.rs`
 (detection, context size, and label/value rows for the info icon beside the model picker,
 which `ChatApp::server_status` refreshes in the background as an `AppEvent::ServerInfo`).
+`ProviderApi` picks the wire API: Chat Completions (`llm.rs`), or the Anthropic Messages and
+OpenAI Responses APIs in `native.rs`, which convert the Chat Completions messages from
+`llm::to_api_messages` and report the same `AssistantTurn`. Items those APIs need back
+(Anthropic's signed thinking, Responses' encrypted reasoning) are kept on the message as
+`ChatMessage.native` and sent only to the API that made them. `model_options.rs` holds
+reasoning effort and sampling options, layered provider → model (`ProviderConfig::resolved_options`)
+→ chat (`Conversation.model_options`, applied by `with_chat_options` in `start_run_with`).
 
 ## UI conventions
 

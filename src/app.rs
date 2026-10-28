@@ -108,6 +108,8 @@ pub struct ChatApp {
     sidebar_open: bool,
     /// Tool switches made before the first message, applied to the chat it creates.
     draft_tool_overrides: ToolOverrides,
+    /// Reasoning and sampling options picked before the chat exists.
+    draft_model_options: crate::model_options::ModelOptions,
     /// A newer release found on GitHub.
     update: Option<crate::update::Release>,
     /// Progress of installing `update`, once the user starts it.
@@ -339,6 +341,7 @@ impl ChatApp {
             palette: Palette::default(),
             sidebar_open: true,
             draft_tool_overrides: ToolOverrides::default(),
+            draft_model_options: Default::default(),
             update: None,
             update_install: None,
             window_icon_dark: None,
@@ -408,7 +411,103 @@ impl ChatApp {
         {
             c.tool_overrides = draft;
         }
+        let options = std::mem::take(&mut self.draft_model_options);
+        if !options.is_empty()
+            && let Some(c) = self.conv_mut(id)
+        {
+            c.model_options = options;
+        }
         id
+    }
+
+    /// The current chat's reasoning and sampling options (or the draft ones).
+    fn model_options(&self) -> &crate::model_options::ModelOptions {
+        self.current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .map_or(&self.draft_model_options, |c| &c.model_options)
+    }
+
+    fn set_model_options(&mut self, options: crate::model_options::ModelOptions) {
+        match self.current.and_then(|id| self.conv_mut(id)) {
+            Some(conv) => {
+                conv.model_options = options;
+                if !conv.messages.is_empty() {
+                    conv.save();
+                }
+            }
+            None => self.draft_model_options = options,
+        }
+    }
+
+    /// Dropdown next to the input: reasoning effort and sampling for this chat, over the
+    /// provider's and model's options from Settings.
+    fn model_options_menu(&mut self, ui: &mut egui::Ui) {
+        use egui::containers::menu::{MenuButton, MenuConfig};
+
+        let provider = self.settings.provider();
+        let inherited = provider.resolved_options();
+        let api = provider.api;
+        let mut options = self.model_options().clone();
+        let before = options.clone();
+        let effective = options.over(&inherited);
+        let dark = ui.visuals().dark_mode;
+        let summary = effective.summary();
+        let text = if summary.is_empty() {
+            icon::SPARKLE.to_owned()
+        } else {
+            format!("{}  {summary}", icon::SPARKLE)
+        };
+        let label = RichText::new(text).size(14.0);
+        let label = if options.is_empty() {
+            label
+        } else {
+            label.color(theme::accent(dark))
+        };
+        let mut reset = false;
+        let (resp, _) =
+            MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
+                .config(
+                    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                )
+                .ui(ui, |ui| {
+                    ui.set_min_width(320.0);
+                    ui.label(RichText::new("Model options for this chat").strong());
+                    ui.label(
+                        RichText::new(
+                            "Applies from the next message. Defaults are in Settings → Providers.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.separator();
+                    crate::ui::widgets::model_options_grid(
+                        ui,
+                        "chat-model-options",
+                        &mut options,
+                        &inherited,
+                        api,
+                    );
+                    if !options.is_empty() {
+                        ui.separator();
+                        if ui
+                            .button(format!("{}  Reset to defaults", icon::REGENERATE))
+                            .clicked()
+                        {
+                            reset = true;
+                        }
+                    }
+                });
+        resp.on_hover_text(if summary.is_empty() {
+            "Reasoning and sampling for this chat: server defaults".to_owned()
+        } else {
+            format!("Reasoning and sampling for this chat: {summary}")
+        });
+        if reset {
+            options = Default::default();
+        }
+        if options != before {
+            self.set_model_options(options);
+        }
     }
 
     /// The current chat's tool switches (or the draft ones before a chat exists).
@@ -772,7 +871,7 @@ impl ChatApp {
         });
         let req = AgentRequest {
             conv_id: id,
-            provider,
+            provider: provider.with_chat_options(&conv.model_options),
             general: self.settings.general.clone(),
             history: conv.messages[from..]
                 .iter()
@@ -2717,6 +2816,7 @@ impl ChatApp {
                             self.attach_paths(paths);
                         }
                         self.tools_menu(ui);
+                        self.model_options_menu(ui);
                         self.mcp_menu(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if running {

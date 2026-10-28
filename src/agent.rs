@@ -337,6 +337,7 @@ pub async fn run(
             msg.reasoning = Some(turn.reasoning);
         }
         msg.tool_calls = turn.tool_calls;
+        msg.native = turn.native;
         let mut stats = turn.stats;
         // Only llama.cpp sends `timings` (source Server). Ask for the context size after such
         // a reply too: when Server type is left on Generic, or when a router had not loaded

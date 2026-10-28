@@ -11,7 +11,7 @@ opens on **General** and takes over the main window.
 | Page | What you can set |
 |---|---|
 | [General](general.html) | System prompt, theme, UI scale, send key, secrets, updates, reasoning display, stats, web images, artifacts and live web page preview, tool approval, tool rounds and timeout, remote access and Cloudflare Tunnel, export and import |
-| [Providers](providers.html) | Endpoints: base URL, API key, model, temperature, max tokens, server type, token usage, streaming, timeout, extra headers |
+| [Providers](providers.html) | Endpoints: base URL, API (Chat Completions, Responses, Anthropic), API key, model, reasoning effort and sampling options per provider and model, server type, token usage, streaming, timeout, extra headers |
 | [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
 | [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch, web search (service, key, results) and workspace tools on or off by default |
 | [Context & files](context.html) | Context compaction (threshold, kept messages, context size, summary model and instructions, shortening older tool results), project instructions (`AGENTS.md`, `CLAUDE.md`), diffs and undo for file edits |

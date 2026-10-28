@@ -63,6 +63,17 @@ pub struct ChatMessage {
     /// before it are no longer sent to the model, only the summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionInfo>,
+    /// For an assistant message from a native API: items that API needs back on the next
+    /// request (Anthropic's signed thinking blocks, the Responses API's reasoning items).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeItems>,
+}
+
+/// Provider-specific output kept so it can be sent back, only to the API that made it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct NativeItems {
+    pub api: crate::config::ProviderApi,
+    pub items: Vec<serde_json::Value>,
 }
 
 /// One file changed by `write_file` or `edit_file`.
@@ -151,6 +162,7 @@ impl ChatMessage {
             sandbox: None,
             edit: None,
             compaction: None,
+            native: None,
         }
     }
 
@@ -180,6 +192,12 @@ pub struct Conversation {
     /// The local folder this chat works in, with the workspace tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<std::path::PathBuf>,
+    /// Reasoning and sampling options for this chat, over the provider's and the model's.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model_options::ModelOptions::is_empty"
+    )]
+    pub model_options: crate::model_options::ModelOptions,
 }
 
 impl Conversation {
@@ -194,6 +212,7 @@ impl Conversation {
             pinned: false,
             tool_overrides: Default::default(),
             workspace: None,
+            model_options: Default::default(),
         }
     }
 

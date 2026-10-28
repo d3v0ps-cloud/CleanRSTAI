@@ -15,6 +15,8 @@ mod export;
 mod instructions;
 mod llm;
 mod mcp;
+mod model_options;
+mod native;
 mod remote;
 mod sandbox;
 mod secrets;

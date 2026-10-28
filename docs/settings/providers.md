@@ -7,7 +7,8 @@ nav_order: 2
 # Providers
 {: .no_toc }
 
-OpenAI-compatible endpoints the app can talk to. You can keep several provider profiles and
+Endpoints the app can talk to: OpenAI-compatible Chat Completions, OpenAI's Responses API or
+Anthropic's Messages API. You can keep several provider profiles and
 switch between them from the model picker under the message box or with **⌘/Ctrl + K**.
 
 1. TOC
@@ -47,23 +48,33 @@ The API root, ending in `/v1` (without `/chat/completions`). **Presets** fills i
 | LM Studio (local) | `http://localhost:1234/v1` |
 | llama.cpp / vLLM (local) | `http://localhost:8000/v1` |
 
+### API
+
+Which API the provider speaks:
+
+| API | Request | Notes |
+|---|---|---|
+| **Chat Completions (OpenAI-compatible)** (default) | `POST /chat/completions` | Works with OpenAI and almost every other server. |
+| **OpenAI Responses** | `POST /responses` | OpenAI's newer API, also served by some local servers. Shows reasoning summaries and keeps the model's (encrypted) reasoning between tool calls when a reasoning effort is set. Nothing is stored on OpenAI's side (`store: false`). Stop sequences aren't supported. |
+| **Anthropic Messages** | `POST /messages` | Base URL `https://api.anthropic.com/v1`. Extended thinking (kept between tool calls, as the API requires) and prompt caching. The key goes in the `x-api-key` header. Without **Max tokens**, replies may use up to 8,192 tokens (plus the thinking budget). |
+
+The server type's extra statistics still apply when they come from the server's own endpoints.
+
+### Prompt caching
+
+Shown for **Anthropic Messages** (default on). Marks the system prompt, the tools and the
+conversation so far for caching, so later requests in the chat read them at a tenth of the
+input price; writing the cache costs a quarter more, once. Cached tokens show in the stats.
+
 ### API key
 
-Sent as a bearer token. Leave it empty for local servers. **Show** reveals it. It is stored in
+Sent as a bearer token (or as `x-api-key` for the Anthropic Messages API). Leave it empty for local servers. **Show** reveals it. It is stored in
 the keychain (see [Secrets](general.html#secrets)).
 
 ### Model
 
 The model name to request. **Fetch models** calls `GET /models` and fills a drop-down with the
 server's models; the list is also offered in the model picker.
-
-### Temperature
-
-Off by default, so the server's own default is used. Turn it on to send a value from 0 to 2.
-
-### Max tokens
-
-Off by default. Turn it on to cap the reply length (1 to 1,000,000 tokens).
 
 ### Server type
 
@@ -100,6 +111,27 @@ How long to wait for a response: 10 to 3600 seconds, default 300.
 Header names and values added to every request, for example an organisation or project header
 or a proxy's own key. Values are stored in the keychain.
 
+## Reasoning and sampling
+
+Below the fields, options sent with each request. All are unset by default, so the server's own
+default applies; tick an option's box to set it.
+
+| Option | Range | Sent as |
+|---|---|---|
+| **Reasoning effort** | Off, Minimal, Low, Medium, High | `reasoning_effort` (Generic, LiteLLM, Ollama, LM Studio); `reasoning.effort` for OpenRouter and the Responses API; `chat_template_kwargs.enable_thinking` (plus `reasoning_effort`) for llama.cpp and vLLM; a thinking budget for Anthropic (1,024 / 2,048 / 8,192 / 24,576 tokens). **Off** asks the model not to think where the server can. |
+| **Thinking budget** | 1,024 to 128,000 tokens | `thinking.budget_tokens` (Anthropic, LiteLLM and servers that take `thinking`), `reasoning.max_tokens` for OpenRouter. Not used by the Responses API, llama.cpp or vLLM. |
+| **Temperature** | 0 to 2 | `temperature` (left out with Anthropic extended thinking, which doesn't allow it) |
+| **Top-p** | 0 to 1 | `top_p` (also left out with Anthropic extended thinking) |
+| **Max tokens** | 1 to 1,000,000 | `max_tokens` (`max_output_tokens` for Responses) |
+| **Stop sequences** | one per line | `stop` (`stop_sequences` for Anthropic; not supported by Responses) |
+
+Models that don't reason may reject a reasoning effort or budget: leave them unset for those.
+
+**Only for *model*** sets options for the provider's current model alone; they win over the
+provider's. Each chat can change them again from the sparkle menu under the message box (see
+[Model options](../using/chats.html#model-options)). Subagents and compaction use the provider
+and model options, not a chat's.
+
 ## Examples
 
 ### Ollama
@@ -114,3 +146,10 @@ or a proxy's own key. Values are stored in the keychain.
 2. Paste your OpenRouter key.
 3. **Fetch models**, then pick a model such as `anthropic/claude-sonnet-4`. OpenRouter reports
    the cost of each reply, which shows in the stats.
+
+### Anthropic
+
+1. **Base URL** `https://api.anthropic.com/v1`, **API → Anthropic Messages**.
+2. Paste your Anthropic key.
+3. **Fetch models**, then pick a model such as `claude-sonnet-4-5`. Set a **Reasoning effort**
+   or **Thinking budget** to turn on extended thinking.
