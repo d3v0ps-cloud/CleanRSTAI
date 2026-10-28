@@ -263,18 +263,21 @@ pub fn model_options_grid(
                 Some(e) => format!("Default ({})", e.label()),
                 None => "Server default".into(),
             };
-            egui::ComboBox::from_id_salt((id_salt, "effort"))
-                .selected_text(
-                    o.reasoning_effort
-                        .map_or(default_label.clone(), |e| e.label().to_owned()),
-                )
-                .width(150.0)
-                .show_ui(ui, |ui| {
+            // A menu button rather than a ComboBox: inside the chat's options menu it becomes a
+            // submenu, whose clicks don't close that menu (a ComboBox popup's do).
+            let selected = o
+                .reasoning_effort
+                .map_or(default_label.clone(), |e| e.label().to_owned());
+            ui.menu_button(
+                format!("{selected}  {}", super::theme::icon::CARET_DOWN),
+                |ui| {
+                    ui.set_min_width(150.0);
                     ui.selectable_value(&mut o.reasoning_effort, None, default_label);
                     for e in ReasoningEffort::ALL {
                         ui.selectable_value(&mut o.reasoning_effort, Some(e), e.label());
                     }
-                });
+                },
+            );
             ui.end_row();
 
             ui.label("Thinking budget").on_hover_text(
@@ -349,4 +352,122 @@ pub fn model_options_grid(
             });
             ui.end_row();
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_options::{ModelOptions, ReasoningEffort};
+
+    /// Labels and centres of the widgets drawn in the last frame.
+    fn widgets(out: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
+        let Some(update) = &out.platform_output.accesskit_update else {
+            return Vec::new();
+        };
+        update
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| {
+                let label = n
+                    .label()
+                    .map(str::to_owned)
+                    .or_else(|| n.value().map(str::to_owned))?;
+                let b = n.bounds()?;
+                let c = egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
+                Some((label, c))
+            })
+            .collect()
+    }
+
+    fn find(w: &[(String, egui::Pos2)], label: &str) -> Option<egui::Pos2> {
+        w.iter()
+            .find(|(l, _)| l.starts_with(label))
+            .map(|(_, p)| *p)
+    }
+
+    /// The reasoning effort drop-down inside the chat's options menu (a popup, closed by a
+    /// click outside it) opens and takes a choice without closing that menu.
+    #[test]
+    fn effort_dropdown_works_inside_the_chat_menu() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut options = ModelOptions::default();
+        let frame = |events: Vec<egui::Event>, options: &mut ModelOptions| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                use egui::containers::menu::{MenuButton, MenuConfig};
+                MenuButton::new("Options")
+                    .config(
+                        MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| {
+                        ui.label("Model options for this chat");
+                        model_options_grid(
+                            ui,
+                            "test-options",
+                            options,
+                            &ModelOptions::default(),
+                            crate::config::ProviderApi::ChatCompletions,
+                        );
+                    });
+            });
+            out.textures_delta.clear();
+            out
+        };
+        let click = |pos: egui::Pos2| {
+            vec![
+                vec![egui::Event::PointerMoved(pos)],
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                vec![],
+                vec![],
+            ]
+        };
+        let run = |steps: Vec<Vec<egui::Event>>, options: &mut ModelOptions| {
+            let mut last = None;
+            for events in steps {
+                last = Some(frame(events, options));
+            }
+            widgets(&last.unwrap())
+        };
+
+        let w = run(vec![vec![], vec![]], &mut options);
+        let w = run(click(find(&w, "Options").unwrap()), &mut options);
+        assert!(
+            find(&w, "Model options for this chat").is_some(),
+            "menu opens"
+        );
+
+        let w = run(click(find(&w, "Server default").unwrap()), &mut options);
+        assert!(
+            find(&w, "Model options for this chat").is_some(),
+            "menu stays open"
+        );
+        let medium = find(&w, "Medium").expect("effort choices show");
+
+        let w = run(click(medium), &mut options);
+        assert_eq!(options.reasoning_effort, Some(ReasoningEffort::Medium));
+        assert!(
+            find(&w, "Model options for this chat").is_some(),
+            "menu still open"
+        );
+    }
 }
