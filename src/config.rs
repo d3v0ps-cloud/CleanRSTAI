@@ -1024,6 +1024,9 @@ pub struct GeneralSettings {
     /// Voice input (dictation into the message box) and reading replies aloud (see `voice`).
     #[serde(default)]
     pub voice: crate::voice::VoiceSettings,
+    /// Regenerating and editing keep the replaced version as a branch (see `branches`).
+    #[serde(default)]
+    pub branching: crate::branches::BranchSettings,
     /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
     #[serde(default)]
     pub save_as: SaveAsSettings,
@@ -1091,6 +1094,7 @@ impl Default for GeneralSettings {
             projects: Default::default(),
             plan: Default::default(),
             voice: Default::default(),
+            branching: Default::default(),
         }
     }
 }
@@ -1402,6 +1406,7 @@ impl Settings {
         self.general.plan.normalized();
         let providers = &self.providers;
         self.general.voice.normalize(providers);
+        self.general.branching.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -2099,6 +2104,17 @@ mod tests {
             back.default_approval_mode,
             crate::approval::ApprovalMode::ReadOnly
         );
+    }
+
+    #[test]
+    fn branching_settings_load_from_older_files_and_clamp() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.branching, crate::branches::BranchSettings::default());
+        assert!(s.branching.enabled);
+        let mut settings = Settings::default();
+        settings.general.branching.max_per_message = 0;
+        settings.normalize();
+        assert_eq!(settings.general.branching.max_per_message, 1);
     }
 
     #[test]

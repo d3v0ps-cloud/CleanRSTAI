@@ -3515,6 +3515,29 @@ impl SettingsUi {
                 );
                 ui.add_space(16.0);
                 ui.separator();
+                ui.strong("Branches");
+                ui.checkbox(&mut g.branching.enabled, "Keep the version a reply replaces")
+                    .on_hover_text(
+                        "Regenerating a reply, or editing a message, keeps the version it \
+                         replaces as a branch, with ‹ k/N › arrows to switch between them. Off, \
+                         the replaced version is dropped. Versions already kept stay switchable. \
+                         A chat's Branches switch overrides this.",
+                    );
+                ui.add_enabled_ui(g.branching.enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Versions kept per message");
+                        ui.add(
+                            egui::DragValue::new(&mut g.branching.max_per_message).range(1..=50),
+                        );
+                    });
+                    weak_note(
+                        ui,
+                        "Past this many, the oldest version of a message is dropped. Files \
+                         changed by a version are only undone while it is the one shown.",
+                    );
+                });
+                ui.add_space(16.0);
+                ui.separator();
                 ui.strong("Export & import");
                 ui.horizontal(|ui| {
                     if ui
@@ -3847,6 +3870,9 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "Plan mode after approval"),
     (Tab::General, "General", "Plan approval message"),
     (Tab::General, "General", "Plan instructions"),
+    (Tab::General, "General", "Branches"),
+    (Tab::General, "General", "Keep the version a reply replaces"),
+    (Tab::General, "General", "Versions kept per message"),
     (Tab::General, "General", "Max tool rounds"),
     (Tab::General, "General", "Tool timeout"),
     (Tab::General, "General", "Export settings"),
@@ -4118,6 +4144,8 @@ mod tests {
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
         assert_eq!(search_settings("plan mode")[0].0, Tab::General);
         assert_eq!(search_settings("plan instructions")[0].0, Tab::General);
+        assert_eq!(search_settings("branches")[0].0, Tab::General);
+        assert_eq!(search_settings("versions kept")[0].0, Tab::General);
         assert_eq!(search_settings("notify")[0].0, Tab::Background);
         assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);

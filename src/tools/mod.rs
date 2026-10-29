@@ -109,9 +109,10 @@ pub const CHECKPOINTS: &str = "checkpoints";
 pub const NOTIFY: &str = "notify";
 pub const HOOKS: &str = "hooks";
 pub const PROJECT: &str = "project";
+pub const BRANCHES: &str = "branches";
 
 /// Chat features with a per-chat switch, in display order: (key, label, description).
-pub const FEATURES: [(&str, &str, &str); 6] = [
+pub const FEATURES: [(&str, &str, &str); 7] = [
     (
         COMPACTION,
         "Context compaction",
@@ -144,6 +145,12 @@ pub const FEATURES: [(&str, &str, &str); 6] = [
         "Add the project's instructions and files to this chat's system prompt (chats in a \
          project only)",
     ),
+    (
+        BRANCHES,
+        "Branches",
+        "Keep the replaced reply when regenerating, or the old turn when editing, as a version \
+         you can switch back to with the arrows",
+    ),
 ];
 
 /// What one chat may use: Settings defaults plus that chat's overrides.
@@ -155,7 +162,7 @@ pub struct ToolSelection {
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
-    features: [bool; 6],
+    features: [bool; 7],
     /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
     skills_available: bool,
     /// The provider's own web search replaces the built-in `web_search` tool this request.
@@ -181,6 +188,7 @@ impl ToolSelection {
                 g.background.notify,
                 g.hooks.enabled,
                 g.projects.enabled,
+                g.branching.enabled,
             ],
             skills_available: false,
             native_search: false,
