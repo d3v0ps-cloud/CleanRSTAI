@@ -170,7 +170,8 @@ summarises the older messages, and from then on only that summary (in the system
 the latest messages are sent. A marker in the chat, **Earlier messages summarised**, shows
 where; it says how many messages it stands for and how many tokens the request had, and
 expands to show the summary. Everything above it stays in the chat for you to read, but the
-model no longer sees it. While the summary is written, *Summarising older messages…* shows.
+model no longer sees it. While the summary is written, *Summarising older messages…* shows. The
+request that writes the summary counts in the chat's totals and cost.
 
 **Compact now** in the tools menu (under **Chat features**) or **Compact this chat** in the
 command palette does it straight away. Switch automatic compaction off for a chat in the tools

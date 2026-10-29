@@ -170,6 +170,10 @@ pub struct ProviderConfig {
     pub kind: ProviderKind,
     /// Ask for token usage in streamed responses (`stream_options.include_usage`).
     pub request_usage: bool,
+    /// The model's context size in tokens, for when the server doesn't report it. Used for
+    /// compaction and the context-use figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u32>,
 }
 
 impl Default for ProviderConfig {
@@ -190,6 +194,7 @@ impl Default for ProviderConfig {
             timeout_secs: 300,
             kind: ProviderKind::Generic,
             request_usage: true,
+            context_tokens: None,
         }
     }
 }
@@ -480,6 +485,36 @@ medium or low) with its file and line, and say why it matters and how to fix it.
 praise and a restatement of what the change does. If you find nothing worth reporting, say so \
 plainly.";
 
+/// How much "Review changes" reports beyond the prompt's own list.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStrictness {
+    /// Only problems that would cause bugs, data loss or security issues.
+    Lenient,
+    /// The review prompt as written.
+    #[default]
+    Normal,
+    /// Also style, naming, readability, missing tests and documentation, and risky assumptions.
+    Strict,
+}
+
+impl ReviewStrictness {
+    /// The words added to the review prompt for this level; empty for `Normal`.
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Lenient => {
+                "Only report problems that would cause bugs, data loss or security issues; skip \
+                 style and minor suggestions."
+            }
+            Self::Normal => "",
+            Self::Strict => {
+                "Be thorough: also report style, naming, readability, missing tests and \
+                 documentation, and any risky assumption."
+            }
+        }
+    }
+}
+
 /// "Review changes": the working folder's git diff, sent to a model with a review prompt.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -497,6 +532,8 @@ pub struct ReviewSettings {
     pub model: String,
     /// Largest diff sent, in KB (16–4096); a longer one is cut.
     pub max_diff_kb: u32,
+    /// How far beyond the prompt the review reports.
+    pub strictness: ReviewStrictness,
 }
 
 impl Default for ReviewSettings {
@@ -509,6 +546,7 @@ impl Default for ReviewSettings {
             provider_id: String::new(),
             model: String::new(),
             max_diff_kb: 200,
+            strictness: ReviewStrictness::default(),
         }
     }
 }
@@ -1371,6 +1409,26 @@ pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn review_strictness_and_provider_context_size_load_from_older_files() {
+        let old: ReviewSettings = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+        assert_eq!(old.strictness, ReviewStrictness::Normal);
+        let strict: ReviewSettings = serde_json::from_str(r#"{"strictness": "strict"}"#).unwrap();
+        assert_eq!(strict.strictness, ReviewStrictness::Strict);
+        assert!(
+            serde_json::to_string(&ReviewSettings::default())
+                .unwrap()
+                .contains(r#""strictness":"normal""#)
+        );
+
+        let p = ProviderConfig::default();
+        assert_eq!(p.context_tokens, None);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("context_tokens"), "{json}");
+        let p: ProviderConfig = serde_json::from_str(r#"{"context_tokens": 8192}"#).unwrap();
+        assert_eq!(p.context_tokens, Some(8192));
+    }
+
     use super::*;
 
     #[test]

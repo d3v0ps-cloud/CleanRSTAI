@@ -9,8 +9,8 @@ use crate::commands::SlashCommand;
 use crate::config::{
     DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
     McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    ReviewScope, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings,
-    Settings, SlashCommandSettings, Theme, TunnelMode, import_mcp_json,
+    ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull,
+    SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
@@ -942,6 +942,20 @@ impl SettingsUi {
                             ui.end_row();
                         }
 
+                        ui.label("Context size").on_hover_text(
+                            "Used when the server doesn't report the model's context size; for \
+                             compaction and the context-use figure",
+                        );
+                        super::widgets::inherited_value(
+                            ui,
+                            &mut p.context_tokens,
+                            None,
+                            8192,
+                            1024..=10_000_000,
+                            256.0,
+                        );
+                        ui.end_row();
+
                         ui.label("API");
                         ui.vertical(|ui| {
                             egui::ComboBox::from_id_salt("provider-api")
@@ -1837,6 +1851,19 @@ impl SettingsUi {
                         ReviewScope::Branch,
                         "This branch against its base",
                     );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("How strict");
+                        ui.radio_value(&mut r.strictness, ReviewStrictness::Lenient, "Lenient")
+                            .on_hover_text("Only bugs, data loss and security issues");
+                        ui.radio_value(&mut r.strictness, ReviewStrictness::Normal, "Normal")
+                            .on_hover_text("The review instructions below, as written");
+                        ui.radio_value(&mut r.strictness, ReviewStrictness::Strict, "Strict")
+                            .on_hover_text(
+                                "Also style, naming, readability, missing tests and \
+                                 documentation, and risky assumptions",
+                            );
+                    });
                     ui.add_space(6.0);
                     egui::Grid::new("review-grid")
                         .num_columns(2)
@@ -2835,6 +2862,7 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Code review (review changes)",
     ),
     (Tab::Context, "Context & files", "Review prompt and model"),
+    (Tab::Context, "Context & files", "Code review strictness"),
     (
         Tab::Context,
         "Context & files",

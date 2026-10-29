@@ -35,11 +35,13 @@ pub enum ChatEvent {
     },
     /// The older messages are being summarised.
     Compacting,
-    /// The messages before the last `kept` ones were summarised as `summary`.
+    /// The messages before the last `kept` ones were summarised as `summary`, by a request
+    /// with these stats.
     Compacted {
         kept: usize,
         summary: String,
         info: CompactionInfo,
+        stats: Box<crate::stats::RequestStats>,
     },
     /// The project instruction files added to the system prompt.
     Instructions(Vec<String>),
@@ -239,6 +241,11 @@ pub async fn run(
         context_size = Some(n);
     }
     let prices = litellm.and_then(|m| m.prices);
+    // The provider's own context size, when the server reports none.
+    let server_reported = context_size.is_some();
+    if context_size.is_none() {
+        context_size = req.provider.context_tokens.map(u64::from);
+    }
     let mut summary = req.summary;
     let compaction = req.compaction;
     // Set once a compaction failed, so the rest of the run doesn't try again every round.
@@ -349,12 +356,14 @@ pub async fn run(
         // Only llama.cpp sends `timings` (source Server). Ask for the context size after such
         // a reply too: when Server type is left on Generic, or when a router had not loaded
         // the model yet at the start.
-        if context_size.is_none()
+        if !server_reported
             && !asked_context_after_reply
             && stats.source == crate::stats::StatsSource::Server
         {
             asked_context_after_reply = true;
-            context_size = llm::llama_cpp_context_size(&http, &req.provider).await;
+            if let Some(n) = llm::llama_cpp_context_size(&http, &req.provider).await {
+                context_size = Some(n);
+            }
         }
         stats.context_size = context_size;
         stats.slot_usage = slot_usage;
@@ -472,7 +481,7 @@ async fn compact(
         return Err("Nothing to compact yet: the chat is shorter than the messages kept.".into());
     };
     emit(ChatEvent::Compacting);
-    let mut new = compaction::summarise(http, c, summary.as_deref(), &history[..split])
+    let (mut new, stats) = compaction::summarise(http, c, summary.as_deref(), &history[..split])
         .await
         .map_err(|e| format!("Couldn't compact the chat: {e:#}"))?;
     if let Some(tasks) = compaction::carried_tasks(&history[..split], &history[split..]) {
@@ -488,6 +497,7 @@ async fn compact(
             tokens_before: tokens,
             manual,
         },
+        stats: Box::new(stats),
     });
     Ok(())
 }
@@ -762,6 +772,31 @@ mod tests {
             }
         }
         let stats = stats.unwrap();
+        assert_eq!(stats.context_use(), Some((102, 4096)));
+    }
+
+    #[tokio::test]
+    async fn the_provider_context_size_stands_in_when_the_server_reports_none() {
+        let (base, _) = serve(|_| {
+            Response::json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 2}
+            }))
+        })
+        .await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        assert_eq!(req.provider.context_tokens, None);
+        req.provider.context_tokens = Some(4096);
+        let events = drive(req).await;
+        let stats = events
+            .iter()
+            .find_map(|e| match e {
+                ChatEvent::AssistantFinal(m) => m.stats.clone(),
+                _ => None,
+            })
+            .expect("a reply");
         assert_eq!(stats.context_use(), Some((102, 4096)));
     }
 
@@ -1080,7 +1115,8 @@ mod tests {
                 "ok"
             };
             Response::json(serde_json::json!({
-                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
+                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 700, "completion_tokens": 30}
             }))
         })
         .await
@@ -1117,22 +1153,28 @@ mod tests {
         req.history = long_history(6);
         with_compaction(&mut req, &settings);
         let events = drive(req).await;
-        let (kept, summary) = events
+        let (kept, summary, stats) = events
             .iter()
             .find_map(|e| match e {
                 ChatEvent::Compacted {
                     kept,
                     summary,
                     info,
+                    stats,
                 } => {
                     assert_eq!(info.messages, 10);
                     assert!(!info.manual);
-                    Some((*kept, summary.clone()))
+                    Some((*kept, summary.clone(), stats.clone()))
                 }
                 _ => None,
             })
             .expect("compacted");
         assert_eq!((kept, summary.as_str()), (3, "SUMMARY-NOTES"));
+        // The summary request's usage travels with the event, for the chat's totals.
+        assert_eq!(
+            (stats.prompt_tokens, stats.completion_tokens),
+            (Some(700), Some(30))
+        );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2, "one summary request, then the reply");
         let reply = log[1].json();
