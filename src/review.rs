@@ -5,10 +5,9 @@
 
 use std::path::Path;
 
-use tokio::process::Command;
-
 use crate::attach::Attachment;
 use crate::config::{ReviewScope, ReviewSettings};
+use crate::git;
 
 /// The name the diff is attached under.
 pub const DIFF_NAME: &str = "changes.diff";
@@ -73,12 +72,11 @@ pub fn attachment(diff: &ReviewDiff) -> Attachment {
     }
 }
 
-/// Runs `git` in `dir` and returns its standard output, or its error output.
-async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+/// Runs `git` in `dir` (through [`git::command`]) and returns its standard output, or its
+/// error output.
+async fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = git::command(dir)
         .args(args)
-        .current_dir(dir)
-        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| format!("Couldn't run git: {e}"))?;
@@ -95,14 +93,24 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// Reads the diff that `settings.scope` asks for, from the git repository at `dir`.
 pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff, String> {
-    let inside = git(dir, &["rev-parse", "--is-inside-work-tree"]).await;
+    let inside = run_git(dir, &["rev-parse", "--is-inside-work-tree"]).await;
     if inside.ok().as_deref().map(str::trim) != Some("true") {
         return Err("The working folder isn't a git repository".into());
     }
     let (mut text, untracked, covers) = match settings.scope {
         ReviewScope::Uncommitted => {
-            let text = git(dir, &["diff", "--no-color", "--no-ext-diff", "HEAD"]).await?;
-            let listed = git(dir, &["ls-files", "--others", "--exclude-standard"]).await?;
+            let text = run_git(
+                dir,
+                &[
+                    "diff",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "HEAD",
+                ],
+            )
+            .await?;
+            let listed = run_git(dir, &["ls-files", "--others", "--exclude-standard"]).await?;
             let names: Vec<String> = listed
                 .lines()
                 .filter(|l| !l.is_empty())
@@ -115,7 +123,7 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
             )
         }
         ReviewScope::Branch => {
-            let origin_head = git(
+            let origin_head = run_git(
                 dir,
                 &[
                     "symbolic-ref",
@@ -126,7 +134,7 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
             )
             .await
             .ok();
-            let branches = git(
+            let branches = run_git(
                 dir,
                 &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
             )
@@ -138,9 +146,18 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
                 return Err(format!("The base branch {base} isn't a valid branch name"));
             }
             let range = format!("{base}...HEAD");
-            let text = git(dir, &["diff", "--no-color", "--no-ext-diff", &range])
-                .await
-                .map_err(|e| format!("Couldn't diff against {base}: {e}"))?;
+            let text = run_git(
+                dir,
+                &[
+                    "diff",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    &range,
+                ],
+            )
+            .await
+            .map_err(|e| format!("Couldn't diff against {base}: {e}"))?;
             (
                 text,
                 Vec::new(),

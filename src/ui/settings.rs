@@ -1487,7 +1487,7 @@ impl SettingsUi {
                         &mut b.workspace,
                         icon::FOLDER,
                         "Workspace tools",
-                        "When a chat has a working folder (set below the message box): read_file, file_glob_search, grep_search and get_info run freely inside it; write_file, edit_file and exec_shell_command ask for approval. Paths can't leave the folder.",
+                        "When a chat has a working folder (set below the message box): read_file, file_glob_search, grep_search, get_info, git_status and git_diff run freely inside it; write_file, edit_file and exec_shell_command ask for approval. Paths can't leave the folder.",
                     ),
                 ] {
                     ui.horizontal(|ui| {

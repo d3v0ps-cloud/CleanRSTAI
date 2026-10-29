@@ -13,6 +13,7 @@ mod config;
 mod documents;
 mod env_path;
 mod export;
+mod git;
 mod instructions;
 mod llm;
 mod mcp;

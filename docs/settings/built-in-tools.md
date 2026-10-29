@@ -17,7 +17,7 @@ default.
 | **Task list** | For multi-step requests the model breaks the work into tasks, shows them as a checklist in the chat and ticks them off as it goes. |
 | **Web fetch** | Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch. |
 | **Web search** | Searches the web with the service below and lists the results (title, address, snippet), so the model can read the useful pages with web fetch. Asks for approval before each search by default. |
-| **Workspace tools** | When a chat has a working folder: `read_file`, `file_glob_search`, `grep_search` and `get_info` run freely inside it; `write_file`, `edit_file` and `exec_shell_command` ask for approval. Paths can't leave the folder. |
+| **Workspace tools** | When a chat has a working folder: `read_file`, `file_glob_search`, `grep_search`, `get_info`, `git_status` and `git_diff` run freely inside it; `write_file`, `edit_file` and `exec_shell_command` ask for approval. Paths can't leave the folder. |
 
 ## Let web fetch reach this computer and private networks
 

@@ -306,8 +306,8 @@ in them follows the same rule:
 - [ ] A list of the files a chat changed, with their diffs together
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
-- [ ] Optional Git awareness when the workspace is a repository: `git_status` and `git_diff`
-  tools, and commit (with approval), each switched separately
+- [x] Read-only `git_status` and `git_diff` workspace tools
+- [ ] Commit from the chat (with approval)
 
 ## 20. Approval modes
 
