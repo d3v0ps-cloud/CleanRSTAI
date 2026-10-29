@@ -22,9 +22,8 @@ Responses APIs, and per-chat permission modes in **v0.9.1**, and forking a chat,
 commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's stats, review
 strictness, a context size per provider, a default permission mode, Kagi search, the changed
 files list and read-only git tools in **v0.9.2-dev.2**, and skills and background replies (a
-limit on replies at once with a queue, a time limit, desktop notifications, and the Background
-settings) in **v0.9.2**, and the command-line mode (`cleanrstai exec`, with its settings on the
-Background tab) in **v0.9.2**.
+limit on replies at once with a queue, a time limit, desktop notifications, the Background
+settings, and keeping running in the menu bar or system tray) and scheduled tasks in **v0.9.2**, and the command-line mode (`cleanrstai exec`, with its settings on the Background tab) in **v0.9.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -376,14 +375,13 @@ in them follows the same rule:
 - [x] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
   settings and prints the reply, for scripts and CI; turned on in Settings, with its own
   approval mode (read only by default)
-- [ ] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and
-  Windows/Linux system-tray icons to reopen the window or quit
+- [x] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and a
+  Windows system-tray icon to reopen the window or quit (a Linux tray is still to come)
 - [x] Background tasks: a request keeps running when another chat is open, and notifies when
   it finishes, fails or needs approval
-- [ ] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
+- [x] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
 - [x] Settings and limits for background replies: notifications on or off, how many run at once
-  (the rest queue) and a time limit. Settings for the tray icon and scheduled tasks are still
-  to come.
+  (the rest queue) and a time limit.
 
 ## 27. Code review
 

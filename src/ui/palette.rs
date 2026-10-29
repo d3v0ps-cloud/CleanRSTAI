@@ -31,6 +31,7 @@ pub enum Command {
     ImportConversations,
     CheckForUpdates,
     SetApprovalMode(ApprovalMode),
+    RunScheduledTask(Uuid),
 }
 
 #[derive(Clone, Debug)]

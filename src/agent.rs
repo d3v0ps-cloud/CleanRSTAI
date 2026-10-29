@@ -162,6 +162,7 @@ impl AgentRequest {
         sandbox: Option<&crate::sandbox::Sandbox>,
         review: bool,
         compact_only: bool,
+        provider_id: Option<&str>,
     ) -> Self {
         let permissions = &conv.permissions;
         let selection =
@@ -170,7 +171,11 @@ impl AgentRequest {
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
         let from = marker.map_or(0, |i| i + 1);
-        let chat_provider = settings.provider().clone();
+        // A scheduled task may name the provider profile it runs on.
+        let chat_provider = provider_id
+            .and_then(|pid| settings.providers.iter().find(|p| p.id == pid))
+            .unwrap_or_else(|| settings.provider())
+            .clone();
         let provider = if review {
             settings.review_provider(&chat_provider)
         } else {

@@ -160,6 +160,7 @@ drop). Subagent tool calls never ask for approval. Progress streams back as
 `SubagentProgress` events.
 
 **Background replies** (`background.rs`): `ChatApp` starts a reply through `start_run_with`, which queues it (`RunQueue`, FIFO) when `background.max_parallel` replies already run or others wait; `logic()` starts queued ones, enforces `background.time_limit_mins` from each `Run::started`, and frees slots of tasks that ended without `Done`. A queued chat counts as busy (`ChatApp::busy`) and stopping it removes it from the queue. `should_notify` decides desktop notifications (`notify-rust`, sent on `spawn_blocking`, never in tests), and the `feature:notify` chat switch can override the setting per chat.
+**Scheduled tasks** (`schedule.rs`, UI in `ui/schedule_settings.rs`): `GeneralSettings.schedules` holds the tasks, with `Schedule` (interval, daily, weekly, local time), `Target` (new chat or a chat) and a last run. `logic()` calls `ChatApp::run_schedules` at most every `schedule::CHECK_EVERY`, which runs `schedule::check` (pure: `step` decides wait, run or skip for each task) and starts each due task through `run_task` and the reply queue (`enqueue_run`, which takes a `Queued.provider`). Run times are saved with the settings; a Settings draft gets them copied by `copy_run_state`.
 
 **Command line** (`exec.rs`): `main` hands `exec …` to `exec::run` and answers `--version`, before the window opens. It parses the arguments by hand (`parse_args`), loads `Settings` as the app does, builds the request with `AgentRequest::for_chat` (the same builder `launch_run` uses), waits for MCP servers, and runs `drive`, which consumes the `agent::run` events on a task. `headless_allows` answers approvals: only what `ApprovalMode::runs_unasked` allows, everything else is denied. `ExecSettings` (`general.exec`) is on the Background tab. Windows attaches to the parent console with `AttachConsole`.
 
@@ -210,6 +211,14 @@ restarts the server only when `server_settings` (everything but the tunnel) chan
 tunnel's hostnames (`TunnelHosts`, shared with the server) are accepted as Host while it runs,
 and only on a loopback connection to such a host is `Cf-Connecting-IP` trusted for the login
 throttle, plus a tunnel-wide limit.
+
+**Tray** (`tray.rs`, Settings → Background "keep running"): on macOS and Windows a `tray-icon`
+icon (menu bar / system tray) is created from `logic` once the setting is on, and dropped when it
+goes off. `ChatApp::handle_tray` turns a close request into `CancelClose` + `Visible(false)` while
+`tray::on_close` says hide (`keep_running`, a tray exists, and not quitting); Quit from the menu, and
+the update restart, set `quitting` first because egui sends its own `Close` as a close request too.
+Hidden, the app asks for a repaint every 250 ms to poll the tray. Linux has a stub (no tray; tray-icon
+needs GTK there), and `tray-icon` stays under the macOS/Windows target section of `Cargo.toml`.
 
 **Persistence**: settings are one JSON file (`config.rs`, paths via `directories` with
 `ProjectDirs("net", "bukn", "CleanRSTAI")`); each conversation is its own JSON file

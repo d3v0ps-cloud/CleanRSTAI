@@ -498,7 +498,7 @@ pub fn run(args: &[String]) -> i32 {
             .sandbox
             .enabled
             .then(|| Sandbox::new(settings.sandbox.clone()));
-        let req = AgentRequest::for_chat(&settings, &conv, sandbox.as_ref(), false, false);
+        let req = AgentRequest::for_chat(&settings, &conv, sandbox.as_ref(), false, false, None);
         drive(req, http, mcp, &mut conv, &mut sink).await
     });
     runtime.shutdown_timeout(Duration::from_millis(500));
@@ -784,7 +784,7 @@ mod tests {
         conv.permissions.mode = mode;
         conv.workspace = workspace;
         conv.messages.push(ChatMessage::new(Role::User, "go"));
-        let req = AgentRequest::for_chat(&settings, &conv, None, false, false);
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
         (req, conv)
     }
 
