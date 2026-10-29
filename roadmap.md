@@ -28,7 +28,7 @@ tool calls and when a reply is done, and the command-line mode (`cleanrstai exec
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
 and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
-Built-in Tools) in **v0.9.2-dev.5**.
+Built-in Tools), and voice input and reading replies aloud (Settings → Voice), in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -360,7 +360,7 @@ in them follows the same rule:
   to keep "Open in browser" only, and settings for whether scripts may run and whether the page
   may load from the network (off by default); links open in the browser
 - [ ] Live HTML preview on Linux (WebKitGTK, which the release builds don't link yet)
-- [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
+- [x] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
 - [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings

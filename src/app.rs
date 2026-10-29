@@ -73,6 +73,8 @@ pub(crate) enum Action {
     ApprovePlan(Uuid),
     /// Keep planning: focus the message box.
     KeepPlanning,
+    /// Read a reply aloud, or stop it when it is the one being read: chat, message index.
+    Speak(Uuid, usize),
 }
 
 pub struct ChatApp {
@@ -122,6 +124,10 @@ pub struct ChatApp {
     renaming: Option<(Uuid, String)>,
     search: String,
     notice: Option<String>,
+    /// Voice input and reading replies aloud, in progress (see `voice`).
+    voice: crate::voice::VoiceState,
+    /// Repaint handle for the background threads that report back.
+    egui_ctx: egui::Context,
     keychain_warned: bool,
     pending_attachments: Vec<Attachment>,
     /// Files still being read for `pending_attachments`.
@@ -389,6 +395,8 @@ impl ChatApp {
             renaming: None,
             search: String::new(),
             notice: loaded.notice,
+            voice: Default::default(),
+            egui_ctx: cc.egui_ctx.clone(),
             keychain_warned: false,
             pending_attachments: Vec::new(),
             reading_files: 0,
@@ -1382,6 +1390,46 @@ impl ChatApp {
     fn handle_events(&mut self) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                AppEvent::VoiceCaptured(result) => {
+                    self.voice.recording = None;
+                    match result {
+                        Ok(wav) => {
+                            self.voice.transcribing = true;
+                            let ctx = self.egui_ctx.clone();
+                            crate::voice::spawn_transcription(
+                                &self.rt,
+                                &self.http,
+                                &self.settings,
+                                wav,
+                                &self.tx,
+                                move || ctx.request_repaint(),
+                            );
+                        }
+                        Err(e) => self.notice = Some(e),
+                    }
+                }
+                AppEvent::VoiceTranscribed(result) => {
+                    self.voice.transcribing = false;
+                    match result {
+                        Ok(text) => {
+                            let id = egui::Id::unique(INPUT_ID);
+                            let cursor = egui::TextEdit::load_state(&self.egui_ctx, id)
+                                .and_then(|s| s.cursor.char_range())
+                                .map(|r| r.primary.index.0);
+                            crate::voice::insert_text(&mut self.input, cursor, &text);
+                            self.egui_ctx.memory_mut(|m| m.request_focus(id));
+                        }
+                        Err(e) => self.notice = Some(format!("Voice input failed: {e}")),
+                    }
+                }
+                AppEvent::SpeechEnded { key, result } => {
+                    if self.voice.speaking_key() == Some(key) {
+                        self.voice.speaking = None;
+                    }
+                    if let Err(e) = result {
+                        self.notice = Some(format!("Reading aloud failed: {e}"));
+                    }
+                }
                 AppEvent::UpdateChecked { result, explicit } => {
                     use crate::update::UpdateCheck;
                     if let Some(ui) = self.settings_ui.as_mut().filter(|_| explicit) {
@@ -2423,6 +2471,19 @@ impl ChatApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let (mic, read_aloud) = ctx.input_mut(|i| {
+            let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+            (
+                i.consume_key(shift, egui::Key::M),
+                i.consume_key(shift, egui::Key::S),
+            )
+        });
+        if mic {
+            self.toggle_recording();
+        }
+        if read_aloud {
+            self.read_latest_or_stop();
+        }
         let (new_chat, settings, palette, sidebar) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
@@ -2443,6 +2504,117 @@ impl ChatApp {
         }
         if sidebar {
             self.sidebar_open = !self.sidebar_open;
+        }
+    }
+
+    /// Voice input: starts a recording, or ends it and transcribes the clip.
+    fn toggle_recording(&mut self) {
+        if self.voice.recording.is_some() {
+            self.voice.stop_recording();
+            return;
+        }
+        if !self.settings.general.voice.input.enabled {
+            self.notice = Some("Turn on voice input in Settings → Voice".into());
+            return;
+        }
+        let max_secs = self.settings.general.voice.input.max_secs;
+        let ctx = self.egui_ctx.clone();
+        if let Err(e) = self
+            .voice
+            .start_recording(max_secs, &self.tx, move || ctx.request_repaint())
+        {
+            self.notice = Some(e);
+        }
+    }
+
+    /// Reads a reply aloud, or stops it when that reply is the one being read.
+    fn toggle_speaking(&mut self, conv: Uuid, idx: usize) {
+        if self.voice.speaking_key() == Some((conv, idx)) {
+            self.voice.stop_speaking();
+            return;
+        }
+        if !self.settings.general.voice.output.enabled {
+            self.notice = Some("Turn on reading replies aloud in Settings → Voice".into());
+            return;
+        }
+        let text = self
+            .conversations
+            .iter()
+            .find(|c| c.id == conv)
+            .and_then(|c| c.messages.get(idx))
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let speech = crate::voice::speak::prose(
+            &text,
+            self.settings.general.voice.output.max_chars as usize,
+        );
+        if speech.trim().is_empty() {
+            self.notice = Some("There is nothing to read in that reply".into());
+            return;
+        }
+        let (tx, ctx) = (self.tx.clone(), self.egui_ctx.clone());
+        self.voice.start_speaking(
+            &self.rt,
+            &self.http,
+            &self.settings,
+            (conv, idx),
+            speech,
+            move |event| {
+                let _ = tx.send(event);
+                ctx.request_repaint();
+            },
+        );
+    }
+
+    /// Ctrl/⌘+Shift+S: stops the reading in progress, or reads the chat's latest reply.
+    fn read_latest_or_stop(&mut self) {
+        if self.voice.speaking.is_some() {
+            self.voice.stop_speaking();
+            return;
+        }
+        let Some(conv) = self.current else { return };
+        let latest = self
+            .conversations
+            .iter()
+            .find(|c| c.id == conv)
+            .and_then(|c| crate::voice::latest_reply(&c.messages));
+        match latest {
+            Some(idx) => self.toggle_speaking(conv, idx),
+            None => self.notice = Some("There is no reply to read yet".into()),
+        }
+    }
+
+    /// The microphone under the message box: starts a recording, shows its elapsed time in red
+    /// while it runs, and a spinner while the clip is transcribed.
+    fn mic_button(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui.visuals().dark_mode);
+        if let Some(started) = self.voice.recording.as_ref().map(|r| r.started) {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+            let secs = started.elapsed().as_secs();
+            let label = RichText::new(format!(
+                "{}  {}:{:02}",
+                icon::MICROPHONE,
+                secs / 60,
+                secs % 60
+            ))
+            .color(p.error);
+            if ui
+                .add(egui::Button::new(label))
+                .on_hover_text("Stop and transcribe (⌘/Ctrl+Shift+M)")
+                .clicked()
+            {
+                self.toggle_recording();
+            }
+        } else if self.voice.transcribing {
+            ui.spinner().on_hover_text("Transcribing…");
+        } else if ui
+            .add(egui::Button::new(
+                RichText::new(icon::MICROPHONE).size(17.0),
+            ))
+            .on_hover_text("Dictate into the message box (⌘/Ctrl+Shift+M)")
+            .clicked()
+        {
+            self.toggle_recording();
         }
     }
 
@@ -3649,6 +3821,9 @@ impl ChatApp {
                         self.tools_menu(ui);
                         self.model_options_menu(ui);
                         self.mcp_menu(ui);
+                        if self.settings.general.voice.input.enabled {
+                            self.mic_button(ui);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if running {
                                 if ui
@@ -3773,6 +3948,12 @@ impl ChatApp {
                     .filter(|v| v.conv == conv.id)
                     .map(|v| (v.message, v.index)),
                 plan_ready,
+                voice_out: self.settings.general.voice.output.enabled,
+                speaking: self
+                    .voice
+                    .speaking_key()
+                    .filter(|(c, _)| *c == conv.id)
+                    .map(|(_, i)| i),
             },
         )
     }
@@ -3788,6 +3969,7 @@ impl ChatApp {
                     self.approve(conv, &call_id, answer);
                 }
                 Action::ApprovePlan(conv) => self.approve_plan(conv, ctx),
+                Action::Speak(conv, idx) => self.toggle_speaking(conv, idx),
                 Action::KeepPlanning => {
                     ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                 }

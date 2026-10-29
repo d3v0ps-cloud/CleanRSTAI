@@ -226,6 +226,16 @@ the update restart, set `quitting` first because egui sends its own `Close` as a
 Hidden, the app asks for a repaint every 250 ms to poll the tray. Linux has a stub (no tray; tray-icon
 needs GTK there), and `tray-icon` stays under the macOS/Windows target section of `Cargo.toml`.
 
+**Voice** (`voice/`): `VoiceSettings` (`GeneralSettings.voice`, a Voice tab) holds voice
+input (`input`: a provider profile, model, language, `max_secs`) and reading aloud (`output`: an
+`OsVoice` or `Endpoint` engine). `record::start` captures 16 kHz mono WAV on a thread: cpal on
+macOS and Windows, `pw-record`/`parecord`/`arecord` (stopped with SIGINT) elsewhere, since cpal
+needs ALSA headers the Linux release can't link. `AppEvent::VoiceCaptured` starts
+`voice::spawn_transcription` (multipart `POST {base}/audio/transcriptions`), and the text goes into
+the message box at the cursor. `speak::prose` turns Markdown into speech text; `VoiceState::start_speaking`
+runs `speak::os_voice_command` (text on stdin, never in argv on Windows) or fetches
+`POST {base}/audio/speech` WAV and plays it with `speak::play_wav`. Voice threads report through
+`AppEvent::SpeechEnded`/`VoiceTranscribed`; the speaker button is an `Action::Speak` in the reply action row.
 **Persistence**: settings are one JSON file (`config.rs`, paths via `directories` with
 `ProjectDirs("net", "bukn", "CleanRSTAI")`); each conversation is its own JSON file
 (`types::Conversation`). New fields must be `#[serde(default)]` (usually with

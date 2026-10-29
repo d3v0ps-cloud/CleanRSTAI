@@ -124,6 +124,9 @@ too, as an installer and a portable `.exe`.
   model for simple tasks), system prompt, tool access, how many run at once, round limit and
   time limit. With the Docker sandbox on, subagents can also use the workspace, each running
   commands in a container of its own on the chat's network.
+- **Voice**: dictate into the message box with a microphone button (⌘/Ctrl+Shift+M) through
+  a cloud transcription service or a local Whisper server, and have replies read aloud (⌘/Ctrl+Shift+S)
+  with the system voice or a speech endpoint. Both are off by default; see **Settings → Voice**.
 - **Background replies**: a reply keeps running when you open another chat. The sidebar shows
   which chats are replying, waiting for approval, queued or finished. Desktop notifications say
   when a reply finishes, fails or needs approval (each chat can turn its own off). **Settings →
@@ -439,6 +442,8 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |
 | ⌘/Ctrl + , | Settings (Esc closes it when there are no unsaved changes) |
+| ⌘/Ctrl + Shift + M | Start or stop voice input (dictation into the message box) |
+| ⌘/Ctrl + Shift + S | Read the latest reply aloud, or stop reading |
 | Tab / Shift+Tab | Move between controls, with a visible focus outline; Space or Enter presses the focused button |
 
 ## Development

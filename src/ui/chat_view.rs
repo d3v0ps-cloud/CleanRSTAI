@@ -63,6 +63,10 @@ pub struct View<'a> {
     pub open_artifact: Option<(usize, usize)>,
     /// A Plan chat's latest reply is a finished plan: show Approve plan under it.
     pub plan_ready: bool,
+    /// Reading replies aloud is on: replies get a Read aloud button.
+    pub voice_out: bool,
+    /// The message being read aloud in this chat.
+    pub speaking: Option<usize>,
 }
 
 pub fn show(
@@ -165,6 +169,8 @@ pub fn show(
                                     open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                     undo: undo_at.get(&i).copied(),
+                                    read_aloud: v.voice_out,
+                                    speaking: v.speaking == Some(i),
                                 },
                                 msg,
                                 &mut actions,
@@ -301,6 +307,9 @@ struct AssistantCtx<'a> {
     last: bool,
     /// The last reply of a turn whose file edits can be undone: how many.
     undo: Option<usize>,
+    /// Show the Read aloud button, and whether this reply is being read now.
+    read_aloud: bool,
+    speaking: bool,
 }
 
 fn assistant_message(
@@ -402,6 +411,13 @@ fn assistant_body(
             if !msg.content.is_empty() {
                 items.push((icon::COPY, "Copy"));
             }
+            if cx.read_aloud && !msg.content.is_empty() {
+                items.push(if cx.speaking {
+                    (icon::STOP, "Stop reading")
+                } else {
+                    (icon::SPEAKER, "Read aloud")
+                });
+            }
             if cx.last {
                 items.push((icon::REGENERATE, "Retry"));
             }
@@ -410,6 +426,7 @@ fn assistant_body(
             }
             match quiet_icons(ui, &items).map(|i| items[i].1) {
                 Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
+                Some("Read aloud" | "Stop reading") => actions.push(Action::Speak(cx.conv, cx.idx)),
                 Some("Retry") => actions.push(Action::Regenerate(cx.conv)),
                 Some("Fork from here") => actions.push(Action::ForkFrom(cx.conv, cx.idx)),
                 _ => {}

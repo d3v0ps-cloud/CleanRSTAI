@@ -969,6 +969,9 @@ pub struct GeneralSettings {
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
+    /// Voice input (dictation into the message box) and reading replies aloud (see `voice`).
+    #[serde(default)]
+    pub voice: crate::voice::VoiceSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -1007,6 +1010,7 @@ impl Default for GeneralSettings {
             hooks: Default::default(),
             schedules: Default::default(),
             plan: Default::default(),
+            voice: Default::default(),
         }
     }
 }
@@ -1316,6 +1320,8 @@ impl Settings {
             url.to_owned()
         };
         self.general.plan.normalized();
+        let providers = &self.providers;
+        self.general.voice.normalize(providers);
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);

@@ -67,6 +67,8 @@ pub mod icon {
     pub const SHIELD_CHECK: &str = "\u{E40C}";
     pub const LIGHTNING: &str = "\u{E2DE}";
     pub const EYE: &str = "\u{E220}";
+    pub const MICROPHONE: &str = "\u{E326}";
+    pub const SPEAKER: &str = "\u{E44A}";
 }
 
 /// The colours of one mode. Every text colour (ink to error) reads at WCAG AA contrast,

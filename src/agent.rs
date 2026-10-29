@@ -130,6 +130,15 @@ pub enum AppEvent {
         /// Whether the user asked (Detect button) rather than it running alongside a fetch.
         explicit: bool,
     },
+    /// A voice input recording as WAV bytes, or why it failed (or stopped with nothing in it).
+    VoiceCaptured(Result<Vec<u8>, String>),
+    /// What a voice recording said, or why transcription failed.
+    VoiceTranscribed(Result<String, String>),
+    /// A reply read aloud has finished, was stopped, or failed.
+    SpeechEnded {
+        key: (uuid::Uuid, usize),
+        result: Result<(), String>,
+    },
 }
 
 pub struct AgentRequest {
