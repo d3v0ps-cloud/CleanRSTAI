@@ -303,7 +303,7 @@ in them follows the same rule:
   tool card
 - [x] Checkpoints: keep the files' previous content for each turn, with **Undo file edits** under
   the turn's reply (and in ⌘K); files changed again since are left alone
-- [ ] A list of the files a chat changed, with their diffs together
+- [x] A list of the files a chat changed, with their diffs together
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
 - [ ] Optional Git awareness when the workspace is a repository: `git_status` and `git_diff`

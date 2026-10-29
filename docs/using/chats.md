@@ -275,9 +275,9 @@ once, use **Export conversations…** in [General](../settings/general.html#expo
 ## Command palette
 
 **⌘/Ctrl + K** opens a searchable list of commands: new chat, attach files, export this chat,
-compact this chat, undo the last turn's file edits, fork this chat, set this chat's
-permissions (one entry per [mode](tools.html#permissions)), share this chat as HTML, toggle the
-sidebar, change theme, open each settings page, export and import, check for updates, switch
-provider or model, and open any chat.
+compact this chat, undo the last turn's file edits, show files changed in this chat, fork this
+chat, set this chat's permissions (one entry per [mode](tools.html#permissions)), share this chat
+as HTML, toggle the sidebar, change theme, open each settings page, export and import, check for
+updates, switch provider or model, and open any chat.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.html) for the rest.

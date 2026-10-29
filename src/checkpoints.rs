@@ -5,7 +5,7 @@
 use std::ops::Range;
 use std::path::Path;
 
-use crate::types::{ChatMessage, Role};
+use crate::types::{ChatMessage, FileEdit, Role};
 
 /// The turn holding message `idx`: from its user message up to the next one.
 pub fn turn_of(messages: &[ChatMessage], idx: usize) -> Range<usize> {
@@ -27,6 +27,34 @@ pub fn undoable(messages: &[ChatMessage], range: Range<usize>) -> usize {
         .filter_map(|m| m.edit.as_ref())
         .filter(|e| e.checkpoint && !e.undone)
         .count()
+}
+
+/// A file the chat's edits changed, with every edit made to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChangedFile {
+    /// The file, relative to the workspace.
+    pub path: String,
+    /// Each edit to the file in chat order, with the index of its tool-result message.
+    pub edits: Vec<(usize, FileEdit)>,
+}
+
+/// The files the chat's edits changed, grouped by path in first-seen order.
+pub fn changed_files(messages: &[ChatMessage]) -> Vec<ChangedFile> {
+    let mut files: Vec<ChangedFile> = Vec::new();
+    for (idx, edit) in messages
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, m)| m.edit.as_ref().map(|e| (idx, e)))
+    {
+        match files.iter_mut().find(|f| f.path == edit.path) {
+            Some(file) => file.edits.push((idx, edit.clone())),
+            None => files.push(ChangedFile {
+                path: edit.path.clone(),
+                edits: vec![(idx, edit.clone())],
+            }),
+        }
+    }
+    files
 }
 
 /// What an undo did.
@@ -256,5 +284,53 @@ mod tests {
         assert!(messages[3].edit.as_ref().unwrap().checkpoint);
         prune(&mut messages, 0);
         assert!(messages[3].edit.as_ref().unwrap().checkpoint);
+    }
+
+    fn edited(path: &str, diff: &str, created: bool, undone: bool) -> ChatMessage {
+        let mut m = ChatMessage::new(Role::Tool, "ok");
+        m.edit = Some(FileEdit {
+            path: path.into(),
+            abs: std::path::PathBuf::from(path),
+            diff: diff.into(),
+            created,
+            before: None,
+            checkpoint: false,
+            after_sha256: String::new(),
+            undone,
+        });
+        m
+    }
+
+    #[test]
+    fn changed_files_groups_by_path_in_order() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "change things"),
+            edited("a.rs", "+x\n", true, false),
+            ChatMessage::new(Role::Assistant, "done"),
+            edited("b.rs", "-y\n", false, false),
+            edited("a.rs", "+z\n", false, true),
+            ChatMessage::new(Role::User, "more"),
+            edited("b.rs", "", false, false),
+        ];
+        let files = changed_files(&messages);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs", "b.rs"]);
+        let a: Vec<usize> = files[0].edits.iter().map(|(i, _)| *i).collect();
+        assert_eq!(a, [1, 4]);
+        assert!(files[0].edits[0].1.created);
+        assert!(files[0].edits[1].1.undone);
+        let b: Vec<usize> = files[1].edits.iter().map(|(i, _)| *i).collect();
+        assert_eq!(b, [3, 6]);
+        assert_eq!(files[1].edits[1].1.diff, "");
+    }
+
+    #[test]
+    fn changed_files_empty_without_edits() {
+        assert!(changed_files(&[]).is_empty());
+        let messages = vec![
+            ChatMessage::new(Role::User, "hi"),
+            ChatMessage::new(Role::Assistant, "hello"),
+        ];
+        assert!(changed_files(&messages).is_empty());
     }
 }
