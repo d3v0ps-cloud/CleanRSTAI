@@ -966,7 +966,7 @@ mod tests {
     use chrono::Utc;
     use tokio::runtime::Handle;
 
-    use crate::remote::access::testkeys::{AUD, JWKS, TEAM, token_now};
+    use crate::remote::access::testkeys::{AUD, TEAM, jwks, token_now};
     use crate::testutil;
 
     use super::super::{
@@ -1998,7 +1998,8 @@ mod tests {
     /// A gate that checks tokens against the test-only keys, served by a local server.
     async fn access_gate(skip_password: bool) -> Arc<Gate> {
         let (base, _) =
-            testutil::serve(|_| testutil::Response::with_type(200, "application/json", JWKS)).await;
+            testutil::serve(|_| testutil::Response::with_type(200, "application/json", jwks()))
+                .await;
         let gate = Gate::for_tests(&format!("{base}/certs"));
         gate.configure(&crate::config::TunnelSettings {
             enabled: true,
