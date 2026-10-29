@@ -159,6 +159,8 @@ time/calculator/fetch only when allowed for subagents). Workspace tools only wit
 drop). Subagent tool calls never ask for approval. Progress streams back as
 `SubagentProgress` events.
 
+**Background replies** (`background.rs`): `ChatApp` starts a reply through `start_run_with`, which queues it (`RunQueue`, FIFO) when `background.max_parallel` replies already run or others wait; `logic()` starts queued ones, enforces `background.time_limit_mins` from each `Run::started`, and frees slots of tasks that ended without `Done`. A queued chat counts as busy (`ChatApp::busy`) and stopping it removes it from the queue. `should_notify` decides desktop notifications (`notify-rust`, sent on `spawn_blocking`, never in tests), and the `feature:notify` chat switch can override the setting per chat.
+
 **MCP** (`mcp/`): stdio and Streamable HTTP transports, OAuth (PKCE, dynamic registration,
 loopback redirect) in `mcp/oauth.rs`, and `McpManager`, which keeps connections in sync with
 settings, refreshes tools/resources/prompts on `list_changed`, and builds the `ToolRouter`.

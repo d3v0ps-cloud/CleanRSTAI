@@ -6,6 +6,7 @@ mod app;
 mod approval;
 mod artifacts;
 mod attach;
+mod background;
 mod checkpoints;
 mod commands;
 mod compaction;
