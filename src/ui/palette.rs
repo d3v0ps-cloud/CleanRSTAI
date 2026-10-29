@@ -21,6 +21,7 @@ pub enum Command {
     ExportChatHtml,
     CompactChat,
     UndoLastEdits,
+    ForkChat,
     ExportSettings,
     ExportConversations,
     ImportSettings,

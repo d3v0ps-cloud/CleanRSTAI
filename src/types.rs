@@ -145,6 +145,34 @@ pub fn results_after(
         .collect()
 }
 
+/// The messages a fork up to message `idx` keeps: everything through `idx`, and for an
+/// assistant message with tool calls, the tool results that directly follow it, so the
+/// fork never ends on a call without its results. Empty if `idx` is out of range.
+///
+/// The fork shares the original's workspace folder, so its copied file edits must not be
+/// undoable from the fork: their checkpoints are dropped (`checkpoint` false, `before` None)
+/// while the diff is kept for the tool card.
+pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
+    let Some(msg) = messages.get(idx) else {
+        return Vec::new();
+    };
+    let mut end = idx + 1;
+    if msg.role == Role::Assistant && !msg.tool_calls.is_empty() {
+        end += messages[end..]
+            .iter()
+            .take_while(|m| m.role == Role::Tool)
+            .count();
+    }
+    let mut kept = messages[..end].to_vec();
+    for m in &mut kept {
+        if let Some(edit) = &mut m.edit {
+            edit.checkpoint = false;
+            edit.before = None;
+        }
+    }
+    kept
+}
+
 impl ChatMessage {
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {
@@ -320,5 +348,78 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn fork_at_a_user_message_keeps_up_to_it() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "one"),
+            ChatMessage::new(Role::Assistant, "two"),
+            ChatMessage::new(Role::User, "three"),
+            ChatMessage::new(Role::Assistant, "four"),
+        ];
+        let forked = fork_messages(&messages, 2);
+        assert_eq!(forked, messages[..=2]);
+    }
+
+    #[test]
+    fn fork_at_a_tool_call_keeps_its_results() {
+        let mut call = ChatMessage::new(Role::Assistant, "");
+        call.tool_calls.push(ToolCall {
+            id: "c1".into(),
+            name: "time".into(),
+            arguments: "{}".into(),
+        });
+        let mut result = ChatMessage::new(Role::Tool, "12:00");
+        result.tool_call_id = Some("c1".into());
+        let messages = vec![
+            ChatMessage::new(Role::User, "what time is it?"),
+            call.clone(),
+            result.clone(),
+            ChatMessage::new(Role::Assistant, "It is noon."),
+            ChatMessage::new(Role::User, "thanks"),
+        ];
+        let forked = fork_messages(&messages, 1);
+        assert_eq!(forked, vec![messages[0].clone(), call, result]);
+    }
+
+    #[test]
+    fn fork_at_the_last_message_keeps_everything() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "hi"),
+            ChatMessage::new(Role::Assistant, "hello"),
+        ];
+        assert_eq!(fork_messages(&messages, 1), messages);
+        assert!(fork_messages(&messages, 2).is_empty());
+    }
+
+    #[test]
+    fn a_fork_keeps_file_edit_diffs_but_not_their_checkpoints() {
+        let mut call = ChatMessage::new(Role::Assistant, "");
+        call.tool_calls.push(ToolCall {
+            id: "c1".into(),
+            name: "write_file".into(),
+            arguments: "{}".into(),
+        });
+        let mut result = ChatMessage::new(Role::Tool, "Wrote a.txt");
+        result.tool_call_id = Some("c1".into());
+        result.edit = Some(FileEdit {
+            path: "a.txt".into(),
+            abs: PathBuf::from("/work/a.txt"),
+            diff: "-old\n+new\n".into(),
+            created: false,
+            before: Some("old\n".into()),
+            checkpoint: true,
+            after_sha256: "abc".into(),
+            undone: false,
+        });
+        let messages = vec![ChatMessage::new(Role::User, "edit it"), call, result];
+        let forked = fork_messages(&messages, 1);
+        let edit = forked[2].edit.as_ref().expect("the edit is copied");
+        assert!(!edit.checkpoint);
+        assert_eq!(edit.before, None);
+        assert_eq!(edit.diff, "-old\n+new\n");
+        // The original is untouched.
+        assert!(messages[2].edit.as_ref().unwrap().checkpoint);
     }
 }

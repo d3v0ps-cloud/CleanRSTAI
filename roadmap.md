@@ -330,7 +330,7 @@ in them follows the same rule:
 
 - [ ] Keep the old reply when regenerating and the old turns when editing a message, as
   branches, with ‹ 1/3 › arrows to switch between them
-- [ ] Fork a chat from any message into a new chat
+- [x] Fork a chat from any message into a new chat
 - [ ] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
   branches kept per message
 

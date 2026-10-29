@@ -133,6 +133,10 @@ public addresses (its own client with a filtering DNS resolver and redirect poli
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by
 server id and MCP tool name (not the routed function name), so it survives renames.
+Per-chat permission modes live in `approval.rs` (`ApprovalMode`: Default, AutoWorkspace,
+AllowAll, ReadOnly; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
+`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly switches the
+write/shell workspace tools off via `ToolSelection::with_mode`.
 
 **Subagents** (`subagent.rs`): the `delegate` tool runs tasks in parallel, each with its own
 model/tool loop and a derived `ToolSelection` (never the task list or `delegate`;
@@ -196,6 +200,10 @@ throttle, plus a tunnel-wide limit.
 `skip_serializing_if`) so older files still load. API keys and MCP secrets go to the OS
 keychain through the `secrets::SecretStore` trait (tests use the in-memory store), with
 plain-text fallback when the keychain is off or unavailable.
+
+**Share as HTML** (`export.rs`, `render_body`) renders the chat's Markdown with pulldown-cmark,
+drops all raw HTML except the app's own `<details>` wrapper, and allow-lists link (http/https/mailto)
+and image (raster `data:`) destinations, so the shared file loads nothing.
 
 **Providers**: `ProviderKind` (generic OpenAI-compatible, llama.cpp, LiteLLM, Ollama,
 LM Studio, vLLM, OpenRouter) is detected by `llm::detect_kind` and decides which stats are
