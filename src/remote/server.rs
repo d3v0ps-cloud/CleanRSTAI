@@ -987,6 +987,7 @@ mod tests {
                 updated_at: Utc::now(),
                 running: false,
                 approvals: 0,
+                project: None,
             }],
             providers: vec![ProviderView {
                 name: "Local".into(),

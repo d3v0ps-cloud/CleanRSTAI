@@ -293,10 +293,10 @@ in them follows the same rule:
 
 ## 17. Projects
 
-- [ ] Group chats into projects with shared instructions, attached files and a default
+- [x] Group chats into projects with shared instructions, attached files and a default
   workspace folder, provider, model and tool switches
-- [ ] Settings: on/off (off hides projects from the sidebar), and the default for new projects
-- [ ] Move chats in and out of a project; export and import projects with the chats
+- [x] Settings: on/off (off hides projects from the sidebar), and the default for new projects
+- [x] Move chats in and out of a project; export and import projects with the chats
 
 ## 18. Memory
 

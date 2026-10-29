@@ -925,7 +925,7 @@ impl SettingsUi {
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
                 Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
-                Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, code review, and OCR for scanned PDFs.",
+                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
@@ -2047,6 +2047,103 @@ impl SettingsUi {
                         .on_hover_text("Text beyond this, in all files together, is left out");
                         ui.end_row();
                     });
+                ui.add_space(16.0);
+
+                // ---- projects
+                let pr = &mut g.projects;
+                ui.checkbox(
+                    &mut pr.enabled,
+                    egui::RichText::new(format!("{}  Projects", icon::FOLDER)).strong(),
+                );
+                ui.indent("projects-help", |ui| {
+                    ui.weak(
+                        "Group chats into projects in the sidebar. A project's instructions and \
+                         files are added to the system prompt of each of its chats, and its \
+                         folder, provider, model, tool switches and permission mode are what a \
+                         new chat in it starts with. Off hides projects and stops adding their \
+                         context. Each chat can switch the project context off too.",
+                    );
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("projects-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Files size limit");
+                        ui.add(
+                            egui::DragValue::new(&mut pr.max_files_kb)
+                                .range(
+                                    crate::projects::MIN_FILES_KB..=crate::projects::MAX_FILES_KB,
+                                )
+                                .suffix(" KB"),
+                        )
+                        .on_hover_text(
+                            "The text of a project's files sent with each request, in all. \
+                             Longer files are cut.",
+                        );
+                        ui.end_row();
+
+                        ui.label("New projects: folder");
+                        ui.horizontal(|ui| {
+                            let shown = pr
+                                .default_workspace
+                                .as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| "None".into());
+                            ui.label(shown);
+                            if ui.small_button("Choose…").clicked()
+                                && let Some(dir) = rfd::FileDialog::new()
+                                    .set_title("Choose a default working folder")
+                                    .pick_folder()
+                            {
+                                pr.default_workspace = Some(dir);
+                            }
+                            if pr.default_workspace.is_some() && ui.small_button("Clear").clicked()
+                            {
+                                pr.default_workspace = None;
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("New projects: provider");
+                        let selected = match &pr.default_provider {
+                            None => "Settings' active provider".to_owned(),
+                            Some(id) => providers.iter().find(|(pid, ..)| pid == id).map_or(
+                                "A provider that no longer exists".into(),
+                                |(_, name, _)| name.clone(),
+                            ),
+                        };
+                        egui::ComboBox::from_id_salt("projects-default-provider")
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut pr.default_provider,
+                                    None,
+                                    "Settings' active provider",
+                                );
+                                for (id, name, _) in &providers {
+                                    ui.selectable_value(
+                                        &mut pr.default_provider,
+                                        Some(id.clone()),
+                                        name,
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("New projects: instructions");
+                    if !pr.default_instructions.is_empty() && ui.small_button("Clear").clicked() {
+                        pr.default_instructions.clear();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut pr.default_instructions)
+                        .hint_text("Nothing: a new project starts empty")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.add_space(16.0);
 
                 // ---- file edits
@@ -3640,6 +3737,23 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Context & files",
         "Project instructions (AGENTS.md, CLAUDE.md)",
     ),
+    (Tab::Context, "Context & files", "Projects (on / off)"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: files size limit",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: default instructions",
+    ),
+    (Tab::Context, "Context & files", "Projects: default folder"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: default provider",
+    ),
     (
         Tab::Context,
         "Context & files",
@@ -3770,6 +3884,8 @@ mod tests {
         assert_eq!(search_settings("scanned pdf")[0].0, Tab::Context);
         assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
+        assert_eq!(search_settings("projects")[0].0, Tab::Context);
+        assert_eq!(search_settings("project files size")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);

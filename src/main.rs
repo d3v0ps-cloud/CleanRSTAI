@@ -24,6 +24,7 @@ mod model_options;
 mod native;
 mod ocr;
 mod plan;
+mod projects;
 mod remote;
 mod review;
 mod sandbox;

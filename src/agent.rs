@@ -159,6 +159,10 @@ pub struct AgentRequest {
     pub compact_only: bool,
     /// The chat's permission mode: which calls run without asking.
     pub approval_mode: crate::approval::ApprovalMode,
+    /// The chat's project instructions and files, read by the caller (see
+    /// `projects::load_context`) for a chat in a project. Added to the system prompt while
+    /// the Projects setting and the chat's "Project context" switch are on.
+    pub project: Option<crate::projects::ProjectContext>,
 }
 
 impl AgentRequest {
@@ -182,11 +186,20 @@ impl AgentRequest {
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
         let from = marker.map_or(0, |i| i + 1);
-        // A scheduled task may name the provider profile it runs on.
+        // A scheduled task may name the provider profile it runs on; otherwise the chat's own
+        // (from its project, or picked for it), then the active one.
         let chat_provider = provider_id
+            .or(conv.provider.as_deref())
             .and_then(|pid| settings.providers.iter().find(|p| p.id == pid))
             .unwrap_or_else(|| settings.provider())
             .clone();
+        let chat_provider = match conv.model.as_deref().map(str::trim) {
+            Some(model) if !model.is_empty() => ProviderConfig {
+                model: model.to_owned(),
+                ..chat_provider
+            },
+            _ => chat_provider,
+        };
         let provider = if review {
             settings.review_provider(&chat_provider)
         } else {
@@ -222,6 +235,7 @@ impl AgentRequest {
             compaction,
             compact_only,
             approval_mode: mode,
+            project: None,
         }
     }
 }
@@ -324,6 +338,14 @@ pub async fn run(
             system_prompt.trim_end(),
             crate::skills::prompt_section(&skills)
         );
+    }
+    // A chat in a project: the project's instructions and files (Settings → Context & files,
+    // and the chat's own switch).
+    if let Some(project) = &req.project
+        && req.general.projects.enabled
+        && selection.feature_on(tools::PROJECT)
+    {
+        system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), project.prompt());
     }
     // A Plan chat is told to investigate and propose a plan, not to change anything.
     if req.approval_mode == crate::approval::ApprovalMode::Plan {
@@ -764,6 +786,7 @@ mod tests {
             compaction: None,
             compact_only: false,
             approval_mode: Default::default(),
+            project: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -847,6 +870,7 @@ mod tests {
             compaction: None,
             compact_only: false,
             approval_mode: Default::default(),
+            project: None,
         }
     }
 
@@ -1332,6 +1356,103 @@ mod tests {
             .to_owned();
         assert!(!system.contains("cargo fmt"), "{system}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A project with instructions and a text file, loaded the way the app loads it.
+    fn project_with_file(dir: &std::path::Path) -> crate::projects::ProjectContext {
+        let notes = dir.join("units.txt");
+        std::fs::write(&notes, "Use metric units.").unwrap();
+        let mut project =
+            crate::projects::Project::new("Site", &crate::projects::ProjectSettings::default());
+        project.instructions = "Answer in French.".into();
+        project.files = vec![notes];
+        crate::projects::load_context(&project, 256)
+    }
+
+    #[tokio::test]
+    async fn project_instructions_and_files_join_the_system_prompt_unless_switched_off() {
+        let dir = temp_dir("agent-project");
+        let context = project_with_file(&dir);
+        let settings = crate::config::Settings::default();
+
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.project = Some(context.clone());
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(system.contains("Project: Site"), "{system}");
+        assert!(system.contains("Answer in French."), "{system}");
+        assert!(system.contains("Use metric units."), "{system}");
+
+        // The chat's own switch leaves the project out.
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::feature_key(tools::PROJECT),
+            false,
+            true,
+        );
+        let mut req = request(&base, &settings, &ov);
+        req.project = Some(context.clone());
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("Project: Site"), "{system}");
+
+        // So does turning projects off in Settings, even when the chat asks for them.
+        let mut off = settings.clone();
+        off.general.projects.enabled = false;
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &off, &Default::default());
+        req.project = Some(context);
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("Project"), "{system}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chat_uses_its_own_provider_and_model_over_the_active_one() {
+        let mut settings = crate::config::Settings::default();
+        let other = ProviderConfig {
+            id: "other".into(),
+            name: "Other".into(),
+            base_url: "http://other.example/v1".into(),
+            model: "other-model".into(),
+            ..Default::default()
+        };
+        settings.providers.push(other);
+        let mut conv = crate::types::Conversation::new();
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.base_url, settings.provider().base_url);
+
+        conv.provider = Some("other".into());
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.base_url, "http://other.example/v1");
+        assert_eq!(req.provider.model, "other-model");
+
+        // The chat's model replaces its provider's; a scheduled task's provider still wins.
+        conv.model = Some(" chat-model ".into());
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.model, "chat-model");
+        let req = AgentRequest::for_chat(
+            &settings,
+            &conv,
+            None,
+            false,
+            false,
+            Some(&settings.providers[0].id),
+        );
+        assert_eq!(req.provider.base_url, settings.providers[0].base_url);
+        assert_eq!(req.provider.model, "chat-model");
     }
 
     #[tokio::test]

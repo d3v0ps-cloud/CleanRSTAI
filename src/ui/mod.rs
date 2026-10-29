@@ -3,6 +3,7 @@ pub mod attachments;
 pub mod chat_view;
 pub mod markdown;
 pub mod palette;
+pub mod project_editor;
 pub mod schedule_settings;
 pub mod settings;
 pub mod stats_view;
