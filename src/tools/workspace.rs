@@ -652,15 +652,7 @@ impl Workspace {
         if let Some(place) = &self.sandbox {
             return self.sandboxed_shell(place, command, secs).await;
         }
-        let mut cmd = if cfg!(windows) {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C").arg(command);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c").arg(command);
-            c
-        };
+        let mut cmd = shell_command(command);
         cmd.current_dir(&self.root)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -881,8 +873,22 @@ fn custom_network_note(rules: &[crate::config::SandboxNetRule]) -> String {
     }
 }
 
+/// The platform shell running `command`: `sh -c` on macOS and Linux, `cmd /C` on Windows.
+/// Hooks run through it too (see `hooks`).
+pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
+    if cfg!(windows) {
+        let mut c = tokio::process::Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    } else {
+        let mut c = tokio::process::Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    }
+}
+
 /// Stop a timed-out shell command and every process it started.
-fn kill_command(pid: u32) {
+pub(crate) fn kill_command(pid: u32) {
     #[cfg(unix)]
     if let Ok(pid) = i32::try_from(pid) {
         // SAFETY: a plain syscall. The shell leads its own process group (`process_group(0)`),
