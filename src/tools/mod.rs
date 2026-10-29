@@ -106,9 +106,10 @@ pub const COMPACTION: &str = "compaction";
 pub const INSTRUCTIONS: &str = "instructions";
 pub const CHECKPOINTS: &str = "checkpoints";
 pub const NOTIFY: &str = "notify";
+pub const HOOKS: &str = "hooks";
 
 /// Chat features with a per-chat switch, in display order: (key, label, description).
-pub const FEATURES: [(&str, &str, &str); 4] = [
+pub const FEATURES: [(&str, &str, &str); 5] = [
     (
         COMPACTION,
         "Context compaction",
@@ -129,6 +130,12 @@ pub const FEATURES: [(&str, &str, &str); 4] = [
         "Notifications",
         "Send a desktop notification when this chat's reply finishes, fails or needs approval",
     ),
+    (
+        HOOKS,
+        "Hooks",
+        "Run the commands set under Skills & hooks around tool calls and when a reply is done. \
+         Hooks run commands on your computer (or in the sandbox, when it's on)",
+    ),
 ];
 
 /// What one chat may use: Settings defaults plus that chat's overrides.
@@ -140,7 +147,7 @@ pub struct ToolSelection {
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
-    features: [bool; 4],
+    features: [bool; 5],
     /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
     skills_available: bool,
 }
@@ -162,6 +169,7 @@ impl ToolSelection {
                 g.instructions.enabled,
                 g.file_edits.checkpoints,
                 g.background.notify,
+                g.hooks.enabled,
             ],
             skills_available: false,
         }
@@ -898,15 +906,21 @@ mod tests {
         let sel = ToolSelection::new(&settings, &ToolOverrides::default());
         assert!(sel.feature_on(COMPACTION) && sel.feature_on(INSTRUCTIONS));
         assert!(sel.feature_on(CHECKPOINTS));
+        // Hooks default to the master switch in Settings, which is off.
+        assert!(!sel.feature_on(HOOKS));
+        settings.general.hooks.enabled = true;
+        assert!(ToolSelection::new(&settings, &ToolOverrides::default()).feature_on(HOOKS));
         settings.general.compaction.enabled = false;
         settings.general.file_edits.checkpoints = false;
         let mut ov = ToolOverrides::default();
         ov.set(ToolOverrides::feature_key(INSTRUCTIONS), false, true);
         ov.set(ToolOverrides::feature_key(CHECKPOINTS), true, false);
+        ov.set(ToolOverrides::feature_key(HOOKS), false, true);
         let sel = ToolSelection::new(&settings, &ov);
         assert!(!sel.feature_on(COMPACTION));
         assert!(!sel.feature_on(INSTRUCTIONS));
         assert!(sel.feature_on(CHECKPOINTS));
+        assert!(!sel.feature_on(HOOKS));
         assert!(!sel.feature_default(CHECKPOINTS));
         assert!(!sel.feature_on("unknown"));
     }

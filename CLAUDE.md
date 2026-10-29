@@ -142,6 +142,8 @@ asks) returns a skill's text or one file of its folder, confined to that folder.
 offers the tool only when some exist; subagents are forced off. The tools menu caches the list
 per folder in `SkillCache`, cleared when settings are applied.
 
+**Hooks** (`hooks.rs`): commands from `general.hooks` (Settings only, never the workspace or the model) run around tool calls in `agent::run`: `Runner::before_tool` after approval (a failure becomes the call's error, `Blocked by hook …`), `after_tool` appends `[hook name]` output to the result, and `reply_done` gives `ChatEvent::HookNotice` once a reply ends without `ChatEvent::Error`. `Runner::run` uses `workspace::shell_command` in the workspace folder (home without one), or `Place::exec_env` in the chat's sandbox container when the workspace's commands run there (`docker exec -e` passes the `CLEANRSTAI_*` variables). The `feature:hooks` chat switch gates them, and subagents and compact-only runs never reach them. `hooks::matches` takes the comma-separated glob list.
+
 **Approvals** (`approval.rs`): the agent sends `ChatEvent::ToolApproval` with a oneshot
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by

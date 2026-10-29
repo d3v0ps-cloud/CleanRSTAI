@@ -13,6 +13,7 @@ use crate::config::{
     ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull,
     SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode, import_mcp_json,
 };
+use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
 use crate::schedule::ScheduledTask;
@@ -795,7 +796,7 @@ impl SettingsUi {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
-                Tab::Extensions => "Saved prompts you type as /name, and skills the model loads when a task matches.",
+                Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
                 Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, and code review.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
@@ -1570,6 +1571,8 @@ impl SettingsUi {
                 slash_command_rows(ui, &mut self.draft.general.slash_commands);
                 ui.add_space(16.0);
                 self.skill_rows(ui);
+                ui.add_space(16.0);
+                hook_rows(ui, &mut self.draft.general.hooks);
             });
     }
 
@@ -3019,6 +3022,91 @@ fn slash_command_rows(ui: &mut egui::Ui, s: &mut SlashCommandSettings) {
     });
 }
 
+/// Hooks (see `hooks`): the master switch, the warning about where they run, and each hook's
+/// switch, name, event, tool patterns, command and timeout.
+fn hook_rows(ui: &mut egui::Ui, h: &mut HookSettings) {
+    let HookSettings { enabled, hooks } = h;
+    ui.label(egui::RichText::new(format!("{}  Hooks", icon::TERMINAL)).strong());
+    ui.indent("hooks-help", |ui| {
+        ui.weak(
+            "Commands that run around the model's tool calls: before a tool runs (a non-zero \
+             exit or a timeout blocks the call), after it (the output is added to the result), \
+             and when a reply is done (the output is shown as a notice). Each command gets the \
+             call in CLEANRSTAI_* environment variables. Each chat can switch hooks off from \
+             the tools menu.",
+        );
+        weak_note(
+            ui,
+            "Hooks run commands with your user's rights on this computer, or in the Docker \
+             sandbox when it's on. They are read only from these settings, never from a \
+             workspace or from the model.",
+        );
+    });
+    ui.checkbox(enabled, "Run hooks").on_hover_text(
+        "The default for each chat. A chat's own Hooks switch in the tools menu overrides it.",
+    );
+    ui.add_enabled_ui(*enabled, |ui| {
+        let mut remove = None;
+        for (i, hook) in hooks.iter_mut().enumerate() {
+            ui.push_id(("hook", i), |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut hook.enabled, "")
+                        .on_hover_text("Run this hook");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut hook.name)
+                            .hint_text("name")
+                            .desired_width(140.0),
+                    );
+                    egui::ComboBox::from_id_salt("hook-event")
+                        .selected_text(hook.event.label())
+                        .show_ui(ui, |ui| {
+                            for event in HookEvent::ALL {
+                                ui.selectable_value(&mut hook.event, event, event.label());
+                            }
+                        });
+                    if icon_button(ui, icon::TRASH, "Delete hook").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                if hook.event != HookEvent::ReplyDone {
+                    ui.horizontal(|ui| {
+                        ui.label("Tools");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut hook.tools)
+                                .hint_text("all tools; or write_file, edit_file, github__*")
+                                .desired_width(FIELD_WIDTH),
+                        );
+                    });
+                }
+                ui.add(
+                    egui::TextEdit::multiline(&mut hook.command)
+                        .hint_text("The shell command, e.g. cargo fmt")
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Timeout");
+                    ui.add(
+                        egui::DragValue::new(&mut hook.timeout_secs)
+                            .range(1..=MAX_TIMEOUT_SECS)
+                            .suffix(" s"),
+                    );
+                });
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(i) = remove {
+            hooks.remove(i);
+        }
+        if ui
+            .small_button(format!("{}  Add hook", icon::PLUS))
+            .clicked()
+        {
+            hooks.push(Hook::default());
+        }
+    });
+}
+
 /// Settings the search box can find: (tab, section, label).
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "System prompt"),
@@ -3107,6 +3195,17 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Extensions, "Skills & hooks", "Skill size limit"),
     (Tab::Extensions, "Skills & hooks", "Open skills folder"),
     (Tab::Extensions, "Skills & hooks", "Disable a skill"),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Hooks (commands around tool calls)",
+    ),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Hook before a tool runs, block it",
+    ),
+    (Tab::Extensions, "Skills & hooks", "Hook timeout"),
     (
         Tab::Context,
         "Context & files",
@@ -3243,6 +3342,8 @@ mod tests {
         assert_eq!(search_settings("skills")[0].0, Tab::Extensions);
         assert_eq!(search_settings("skill folder")[0].0, Tab::Extensions);
         assert_eq!(search_settings("disable a skill")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("hooks")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
         assert_eq!(search_settings("notify")[0].0, Tab::Background);

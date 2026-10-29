@@ -95,6 +95,10 @@ too, as an installer and a portable `.exe`.
   task matches; other files in a skill's folder can be read the same way. Each skill can be
   switched off, and **Settings → Skills & hooks** has the size limit and an **Open skills
   folder** button.
+- **Hooks**: commands from Settings that run before a tool call (a non-zero exit blocks the
+  call), after one (the output is added to the result), or when a reply is done (the output is
+  a notice), with a tool-name filter, a timeout and a per-chat switch. They run in the chat's
+  folder, or in its Docker sandbox when that is on.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
@@ -335,7 +339,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
-| Skills & hooks | Slash commands (saved prompts), and skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder |
+| Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
 | Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
 | Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up) |

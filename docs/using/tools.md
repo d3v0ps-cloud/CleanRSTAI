@@ -112,9 +112,18 @@ switches apply to the current chat from the next message. Defaults for new chats
 [MCP Servers](../settings/mcp-servers.html).
 
 Under **Chat features**, the same menu switches **Context compaction**, **Project
-instructions** and **Undo for file edits** for the chat (defaults in
-[Context & files](../settings/context.html)), and **Compact now** summarises the chat's older
-messages straight away.
+instructions**, **Undo for file edits** and **Hooks** for the chat (defaults in
+[Context & files](../settings/context.html) and [Skills & hooks](../settings/skills-and-hooks.html)),
+and **Compact now** summarises the chat's older messages straight away.
+
+## Hooks
+
+Hooks are commands you set in [Skills & hooks](../settings/skills-and-hooks.html#hooks). They
+run on your computer (or in the Docker sandbox, when it is on) before a tool call, after one, or
+when a reply is done. A hook can block a call, such as a `write_file` you don't want, and an
+after-tool hook's output is added to the tool's result, where the model reads it. The **Hooks**
+switch under **Chat features** turns them off for the current chat; a chat that has them off
+runs none.
 
 ## Approving tool calls
 
