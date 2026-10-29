@@ -174,6 +174,10 @@ pub struct ProviderConfig {
     /// compaction and the context-use figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u32>,
+    /// For one request only (set per chat by `AgentRequest::for_chat`, never saved): the
+    /// provider's own web search, with this many searches allowed per reply.
+    #[serde(skip)]
+    pub native_search: Option<u32>,
 }
 
 impl Default for ProviderConfig {
@@ -195,6 +199,7 @@ impl Default for ProviderConfig {
             kind: ProviderKind::Generic,
             request_usage: true,
             context_tokens: None,
+            native_search: None,
         }
     }
 }
@@ -396,6 +401,32 @@ impl SearchBackend {
 /// Most results one web search returns.
 pub const MAX_SEARCH_RESULTS: u32 = 20;
 
+/// Most searches the provider's own search may run for one reply.
+pub const MAX_NATIVE_SEARCH_USES: u32 = 20;
+
+/// Which search a chat uses when its web search is on.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSearch {
+    /// CleanRSTAI's own search service (the built-in `web_search` tool).
+    #[default]
+    Off,
+    /// The provider's own search, when its API has one (Anthropic, OpenAI Responses and
+    /// OpenRouter). Other providers keep the built-in tool.
+    PreferProvider,
+}
+
+impl NativeSearch {
+    pub const ALL: [NativeSearch; 2] = [Self::Off, Self::PreferProvider];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "CleanRSTAI's search service",
+            Self::PreferProvider => "the provider's own search when it has one",
+        }
+    }
+}
+
 /// The web search tool's service and options.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -413,6 +444,10 @@ pub struct WebSearchSettings {
     pub ask: bool,
     /// Subagents may search too (when they may use the built-in tools).
     pub subagents: bool,
+    /// Search with this service, or with the provider's own search when it has one.
+    pub native: NativeSearch,
+    /// Searches the provider's own search may run for one reply, 1–20.
+    pub native_max_uses: u32,
 }
 
 impl Default for WebSearchSettings {
@@ -425,6 +460,8 @@ impl Default for WebSearchSettings {
             safe_search: true,
             ask: true,
             subagents: true,
+            native: NativeSearch::Off,
+            native_max_uses: 5,
         }
     }
 }
@@ -911,6 +948,9 @@ pub struct GeneralSettings {
     pub review: ReviewSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
+    /// Reading scanned PDFs (no text layer) with a vision model or tesseract.
+    #[serde(default)]
+    pub ocr: crate::ocr::OcrSettings,
     /// Slash commands: saved prompts typed as `/name` (see `commands`).
     pub slash_commands: SlashCommandSettings,
     /// Skills the model loads on demand (see `skills`).
@@ -932,6 +972,9 @@ pub struct GeneralSettings {
     /// Projects: chats grouped with shared instructions and files (see `projects`).
     #[serde(default)]
     pub projects: crate::projects::ProjectSettings,
+    /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
+    #[serde(default)]
+    pub plan: crate::plan::PlanSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -962,6 +1005,7 @@ impl Default for GeneralSettings {
             instructions: InstructionSettings::default(),
             review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
+            ocr: Default::default(),
             slash_commands: SlashCommandSettings::default(),
             skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
@@ -970,6 +1014,7 @@ impl Default for GeneralSettings {
             hooks: Default::default(),
             schedules: Default::default(),
             projects: Default::default(),
+            plan: Default::default(),
         }
     }
 }
@@ -1278,6 +1323,7 @@ impl Settings {
         } else {
             url.to_owned()
         };
+        self.general.plan.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -1288,6 +1334,9 @@ impl Settings {
         if !self.providers.iter().any(|p| p.id == c.provider_id) {
             c.provider_id.clear();
         }
+        self.general
+            .ocr
+            .normalize(|id| self.providers.iter().any(|p| p.id == id));
         let rv = &mut self.general.review;
         rv.max_diff_kb = rv.max_diff_kb.clamp(16, 4096);
         rv.base_branch = rv.base_branch.trim().to_owned();
@@ -1330,6 +1379,7 @@ impl Settings {
         skills.disabled = disabled;
         let search = &mut self.general.builtin_tools.search;
         search.max_results = search.max_results.clamp(1, MAX_SEARCH_RESULTS);
+        search.native_max_uses = search.native_max_uses.clamp(1, MAX_NATIVE_SEARCH_USES);
         search.searxng_url = search.searxng_url.trim().trim_end_matches('/').to_owned();
         let sa = &mut self.subagents;
         sa.max_parallel = sa.max_parallel.clamp(1, 16);
@@ -1973,6 +2023,22 @@ mod tests {
     }
 
     #[test]
+    fn plan_settings_load_from_older_files_and_normalize() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.plan, crate::plan::PlanSettings::default());
+        assert!(s.plan.enabled);
+        let mut settings = Settings::default();
+        settings.general.plan.after_approval = crate::approval::ApprovalMode::Plan;
+        settings.general.plan.prompt = "  ".into();
+        settings.normalize();
+        assert_eq!(
+            settings.general.plan.after_approval,
+            crate::approval::ApprovalMode::Default
+        );
+        assert_eq!(settings.general.plan.prompt, crate::plan::PLAN_PROMPT);
+    }
+
+    #[test]
     fn review_settings_default_when_missing_from_file() {
         let s: GeneralSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.review, ReviewSettings::default());
@@ -2073,5 +2139,34 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn native_search_settings_default_off_load_older_files_and_clamp() {
+        assert_eq!(
+            serde_json::to_value(NativeSearch::PreferProvider).unwrap(),
+            "prefer_provider"
+        );
+        let s: Settings = serde_json::from_str(
+            r#"{"general": {"builtin_tools": {"search": {"backend": "searxng"}}}}"#,
+        )
+        .unwrap();
+        let search = &s.general.builtin_tools.search;
+        assert_eq!(search.native, NativeSearch::Off);
+        assert_eq!(search.native_max_uses, 5);
+        let mut s = s;
+        s.general.builtin_tools.search.native_max_uses = 0;
+        s.normalize();
+        assert_eq!(s.general.builtin_tools.search.native_max_uses, 1);
+        s.general.builtin_tools.search.native_max_uses = 99;
+        s.normalize();
+        assert_eq!(s.general.builtin_tools.search.native_max_uses, 20);
+        // A provider's per-request search is never saved.
+        let p = ProviderConfig {
+            native_search: Some(3),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v.get("native_search").is_none());
     }
 }

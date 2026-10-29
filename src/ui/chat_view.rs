@@ -61,6 +61,8 @@ pub struct View<'a> {
     /// Every artifact in the chat, and the one open in the panel.
     pub artifacts: &'a [Artifact],
     pub open_artifact: Option<(usize, usize)>,
+    /// A Plan chat's latest reply is a finished plan: show Approve plan under it.
+    pub plan_ready: bool,
 }
 
 pub fn show(
@@ -170,6 +172,10 @@ pub fn show(
                         }
                     }
                     ui.add_space(18.0);
+                }
+                if v.plan_ready {
+                    plan_buttons(ui, conv.id, &mut actions);
+                    ui.add_space(12.0);
                 }
                 if v.run.is_some_and(|r| r.compacting) {
                     ui.horizontal(|ui| {
@@ -376,6 +382,10 @@ fn assistant_body(
             actions,
         );
     }
+    if msg.searched || !msg.sources.is_empty() {
+        let id = ui.make_persistent_id(("sources", cx.conv, cx.idx));
+        sources_section(ui, id, msg);
+    }
     for call in &msg.tool_calls {
         let result = cx.results.get(call.id.as_str()).copied();
         if call.name == tools::TASKS
@@ -430,6 +440,58 @@ fn assistant_body(
             }
         });
     }
+}
+
+/// What the provider's own web search cited for a reply: a small expander with the links
+/// (they open in the browser), or just a line when the search cited nothing.
+fn sources_section(ui: &mut egui::Ui, id: egui::Id, msg: &ChatMessage) {
+    if msg.sources.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(icon::SEARCH).small().weak());
+            ui.label(RichText::new("Searched the web").small().weak());
+        });
+        return;
+    }
+    let label = sources_label(msg.sources.len());
+    let state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    state
+        .show_header(ui, |ui| {
+            ui.label(RichText::new(icon::SEARCH).small().weak());
+            ui.label(RichText::new(label).small().weak());
+        })
+        .body(|ui| {
+            for source in &msg.sources {
+                ui.hyperlink_to(RichText::new(&source.title).small(), &source.url)
+                    .on_hover_text(&source.url);
+            }
+        });
+}
+
+/// The expander's heading for a reply that cites `n` pages.
+fn sources_label(n: usize) -> String {
+    match n {
+        1 => "Searched the web · 1 source".to_owned(),
+        n => format!("Searched the web · {n} sources"),
+    }
+}
+
+/// The buttons under a finished plan: approve it (the chat carries it out) or keep planning.
+fn plan_buttons(ui: &mut egui::Ui, conv: Uuid, actions: &mut Vec<Action>) {
+    ui.horizontal(|ui| {
+        let approve = ui
+            .button(theme::labelled(icon::LIST_CHECKS, "Approve plan"))
+            .on_hover_text(
+                "Switch this chat to its approval mode after a plan (Settings → General → Plan \
+                 mode) and have the model carry the plan out",
+            );
+        if approve.clicked() {
+            actions.push(Action::ApprovePlan(conv));
+        }
+        if ui.button("Keep planning").clicked() {
+            actions.push(Action::KeepPlanning);
+        }
+    });
 }
 
 /// Whether a reasoning section starts open, per the user's setting.
@@ -939,6 +1001,12 @@ mod tests {
         assert_eq!(results_after(&messages, 1)["call_0"].content, "one");
         // The second turn's call has not been answered yet.
         assert!(results_after(&messages, 4).is_empty());
+    }
+
+    #[test]
+    fn sources_heading_counts_pages() {
+        assert_eq!(sources_label(1), "Searched the web · 1 source");
+        assert_eq!(sources_label(3), "Searched the web · 3 sources");
     }
 
     #[test]

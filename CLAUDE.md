@@ -159,9 +159,13 @@ sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` 
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by
 server id and MCP tool name (not the routed function name), so it survives renames.
 Per-chat permission modes live in `approval.rs` (`ApprovalMode`: Default, AutoWorkspace,
-AllowAll, ReadOnly; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
-`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly switches the
-write/shell workspace tools off via `ToolSelection::with_mode`.
+AllowAll, ReadOnly, Plan; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
+`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly and Plan switch the
+write/shell workspace tools off via `ToolSelection::with_mode` (`is_read_only`). Plan mode (`plan.rs`,
+Settings → General → Plan mode) appends its prompt to the system prompt; `plan::approve` switches the
+chat to its after-approval mode and returns the approval message, and `plan::awaiting_approval` decides
+whether the buttons under a finished reply are shown. `offered` and `effective` hide Plan and map it to
+ReadOnly while plan mode is off.
 
 **Subagents** (`subagent.rs`): the `delegate` tool runs tasks in parallel, each with its own
 model/tool loop and a derived `ToolSelection` (never the task list or `delegate`;
@@ -186,7 +190,13 @@ content (not extension) and extracts their text: `pdf-extract` for PDF, `zip` + 
 for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers for legacy
 `.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
 `tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
-`AppEvent::FileAttached`.
+`AppEvent::FileAttached`. `attach::read_bytes` returns `Reading::Scanned` for a PDF whose text
+is (nearly) empty (`documents::extract_or_scanned`, `ocr::is_scanned`); `ocr.rs` then reads it
+when `general.ocr` is on: `lopdf` gives each page's image XObjects (JPEG as is, 8-bit Flate
+RGB/grey as PNG), sent to a vision model through `llm::chat_completion` or run through
+`tesseract`, and the text comes back as `Attachment::ocr_text`. `read_files` runs it on the
+tokio runtime and sends `AppEvent::OcrStarted` first; with OCR off the note
+`attach::NO_TEXT_LAYER_NOTE` is attached instead.
 
 **Docker sandbox** (`sandbox/`): only `exec_shell_command` is sandboxed. `docker.rs` talks to
 Docker only through the `docker` CLI; its argument builders (`run_args`, `exec_args`) are pure, and
@@ -256,6 +266,17 @@ OpenAI Responses APIs in `native.rs`, which convert the Chat Completions message
 `ChatMessage.native` and sent only to the API that made them. `model_options.rs` holds
 reasoning effort and sampling options, layered provider → model (`ProviderConfig::resolved_options`)
 → chat (`Conversation.model_options`, applied by `with_chat_options` in `start_run_with`).
+
+Provider web search (`native.rs`): with `builtin_tools.search.native` = `PreferProvider`,
+`native_search_request` sets `ProviderConfig.native_search` (per request, never saved) for a chat
+whose `web_search` is on and whose provider has a search (`native_search_support`: Anthropic's
+`web_search_20250305` tool, Responses' `web_search` tool, OpenRouter's `web` plugin).
+`ToolSelection::with_native_search` then leaves the built-in `web_search` out of the toolbox, so
+subagents keep it. The Anthropic reader keeps `server_tool_use`/`web_search_tool_result` blocks in
+`ChatMessage.native` (sent back only to that API; Responses' `web_search_call` isn't kept, since
+`store: false` means the server can't look it up later), collect
+citations into `ChatMessage.sources` and set `searched`; `chat_view` shows them under the reply.
+An Anthropic `pause_turn` continues the reply in the agent loop.
 
 ## UI conventions
 

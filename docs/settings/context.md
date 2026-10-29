@@ -104,3 +104,24 @@ both entries.
 
 The working folder must be a git repository. If there are no changes, or the base branch can't
 be found, the app says so and sends nothing.
+
+## OCR for scanned PDFs
+
+A PDF with no text layer (a scan, or a photo of pages) has almost no text when the app reads it.
+With **Read scanned PDFs (OCR)** on, its page images are read when the file is attached, and the
+text comes back page by page under `--- Page N ---` headings, with a note that it came from OCR.
+The reading shows "Reading scanned PDF… (OCR)" until it is done. With it off, such a PDF is
+attached with the note "No text layer; turn on OCR in Settings → Context & files to read the
+scanned pages."
+
+| Setting | Default | Description |
+|---|---|---|
+| **Read scanned PDFs (OCR)** | off | Reads the page images of PDFs that have no text layer. |
+| **Read with** | A vision model | **A vision model** sends each page image to a provider, one request per page. **Tesseract** runs the `tesseract` program on this computer. |
+| **Vision model by** | The chat's provider | The provider profile for the vision model. The model must accept images. |
+| **Tesseract program** | `tesseract` | A name on PATH, or the full path of the program. |
+| **Languages** | `eng` | Tesseract language codes joined with `+`, such as `eng+deu`. Each must be installed with Tesseract. |
+| **Pages per PDF** | 20 (1–200) | Pages past this are not read, and the text says how many were left out. |
+
+Images in encodings this reader doesn't handle (JPEG 2000, CCITT fax, JBIG2, CMYK) are skipped,
+with a note in the text. Images that are inside form XObjects are not read.

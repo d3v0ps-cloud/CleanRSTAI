@@ -157,6 +157,8 @@ pub struct ToolSelection {
     features: [bool; 6],
     /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
     skills_available: bool,
+    /// The provider's own web search replaces the built-in `web_search` tool this request.
+    native_search: bool,
 }
 
 impl ToolSelection {
@@ -180,7 +182,15 @@ impl ToolSelection {
                 g.projects.enabled,
             ],
             skills_available: false,
+            native_search: false,
         }
+    }
+
+    /// This selection for a request the provider's own search answers: the built-in
+    /// `web_search` tool is left out. Subagents start from the selection without this.
+    pub fn with_native_search(mut self, on: bool) -> Self {
+        self.native_search = on;
+        self
     }
 
     /// Default for a chat feature, by its key ([`COMPACTION`], …).
@@ -199,10 +209,11 @@ impl ToolSelection {
         self
     }
 
-    /// This selection under a chat's permissions: Read only turns off the workspace tools
-    /// that write files or run commands (for subagents too, which start from this selection).
+    /// This selection under a chat's permissions: Read only (and Plan) turns off the workspace
+    /// tools that write files or run commands (for subagents too, which start from this
+    /// selection).
     pub fn with_mode(mut self, mode: crate::approval::ApprovalMode) -> Self {
-        if mode == crate::approval::ApprovalMode::ReadOnly {
+        if mode.is_read_only() {
             for (key, _) in workspace::TOOLS {
                 if workspace::changes_things(key) {
                     self.overrides
@@ -290,7 +301,7 @@ impl Toolbox {
         mcp.retain(|server, tool| selection.tool_on(server, tool));
         let mut specs = Vec::new();
         for (name, key, _) in BUILTINS {
-            if !selection.builtin_on(key) {
+            if !selection.builtin_on(key) || (name == WEB_SEARCH && selection.native_search) {
                 continue;
             }
             if name == DELEGATE {
@@ -966,5 +977,19 @@ mod tests {
             task_summary(&tasks[1..]),
             "Task list updated: 1 of 1 done. All tasks are done."
         );
+    }
+
+    #[test]
+    fn provider_search_replaces_the_builtin_web_search_tool() {
+        let settings = Settings::default();
+        let sel = ToolSelection::new(&settings, &ToolOverrides::default());
+        let tb = Toolbox::new(ToolRouter::default(), &sel, None);
+        assert!(tb.has(WEB_SEARCH));
+        let native = sel.clone().with_native_search(true);
+        let tb = Toolbox::new(ToolRouter::default(), &native, None);
+        assert!(!tb.has(WEB_SEARCH));
+        assert!(tb.has(TIME) && tb.has(FETCH), "the other built-ins stay");
+        // Subagents start from the selection without the flag, so they keep the tool.
+        assert!(Toolbox::new(ToolRouter::default(), &sel, None).has(WEB_SEARCH));
     }
 }

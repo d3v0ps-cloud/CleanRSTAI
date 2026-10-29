@@ -38,6 +38,8 @@ open = "5"
 # Document attachments: text extraction for PDF, Office (OOXML and legacy binary),
 # OpenDocument and RTF files.
 pdf-extract = "0.12"
+# Page images of scanned PDFs, for OCR (the same lopdf pdf-extract uses).
+lopdf = { version = "0.42", default-features = false }
 calamine = { version = "0.37", features = ["dates"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 quick-xml = "0.42"

@@ -24,6 +24,7 @@ pub fn section(
     schedules: &mut ScheduleSettings,
     providers: &[(String, String)],
     chats: &[(Uuid, String)],
+    plan_on: bool,
     actions: &mut Vec<SettingsAction>,
 ) {
     ui.add_space(14.0);
@@ -62,7 +63,7 @@ pub fn section(
                         .desired_rows(3)
                         .desired_width(FIELD_WIDTH),
                 );
-                task_fields(ui, task, providers, chats);
+                task_fields(ui, task, providers, chats, plan_on);
                 ui.horizontal(|ui| {
                     let ready = !task.prompt.trim().is_empty();
                     let next = match (task.enabled, schedule::upcoming(task)) {
@@ -104,6 +105,7 @@ fn task_fields(
     task: &mut ScheduledTask,
     providers: &[(String, String)],
     chats: &[(Uuid, String)],
+    plan_on: bool,
 ) {
     egui::Grid::new("task-fields")
         .num_columns(2)
@@ -191,7 +193,7 @@ fn task_fields(
             egui::ComboBox::from_id_salt("approval")
                 .selected_text(task.approval_mode.label())
                 .show_ui(ui, |ui| {
-                    for mode in ApprovalMode::ALL {
+                    for mode in ApprovalMode::offered(plan_on) {
                         ui.selectable_value(&mut task.approval_mode, mode, mode.label());
                     }
                 });

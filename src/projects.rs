@@ -241,7 +241,7 @@ pub fn load_context(project: &Project, max_kb: u32) -> ProjectContext {
     let mut texts = Vec::new();
     for path in &project.files {
         let name = file_label(path);
-        match Attachment::from_path(path) {
+        match Attachment::read_path(path).map(crate::attach::Reading::without_ocr) {
             Ok(a) if a.is_image() => notes.push(format!(
                 "{name} is an image and was not sent; project files are sent as text"
             )),

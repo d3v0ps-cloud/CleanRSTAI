@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::approval::{AlwaysAllow, Approval, PendingApproval};
-use crate::attach::Attachment;
+use crate::attach::{Attachment, Reading};
 use crate::background::{self, Outcome, Queued, RunQueue};
 use crate::config::{RemoteTls, Settings, Theme};
 use crate::export;
@@ -71,6 +71,10 @@ pub(crate) enum Action {
     OpenArtifactInBrowser(crate::artifacts::Artifact),
     /// Undo the file edits of the turn holding this message.
     UndoTurn(Uuid, usize),
+    /// Approve the plan a Plan chat's latest reply proposed (see `plan`).
+    ApprovePlan(Uuid),
+    /// Keep planning: focus the message box.
+    KeepPlanning,
 }
 
 pub struct ChatApp {
@@ -124,6 +128,8 @@ pub struct ChatApp {
     pending_attachments: Vec<Attachment>,
     /// Files still being read for `pending_attachments`.
     reading_files: usize,
+    /// Of those, scanned PDFs being read with OCR.
+    reading_ocr: usize,
     images: ImageCache,
     /// MCP server state for the composer and top bar, re-read when the manager changes.
     mcp_views: (u64, Arc<Vec<crate::mcp::manager::ServerView>>),
@@ -283,9 +289,9 @@ enum FileSource {
 }
 
 impl FileSource {
-    fn read(self) -> anyhow::Result<Attachment> {
+    fn read(self) -> anyhow::Result<Reading> {
         match self {
-            Self::Path(p) => Attachment::from_path(&p),
+            Self::Path(p) => Attachment::read_path(&p),
             Self::Dropped(f) => {
                 let name = f
                     .path()
@@ -293,7 +299,7 @@ impl FileSource {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "file".into());
                 let bytes = f.bytes().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
-                Attachment::from_bytes(name, bytes)
+                Attachment::read_bytes(name, bytes)
             }
         }
     }
@@ -431,6 +437,7 @@ impl ChatApp {
             keychain_warned: false,
             pending_attachments: Vec::new(),
             reading_files: 0,
+            reading_ocr: 0,
             images: ImageCache::default(),
             mcp_views: (u64::MAX, Arc::default()),
             viewing: None,
@@ -699,7 +706,8 @@ impl ChatApp {
         let overrides = self.tool_overrides().clone();
         let mut permissions = self.permissions();
         let permissions_before = permissions.clone();
-        let read_only = permissions.mode == crate::approval::ApprovalMode::ReadOnly;
+        let plan_on = self.settings.general.plan.enabled;
+        let read_only = permissions.mode.effective(plan_on).is_read_only();
         let sandbox_on = self.settings.sandbox.enabled;
         let workspace_dir = self
             .current
@@ -785,7 +793,12 @@ impl ChatApp {
                             .weak(),
                     );
                     ui.separator();
-                    crate::ui::widgets::permissions_picker(ui, &mut permissions, sandbox_on);
+                    crate::ui::widgets::permissions_picker(
+                        ui,
+                        &mut permissions,
+                        sandbox_on,
+                        plan_on,
+                    );
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .max_height(420.0)
@@ -1122,6 +1135,20 @@ impl ChatApp {
         conv.save();
         self.start_run_with(id, ctx, false, review);
         Ok(())
+    }
+
+    /// Approves the plan a Plan chat proposed: the chat switches to its after-approval mode and
+    /// the approval message starts a reply that carries the plan out.
+    fn approve_plan(&mut self, id: Uuid, ctx: &egui::Context) {
+        if self.busy(id) {
+            return;
+        }
+        let plan = self.settings.general.plan.clone();
+        let Some(conv) = self.conv_mut(id) else {
+            return;
+        };
+        let text = crate::plan::approve(conv, &plan);
+        let _ = self.send_message(id, text, Vec::new(), ctx);
     }
 
     fn start_run(&mut self, id: Uuid, ctx: &egui::Context) {
@@ -1506,8 +1533,12 @@ impl ChatApp {
                         self.notice = Some(e);
                     }
                 }
-                AppEvent::FileAttached { result } => {
+                AppEvent::OcrStarted => self.reading_ocr += 1,
+                AppEvent::FileAttached { result, ocr } => {
                     self.reading_files = self.reading_files.saturating_sub(1);
+                    if ocr {
+                        self.reading_ocr = self.reading_ocr.saturating_sub(1);
+                    }
                     match result {
                         Ok(a) => self.pending_attachments.push(a),
                         // Several files can fail in one drop; list them together.
@@ -2361,17 +2392,38 @@ impl ChatApp {
     }
 
     /// Read files into attachments off the UI thread, since extracting a large document's
-    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`.
+    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`. A scanned PDF goes
+    /// through OCR when it is on (`ocr::attach`), which announces itself with `OcrStarted`.
     fn read_files(&mut self, files: Vec<FileSource>) {
         if files.is_empty() {
             return;
         }
         self.reading_files += files.len();
         let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
-        self.rt.spawn_blocking(move || {
+        let ocr = crate::ocr::Job::from_settings(&self.settings, &self.http);
+        self.rt.spawn(async move {
             for file in files {
-                let result = file.read().map_err(|e| format!("{e:#}"));
-                let _ = tx.send(AppEvent::FileAttached { result });
+                let read = tokio::task::spawn_blocking(move || file.read()).await;
+                let (ocr_used, result) = match read {
+                    Ok(Ok(Reading::Done(a))) => (false, Ok(a)),
+                    Ok(Ok(Reading::Scanned(s))) => match &ocr {
+                        Some(job) => {
+                            let _ = tx.send(AppEvent::OcrStarted);
+                            let name = s.name.clone();
+                            let result = crate::ocr::attach(job, s.name, s.bytes)
+                                .await
+                                .map_err(|e| format!("{name} couldn't be read with OCR: {e:#}"));
+                            (true, result)
+                        }
+                        None => (false, Ok(Reading::Scanned(s).without_ocr())),
+                    },
+                    Ok(Err(e)) => (false, Err(format!("{e:#}"))),
+                    Err(e) => (false, Err(e.to_string())),
+                };
+                let _ = tx.send(AppEvent::FileAttached {
+                    result,
+                    ocr: ocr_used,
+                });
                 ctx.request_repaint();
             }
         });
@@ -2648,7 +2700,7 @@ impl ChatApp {
                 Command::RunScheduledTask(task.id),
             ));
         }
-        for mode in crate::approval::ApprovalMode::ALL {
+        for mode in crate::approval::ApprovalMode::offered(self.settings.general.plan.enabled) {
             e.push(Entry::new(
                 icon::SHIELD,
                 format!("Permissions: {}", mode.label()),
@@ -4159,14 +4211,12 @@ impl ChatApp {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             let n = self.reading_files;
-                            ui.label(
-                                RichText::new(format!(
-                                    "Reading {n} file{}…",
-                                    if n == 1 { "" } else { "s" }
-                                ))
-                                .small()
-                                .weak(),
-                            );
+                            let text = if self.reading_ocr > 0 {
+                                "Reading scanned PDF… (OCR)".to_owned()
+                            } else {
+                                format!("Reading {n} file{}…", if n == 1 { "" } else { "s" })
+                            };
+                            ui.label(RichText::new(text).small().weak());
                         });
                     }
                     let hint = if fresh {
@@ -4311,6 +4361,9 @@ impl ChatApp {
             .current
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
             .expect("not a fresh chat");
+        let plan_ready = !self.busy(conv.id)
+            && !self.errors.contains_key(&conv.id)
+            && crate::plan::awaiting_approval(conv, &self.settings.general.plan);
         chat_view::show(
             ui,
             &mut self.md_cache,
@@ -4330,6 +4383,7 @@ impl ChatApp {
                     .as_ref()
                     .filter(|v| v.conv == conv.id)
                     .map(|v| (v.message, v.index)),
+                plan_ready,
             },
         )
     }
@@ -4343,6 +4397,10 @@ impl ChatApp {
                 }
                 Action::Approve(conv, call_id, answer) => {
                     self.approve(conv, &call_id, answer);
+                }
+                Action::ApprovePlan(conv) => self.approve_plan(conv, ctx),
+                Action::KeepPlanning => {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                 }
                 Action::ViewImage(uri, bytes, name) => self.viewing = Some((uri, bytes, name)),
                 Action::SaveSvg(svg) => {

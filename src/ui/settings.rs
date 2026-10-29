@@ -15,6 +15,7 @@ use crate::config::{
 };
 use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
+use crate::ocr::OcrEngine;
 use crate::remote::{RemoteStatus, TunnelStatus};
 use crate::schedule::ScheduledTask;
 use uuid::Uuid;
@@ -516,21 +517,56 @@ fn web_search_rows(
     s: &mut crate::config::WebSearchSettings,
     show_key: &mut bool,
 ) {
-    use crate::config::SearchBackend;
+    use crate::config::{MAX_NATIVE_SEARCH_USES, NativeSearch, SearchBackend};
     ui.strong("Web search");
+    // The provider's own search replaces the service below for providers that have one.
+    let native = s.native == NativeSearch::PreferProvider;
     egui::Grid::new("web-search-grid")
         .num_columns(2)
         .spacing([12.0, 10.0])
         .show(ui, |ui| {
-            ui.label("Service");
-            egui::ComboBox::from_id_salt("search-backend")
-                .selected_text(s.backend.label())
+            ui.label("Search with");
+            egui::ComboBox::from_id_salt("search-native")
+                .selected_text(s.native.label())
                 .width(FIELD_WIDTH)
                 .show_ui(ui, |ui| {
-                    for b in SearchBackend::ALL {
-                        ui.selectable_value(&mut s.backend, b, b.label());
+                    for n in NativeSearch::ALL {
+                        ui.selectable_value(&mut s.native, n, n.label());
                     }
                 });
+            ui.end_row();
+            if native {
+                ui.label("");
+                weak_note(
+                    ui,
+                    "Anthropic (Messages API), OpenAI (Responses API) and OpenRouter search \
+                     on the provider's side and cite the pages they used. Other providers \
+                     keep the service below. The service's settings are not used then.",
+                );
+                ui.end_row();
+                ui.label("Searches");
+                ui.add(
+                    egui::DragValue::new(&mut s.native_max_uses)
+                        .range(1..=MAX_NATIVE_SEARCH_USES)
+                        .suffix(" per reply"),
+                )
+                .on_hover_text("The most searches the model may run for one reply");
+                ui.end_row();
+            }
+
+            ui.add_enabled_ui(!native, |ui| {
+                ui.label("Service");
+            });
+            ui.add_enabled_ui(!native, |ui| {
+                egui::ComboBox::from_id_salt("search-backend")
+                    .selected_text(s.backend.label())
+                    .width(FIELD_WIDTH)
+                    .show_ui(ui, |ui| {
+                        for b in SearchBackend::ALL {
+                            ui.selectable_value(&mut s.backend, b, b.label());
+                        }
+                    });
+            });
             ui.end_row();
 
             match s.backend {
@@ -572,7 +608,8 @@ fn web_search_rows(
             }
 
             ui.label("Results");
-            ui.add(
+            ui.add_enabled(
+                !native,
                 egui::DragValue::new(&mut s.max_results)
                     .range(1..=crate::config::MAX_SEARCH_RESULTS)
                     .suffix(" per search"),
@@ -583,7 +620,7 @@ fn web_search_rows(
             ui.label("Options");
             ui.vertical(|ui| {
                 ui.add_enabled(
-                    !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
+                    !native && !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
                     egui::Checkbox::new(&mut s.safe_search, "Safe search"),
                 );
                 ui.checkbox(&mut s.ask, "Ask before each search")
@@ -591,6 +628,13 @@ fn web_search_rows(
                         "The query leaves this computer and can contain parts of the chat. \
                          Subagents and auto-approved calls never ask.",
                     );
+                if native {
+                    weak_note(
+                        ui,
+                        "Doesn't apply to the provider's own search: it runs on the provider's \
+                         side, so it can't ask before each search.",
+                    );
+                }
                 ui.checkbox(
                     &mut s.subagents,
                     "Subagents may search (when they may use the built-in tools)",
@@ -797,7 +841,7 @@ impl SettingsUi {
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
                 Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
-                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), diffs and undo for file edits, and code review.",
+                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
@@ -1519,7 +1563,7 @@ impl SettingsUi {
                         &mut b.web_search,
                         icon::SEARCH,
                         "Web search",
-                        "Searches the web with the service below and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
+                        "Searches the web with the service below (or the provider's own search, when Search with says so) and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
                     ),
                     (
                         &mut b.workspace,
@@ -2192,6 +2236,106 @@ impl SettingsUi {
                             .desired_width(f32::INFINITY),
                     );
                 });
+
+                ui.add_space(16.0);
+
+                // ---- OCR for scanned PDFs
+                let o = &mut g.ocr;
+                ui.checkbox(
+                    &mut o.enabled,
+                    egui::RichText::new(format!("{}  Read scanned PDFs (OCR)", icon::FILE))
+                        .strong(),
+                );
+                ui.indent("ocr-help", |ui| {
+                    ui.weak(
+                        "A PDF with no text layer (a scan or a photo of pages) has its page \
+                         images read. A vision model reads each page, and the page image is sent \
+                         to the provider chosen here; Tesseract runs on this computer. Pages past \
+                         the limit are not read. Without OCR, such a PDF is attached with a note.",
+                    );
+                });
+                ui.add_enabled_ui(o.enabled, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Read with");
+                        ui.radio_value(&mut o.engine, OcrEngine::VisionModel, "A vision model");
+                        ui.radio_value(&mut o.engine, OcrEngine::Tesseract, "Tesseract");
+                    });
+                    ui.add_space(6.0);
+                    egui::Grid::new("ocr-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            if o.engine == OcrEngine::VisionModel {
+                                ui.label("Vision model by");
+                                let current = o
+                                    .provider
+                                    .as_ref()
+                                    .and_then(|id| providers.iter().find(|(pid, ..)| pid == id))
+                                    .map_or("The chat's provider".to_owned(), |(_, n, _)| {
+                                        n.clone()
+                                    });
+                                egui::ComboBox::from_id_salt("ocr-provider")
+                                    .selected_text(current)
+                                    .width(FIELD_WIDTH)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut o.provider,
+                                            None,
+                                            "The chat's provider",
+                                        );
+                                        for (id, name, _) in &providers {
+                                            ui.selectable_value(
+                                                &mut o.provider,
+                                                Some(id.clone()),
+                                                name,
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+                            } else {
+                                ui.label("Tesseract program");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.tesseract_path)
+                                        .hint_text("tesseract")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text("A name on PATH, or the full path of the program");
+                                ui.end_row();
+
+                                ui.label("Languages");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.languages)
+                                        .hint_text("eng")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text(
+                                    "Tesseract language codes joined with +, e.g. eng+deu; \
+                                     each must be installed with Tesseract",
+                                );
+                                ui.end_row();
+                            }
+
+                            ui.label("Pages per PDF");
+                            ui.add(
+                                egui::DragValue::new(&mut o.max_pages)
+                                    .range(1..=200)
+                                    .suffix(" pages"),
+                            )
+                            .on_hover_text(
+                                "Pages past this are not read, and the model is told so",
+                            );
+                            ui.end_row();
+                        });
+                    if o.engine == OcrEngine::VisionModel {
+                        ui.add_space(4.0);
+                        weak_note(
+                            ui,
+                            "The model must accept images. Pages are sent one at a time, so a \
+                             long scan takes a while.",
+                        );
+                    }
+                });
             });
     }
 
@@ -2419,6 +2563,7 @@ impl SettingsUi {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
+        let plan_on = self.draft.general.plan.enabled;
         let schedules = &mut self.draft.general.schedules;
         let bg = &mut self.draft.general.background;
         let ex = &mut self.draft.general.exec;
@@ -2514,7 +2659,7 @@ impl SettingsUi {
                                 egui::ComboBox::from_id_salt("exec-approval-mode")
                                     .selected_text(ex.approval_mode.label())
                                     .show_ui(ui, |ui| {
-                                        for m in ApprovalMode::ALL {
+                                        for m in ApprovalMode::offered(plan_on) {
                                             ui.selectable_value(
                                                 &mut ex.approval_mode,
                                                 m,
@@ -2572,7 +2717,9 @@ impl SettingsUi {
                          `cleanrstai exec --help` for every option.",
                     );
                 });
-                super::schedule_settings::section(ui, schedules, &providers, chats, actions);
+                super::schedule_settings::section(
+                    ui, schedules, &providers, chats, plan_on, actions,
+                );
             });
     }
 
@@ -2778,6 +2925,7 @@ impl SettingsUi {
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
         let g = &mut self.draft.general;
+        let plan_on = g.plan.enabled;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2991,7 +3139,7 @@ impl SettingsUi {
                         egui::ComboBox::from_id_salt("default-approval-mode")
                             .selected_text(g.default_approval_mode.label())
                             .show_ui(ui, |ui| {
-                                for m in ApprovalMode::ALL {
+                                for m in ApprovalMode::offered(plan_on) {
                                     ui.selectable_value(&mut g.default_approval_mode, m, m.label())
                                         .on_hover_text(m.description());
                                 }
@@ -3014,6 +3162,63 @@ impl SettingsUi {
                         ui.end_row();
                     });
 
+                ui.add_space(16.0);
+                ui.separator();
+                ui.strong("Plan mode");
+                ui.checkbox(&mut g.plan.enabled, "Offer Plan in the permission menus")
+                    .on_hover_text(
+                        "A Plan chat investigates with read-only tools and proposes a numbered \
+                         plan. Off, Plan is hidden, and a chat set to it is read only.",
+                    );
+                ui.add_enabled_ui(g.plan.enabled, |ui| {
+                    egui::Grid::new("plan-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Mode after approval");
+                            egui::ComboBox::from_id_salt("plan-after-approval")
+                                .selected_text(g.plan.after_mode().label())
+                                .show_ui(ui, |ui| {
+                                    for m in [
+                                        ApprovalMode::Default,
+                                        ApprovalMode::AutoWorkspace,
+                                        ApprovalMode::AllowAll,
+                                    ] {
+                                        ui.selectable_value(&mut g.plan.after_approval, m, m.label())
+                                            .on_hover_text(m.description());
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Approval message");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut g.plan.approve_message)
+                                    .desired_width(FIELD_WIDTH),
+                            )
+                            .on_hover_text("Sent as the user's message when a plan is approved");
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    weak_note(
+                        ui,
+                        "Under a finished plan, Approve plan switches the chat to the mode \
+                         above and sends the approval message. Plan and Read only can't be the \
+                         mode after approval.",
+                    );
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Plan instructions");
+                    if g.plan.prompt != crate::plan::PLAN_PROMPT
+                        && ui.small_button("Reset").clicked()
+                    {
+                        g.plan.prompt = crate::plan::PLAN_PROMPT.into();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut g.plan.prompt)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.add_space(16.0);
                 ui.separator();
                 ui.strong("Export & import");
@@ -3313,6 +3518,10 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "General",
         "Default permission mode for new chats",
     ),
+    (Tab::General, "General", "Plan mode"),
+    (Tab::General, "General", "Plan mode after approval"),
+    (Tab::General, "General", "Plan approval message"),
+    (Tab::General, "General", "Plan instructions"),
     (Tab::General, "General", "Max tool rounds"),
     (Tab::General, "General", "Tool timeout"),
     (Tab::General, "General", "Export settings"),
@@ -3354,6 +3563,12 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily, Kagi)",
     ),
     (Tab::Tools, "Tools", "Web search API key"),
+    (
+        Tab::Tools,
+        "Tools",
+        "Web search with the provider's own search (Anthropic, OpenAI, OpenRouter)",
+    ),
+    (Tab::Tools, "Tools", "Provider search: searches per reply"),
     (
         Tab::Extensions,
         "Skills & hooks",
@@ -3428,6 +3643,17 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         Tab::Context,
         "Context & files",
         "Undo file edits (checkpoints)",
+    ),
+    (Tab::Context, "Context & files", "Read scanned PDFs (OCR)"),
+    (
+        Tab::Context,
+        "Context & files",
+        "OCR engine and vision model",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Tesseract program and languages",
     ),
     (
         Tab::General,
@@ -3535,6 +3761,8 @@ mod tests {
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
+        assert_eq!(search_settings("scanned pdf")[0].0, Tab::Context);
+        assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
         assert_eq!(search_settings("projects")[0].0, Tab::Context);
         assert_eq!(search_settings("project files size")[0].0, Tab::Context);
@@ -3542,6 +3770,8 @@ mod tests {
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("provider search")[0].0, Tab::Tools);
+        assert_eq!(search_settings("searches per reply")[0].0, Tab::Tools);
         assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
         assert_eq!(search_settings("saved prompts")[0].0, Tab::Extensions);
         assert_eq!(search_settings("skills")[0].0, Tab::Extensions);
@@ -3551,6 +3781,8 @@ mod tests {
         assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
+        assert_eq!(search_settings("plan mode")[0].0, Tab::General);
+        assert_eq!(search_settings("plan instructions")[0].0, Tab::General);
         assert_eq!(search_settings("notify")[0].0, Tab::Background);
         assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
