@@ -2802,18 +2802,19 @@ impl ChatApp {
         }
 
         // Slash commands that match the `/name` being typed.
-        let suggestions =
-            if self.input.starts_with('/') && self.settings.general.slash_commands.enabled {
-                let workspace = self.current_workspace();
-                let all = self.slash_cache.get(
-                    &self.settings.general.slash_commands,
-                    workspace.as_deref(),
-                    &self.input,
-                );
-                crate::commands::suggestions(&self.input, all)
-            } else {
-                Vec::new()
-            };
+        // Only while a first word is being typed after the slash (the only time they show).
+        let typing_command = self.input.starts_with('/')
+            && !self.input.contains(char::is_whitespace)
+            && self.settings.general.slash_commands.enabled;
+        let suggestions = if typing_command {
+            let workspace = self.current_workspace();
+            let all = self
+                .slash_cache
+                .get(&self.settings.general.slash_commands, workspace.as_deref());
+            crate::commands::suggestions(&self.input, all)
+        } else {
+            Vec::new()
+        };
 
         ui.add_space(8.0);
         centered(ui, |ui| {

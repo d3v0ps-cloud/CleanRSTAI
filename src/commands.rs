@@ -143,11 +143,13 @@ pub fn available(settings: &SlashCommandSettings, workspace: Option<&Path>) -> V
     out
 }
 
-/// The commands for the message box, read again when the input or the working folder changes
-/// (so a folder is not read on every frame).
+/// The commands for the message box, read once per working folder: they are kept until the
+/// folder changes or [`SuggestionCache::clear`] is called (when the settings are applied), so
+/// typing does not read the folder again.
 #[derive(Default)]
 pub struct SuggestionCache {
-    key: Option<(Option<PathBuf>, String)>,
+    /// The folder the commands were read for (`None` for no folder), once read.
+    key: Option<Option<PathBuf>>,
     commands: Vec<SlashCommand>,
 }
 
@@ -157,16 +159,16 @@ impl SuggestionCache {
         *self = Self::default();
     }
 
+    /// The commands for `workspace`, read with [`available`] unless they were already read for
+    /// that folder since the last [`SuggestionCache::clear`].
     pub fn get(
         &mut self,
         settings: &SlashCommandSettings,
         workspace: Option<&Path>,
-        input: &str,
     ) -> &[SlashCommand] {
-        let key = (workspace.map(Path::to_path_buf), input.to_owned());
-        if self.key.as_ref() != Some(&key) {
+        if self.key.as_ref().map(|k| k.as_deref()) != Some(workspace) {
             self.commands = available(settings, workspace);
-            self.key = Some(key);
+            self.key = Some(workspace.map(Path::to_path_buf));
         }
         &self.commands
     }
@@ -304,6 +306,29 @@ mod tests {
         };
         assert_eq!(available(&off, Some(&dir))[0].prompt, "Settings version");
         assert_eq!(available(&settings, None)[0].prompt, "Settings version");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn suggestion_cache_reads_once_per_folder() {
+        let dir = temp_dir("cache");
+        let folder = dir.join(".cleanrstai").join("commands");
+        std::fs::write(folder.join("one.md"), "First").unwrap();
+        let settings = SlashCommandSettings {
+            enabled: true,
+            workspace_commands: true,
+            commands: Vec::new(),
+        };
+
+        let mut cache = SuggestionCache::default();
+        assert_eq!(cache.get(&settings, Some(&dir)).len(), 1);
+        // A file added later is not seen until the cache is cleared.
+        std::fs::write(folder.join("two.md"), "Second").unwrap();
+        assert_eq!(cache.get(&settings, Some(&dir)).len(), 1);
+        cache.clear();
+        assert_eq!(cache.get(&settings, Some(&dir)).len(), 2);
+        // Another folder is read again.
+        assert!(cache.get(&settings, None).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
