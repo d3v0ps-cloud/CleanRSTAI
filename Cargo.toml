@@ -10,7 +10,7 @@ license = "MIT"
 eframe = { version = "0.37", features = ["persistence"] }
 egui_commonmark = { version = "0.26", features = ["better_syntax_highlighting", "embedded_image", "svg", "fetch"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "net"] }
-reqwest = { version = "0.13", features = ["json", "stream", "form", "query"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form", "query", "multipart"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -75,6 +75,10 @@ libloading = "0.8"
 # its own window (src/ui/linux_preview.rs) when WebKitGTK is installed.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 wry = { version = "0.57", default-features = false }
+# Voice input: the default microphone, captured to WAV (Linux records with pw-record, parecord or
+# arecord instead, because cpal needs ALSA headers the release builds don't have). Reading replies
+# aloud plays WAV through the default output device the same way.
+cpal = "0.18"
 # The menu bar (macOS) or system tray (Windows) icon for "Keep running when the window is closed".
 # tray-icon needs GTK on Linux, which the release builds don't link, so Linux has no tray.
 tray-icon = "0.26.1"

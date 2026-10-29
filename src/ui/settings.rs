@@ -118,6 +118,7 @@ pub enum Tab {
     Docker,
     Subagents,
     Background,
+    Voice,
 }
 
 pub enum SettingsAction {
@@ -586,6 +587,28 @@ fn access_rows(
 }
 
 /// Weak text in a grid cell, wrapped at the width of the fields.
+/// A combo box for the provider a voice feature uses: None is the active provider.
+fn provider_choice(
+    ui: &mut egui::Ui,
+    id: &str,
+    choice: &mut Option<String>,
+    providers: &[(String, String)],
+) {
+    let shown = choice
+        .as_ref()
+        .and_then(|id| providers.iter().find(|(pid, _)| pid == id))
+        .map_or("Active provider", |(_, name)| name.as_str())
+        .to_owned();
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(choice, None, "Active provider");
+            for (pid, name) in providers {
+                ui.selectable_value(choice, Some(pid.clone()), name);
+            }
+        });
+}
+
 fn weak_note(ui: &mut egui::Ui, text: &str) {
     ui.scope(|ui| {
         ui.set_max_width(FIELD_WIDTH);
@@ -845,6 +868,7 @@ impl SettingsUi {
                         (Tab::Docker, "Docker sandbox"),
                         (Tab::Subagents, "Subagents"),
                         (Tab::Background, "Background"),
+                        (Tab::Voice, "Voice"),
                     ] {
                         if ui
                             .add(
@@ -918,6 +942,7 @@ impl SettingsUi {
                 Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
                 Tab::Background => "Background",
+                Tab::Voice => "Voice",
                 Tab::General => "General",
             });
             ui.weak(match self.tab {
@@ -929,6 +954,7 @@ impl SettingsUi {
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
+                Tab::Voice => "Dictate into the message box, and read replies aloud: the speech providers, models and voices.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
             });
             ui.add_space(8.0);
@@ -941,6 +967,7 @@ impl SettingsUi {
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::Background => self.background_tab(ui, chats, &mut actions),
+                Tab::Voice => self.voice_tab(ui),
                 Tab::General => {
                     self.general_tab(ui, live, remote, (tunnel, access_error), &mut actions)
                 }
@@ -2662,6 +2689,139 @@ impl SettingsUi {
             });
     }
 
+    fn voice_tab(&mut self, ui: &mut egui::Ui) {
+        let providers: Vec<(String, String)> = self
+            .draft
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let voice = &mut self.draft.general.voice;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.checkbox(
+                    &mut voice.input.enabled,
+                    egui::RichText::new("Voice input").strong(),
+                );
+                ui.indent("voice-in", |ui| {
+                    ui.weak(
+                        "A microphone button under the message box records a clip, and the \
+                         transcript goes into the message box to read and edit before you \
+                         send it. Ctrl/⌘+Shift+M starts and stops a recording. The clip goes to \
+                         the transcription endpoint below: a cloud service, or a local server \
+                         such as whisper.cpp, faster-whisper-server, speaches or LocalAI.",
+                    );
+                    ui.add_enabled_ui(voice.input.enabled, |ui| {
+                        egui::Grid::new("voice-in-grid")
+                            .num_columns(2)
+                            .spacing([12.0, 10.0])
+                            .show(ui, |ui| {
+                                ui.label("Provider");
+                                provider_choice(
+                                    ui,
+                                    "voice-in-provider",
+                                    &mut voice.input.provider,
+                                    &providers,
+                                );
+                                ui.end_row();
+                                ui.label("Model");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut voice.input.model)
+                                        .desired_width(220.0),
+                                );
+                                ui.end_row();
+                                ui.label("Language");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut voice.input.language)
+                                        .hint_text("Detect")
+                                        .desired_width(220.0),
+                                );
+                                ui.end_row();
+                                ui.label("Longest recording (seconds)");
+                                ui.add(
+                                    egui::DragValue::new(&mut voice.input.max_secs)
+                                        .range(5..=crate::voice::MAX_RECORD_SECS),
+                                );
+                                ui.end_row();
+                            });
+                    });
+                });
+                ui.add_space(12.0);
+                ui.checkbox(
+                    &mut voice.output.enabled,
+                    egui::RichText::new("Read replies aloud").strong(),
+                );
+                ui.indent("voice-out", |ui| {
+                    ui.weak(
+                        "A speaker button under each reply reads it aloud, and Ctrl/⌘+Shift+S \
+                         reads the latest reply or stops the reading. Code blocks and tables are \
+                         announced rather than read, and links are read as their text.",
+                    );
+                    ui.add_enabled_ui(voice.output.enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.radio_value(
+                                &mut voice.output.engine,
+                                crate::voice::SpeechEngine::OsVoice,
+                                crate::voice::SpeechEngine::OsVoice.label(),
+                            );
+                            ui.radio_value(
+                                &mut voice.output.engine,
+                                crate::voice::SpeechEngine::Endpoint,
+                                crate::voice::SpeechEngine::Endpoint.label(),
+                            );
+                        });
+                        let endpoint = voice.output.engine == crate::voice::SpeechEngine::Endpoint;
+                        ui.weak(if endpoint {
+                            "Sent to the speech endpoint below as WAV audio, then played on this computer."
+                        } else {
+                            "Spoken by this computer: say on macOS, System.Speech on Windows, spd-say or espeak-ng on Linux. Nothing leaves the computer."
+                        });
+                        egui::Grid::new("voice-out-grid")
+                            .num_columns(2)
+                            .spacing([12.0, 10.0])
+                            .show(ui, |ui| {
+                                if endpoint {
+                                    ui.label("Provider");
+                                    provider_choice(
+                                        ui,
+                                        "voice-out-provider",
+                                        &mut voice.output.provider,
+                                        &providers,
+                                    );
+                                    ui.end_row();
+                                    ui.label("Model");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut voice.output.model)
+                                            .desired_width(220.0),
+                                    );
+                                    ui.end_row();
+                                    ui.label("Voice");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut voice.output.voice)
+                                            .desired_width(220.0),
+                                    );
+                                    ui.end_row();
+                                }
+                                ui.label("Speed");
+                                ui.add(
+                                    egui::Slider::new(&mut voice.output.speed, 0.5..=2.0)
+                                        .step_by(0.05),
+                                );
+                                ui.end_row();
+                                ui.label("Longest reply read (characters)");
+                                ui.add(
+                                    egui::DragValue::new(&mut voice.output.max_chars).range(
+                                        200..=crate::voice::MAX_SPEAK_CHARS,
+                                    ),
+                                );
+                                ui.end_row();
+                            });
+                    });
+                });
+            });
+    }
+
     fn background_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -3644,6 +3804,21 @@ fn hook_rows(ui: &mut egui::Ui, h: &mut HookSettings) {
 
 /// Settings the search box can find: (tab, section, label).
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
+    (Tab::Voice, "Voice", "Voice input"),
+    (Tab::Voice, "Voice", "Voice input provider"),
+    (Tab::Voice, "Voice", "Transcription model"),
+    (Tab::Voice, "Voice", "Dictation language"),
+    (Tab::Voice, "Voice", "Longest recording"),
+    (Tab::Voice, "Voice", "Read replies aloud"),
+    (
+        Tab::Voice,
+        "Voice",
+        "Speech engine (system voice or endpoint)",
+    ),
+    (Tab::Voice, "Voice", "Speech provider"),
+    (Tab::Voice, "Voice", "Speech model and voice"),
+    (Tab::Voice, "Voice", "Speech speed"),
+    (Tab::Voice, "Voice", "Longest reply read aloud"),
     (Tab::General, "General", "System prompt"),
     (Tab::General, "General", "Theme (light / dark)"),
     (Tab::General, "General", "UI scale / zoom"),
@@ -3958,6 +4133,10 @@ mod tests {
         assert_eq!(search_settings("skill folder")[0].0, Tab::Extensions);
         assert_eq!(search_settings("disable a skill")[0].0, Tab::Extensions);
         assert_eq!(search_settings("hooks")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("dictation")[0].0, Tab::Voice);
+        assert_eq!(search_settings("transcription")[0].0, Tab::Voice);
+        assert_eq!(search_settings("read aloud")[0].0, Tab::Voice);
+        assert_eq!(search_settings("speech speed")[0].0, Tab::Voice);
         assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert_eq!(search_settings("save as pdf")[0].0, Tab::General);

@@ -16,6 +16,8 @@ Use **⌘** on macOS and **Ctrl** on Linux and Windows.
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |
 | ⌘/Ctrl + , | Settings |
+| ⌘/Ctrl + Shift + M | Start or stop a voice recording, which is transcribed into the message box (when voice input is on in [Voice](../settings/voice.html)) |
+| ⌘/Ctrl + Shift + S | Read the chat's latest reply aloud, or stop the reading (when reading replies aloud is on) |
 | Esc | Close settings when there are no unsaved changes |
 | Tab / Shift+Tab | Move between controls: the message box and its buttons, the conversation, the sidebar and the top bar. The focused control gets an accent-coloured outline |
 | Space or Enter | Press the focused button |

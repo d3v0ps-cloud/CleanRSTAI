@@ -366,7 +366,7 @@ in them follows the same rule:
 - [x] Live HTML preview on Linux in a window of its own, when WebKitGTK is installed (it is
   loaded at run time, as the release builds link neither GTK nor WebKitGTK; without it, or a
   display, pages open in the browser)
-- [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
+- [x] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
 - [x] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings

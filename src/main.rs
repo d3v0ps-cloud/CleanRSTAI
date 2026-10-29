@@ -44,6 +44,7 @@ mod tray;
 mod types;
 mod ui;
 mod update;
+mod voice;
 
 use eframe::egui;
 
