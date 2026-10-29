@@ -19,6 +19,19 @@ tasks behave.
 | **Only while the CleanRSTAI window is in the background** | on | Notify only when the window does not have focus. When off, a notification is also sent for a chat other than the one open. |
 | **Replies at once** | 4 | How many chats can have a reply running at the same time (1–32). |
 | **Time limit** | 0 min | Stop a reply that has run this many minutes (0–1440). 0 means no limit. |
+| **Keep running in the menu bar or system tray when the window is closed** | off | Closing the window hides it instead of quitting. The icon in the menu bar (macOS) or system tray (Windows) shows the window again or quits. Not available on Linux yet. |
+
+## Keeping running in the menu bar or tray
+
+With this on, the close button hides the window and the app keeps running: replies, queued
+replies and MCP connections carry on, and the icon's menu has **Show CleanRSTAI** and **Quit**.
+On Windows a left click on the icon also shows the window. The first time the window hides in an
+app run, a notification says CleanRSTAI is still running.
+
+Quit is the only way to end the app from the icon. On macOS, Command-Q quits too; it doesn't hide
+the window. If the setting is turned off while the window is hidden, the window comes back. The
+icon is created when the app starts with the setting on, or when it is turned on. If the system
+refuses the icon, closing the window quits as usual.
 
 ## Scheduled tasks
 

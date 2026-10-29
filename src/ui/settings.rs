@@ -2324,6 +2324,23 @@ impl SettingsUi {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.add_enabled_ui(crate::tray::SUPPORTED, |ui| {
+                    ui.checkbox(&mut bg.keep_running, crate::tray::setting_label())
+                });
+                if crate::tray::SUPPORTED {
+                    ui.indent("bg-keep-running", |ui| {
+                        ui.weak(
+                            "Closing the window hides it, and replies and MCP servers keep \
+                             running. Show the window or quit from the icon's menu. On macOS, \
+                             Command-Q quits as usual.",
+                        );
+                    });
+                } else {
+                    ui.indent("bg-keep-running", |ui| {
+                        ui.weak("Not available on Linux yet.");
+                    });
+                }
+                ui.add_space(10.0);
                 ui.checkbox(
                     &mut bg.notify,
                     egui::RichText::new("Notify when a reply finishes, fails or needs approval")
@@ -3176,6 +3193,11 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     ),
     (Tab::Background, "Background", "Replies at once (queue)"),
     (Tab::Background, "Background", "Reply time limit (minutes)"),
+    (
+        Tab::Background,
+        "Background",
+        "Keep running in the menu bar or system tray when the window is closed",
+    ),
     (Tab::Background, "Background", "Run scheduled tasks"),
     (Tab::Background, "Background", "Scheduled task prompt"),
     (
@@ -3226,6 +3248,8 @@ mod tests {
         assert_eq!(search_settings("notify")[0].0, Tab::Background);
         assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
+        assert_eq!(search_settings("menu bar")[0].0, Tab::Background);
+        assert_eq!(search_settings("system tray")[0].0, Tab::Background);
         assert_eq!(search_settings("scheduled tasks")[0].0, Tab::Background);
         assert_eq!(search_settings("catch up")[0].0, Tab::Background);
         assert!(search_settings("zzzz").is_empty());

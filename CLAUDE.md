@@ -210,6 +210,14 @@ tunnel's hostnames (`TunnelHosts`, shared with the server) are accepted as Host 
 and only on a loopback connection to such a host is `Cf-Connecting-IP` trusted for the login
 throttle, plus a tunnel-wide limit.
 
+**Tray** (`tray.rs`, Settings → Background "keep running"): on macOS and Windows a `tray-icon`
+icon (menu bar / system tray) is created from `logic` once the setting is on, and dropped when it
+goes off. `ChatApp::handle_tray` turns a close request into `CancelClose` + `Visible(false)` while
+`tray::on_close` says hide (`keep_running`, a tray exists, and not quitting); Quit from the menu, and
+the update restart, set `quitting` first because egui sends its own `Close` as a close request too.
+Hidden, the app asks for a repaint every 250 ms to poll the tray. Linux has a stub (no tray; tray-icon
+needs GTK there), and `tray-icon` stays under the macOS/Windows target section of `Cargo.toml`.
+
 **Persistence**: settings are one JSON file (`config.rs`, paths via `directories` with
 `ProjectDirs("net", "bukn", "CleanRSTAI")`); each conversation is its own JSON file
 (`types::Conversation`). New fields must be `#[serde(default)]` (usually with

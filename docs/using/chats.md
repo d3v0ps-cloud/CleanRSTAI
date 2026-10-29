@@ -278,6 +278,10 @@ reply finishes, fails or needs approval. Each chat can switch its notifications 
 menu. How many run at once, the notifications and a time limit are set in
 [Background](../settings/background.html) settings.
 
+With **Keep running in the menu bar or system tray when the window is closed** on (macOS and
+Windows), closing the window hides it and replies keep running. Show the window again from the
+icon's menu (on Windows, a left click on the icon also works); Quit there ends the app.
+
 ## Scheduled tasks
 
 A scheduled task is a saved prompt that CleanRSTAI sends at set times: every so many minutes, every
