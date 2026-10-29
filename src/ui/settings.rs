@@ -5,11 +5,12 @@ use eframe::egui;
 
 use super::theme::icon;
 use super::widgets::{code_block, icon_button, kv_editor, list_editor};
+use crate::commands::SlashCommand;
 use crate::config::{
     DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
     McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
     ReviewScope, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings,
-    Settings, Theme, TunnelMode, import_mcp_json,
+    Settings, SlashCommandSettings, Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
@@ -1515,6 +1516,8 @@ impl SettingsUi {
                 ui.add_enabled_ui(b.web_search, |ui| {
                     web_search_rows(ui, &mut b.search, &mut self.show_search_key);
                 });
+                ui.add_space(12.0);
+                slash_command_rows(ui, &mut self.draft.general.slash_commands);
                 ui.add_space(8.0);
                 ui.weak(format!(
                     "{}  The subagent tool has its own page: Subagents. Context compaction, \
@@ -2672,6 +2675,79 @@ impl SettingsUi {
     }
 }
 
+/// Slash commands: the on/off switches and the editable list of saved prompts.
+fn slash_command_rows(ui: &mut egui::Ui, s: &mut SlashCommandSettings) {
+    ui.checkbox(
+        &mut s.enabled,
+        egui::RichText::new(format!(
+            "{}  Slash commands (saved prompts)",
+            icon::LIGHTNING
+        ))
+        .strong(),
+    );
+    ui.indent("slash-help", |ui| {
+        ui.weak(
+            "Type / and a name in the message box to send a saved prompt. {{args}} in a prompt \
+             is replaced by what you type after the name; without it, that text is added after \
+             a blank line. Names use letters, digits, - and _.",
+        );
+    });
+    ui.add_enabled_ui(s.enabled, |ui| {
+        ui.checkbox(
+            &mut s.workspace_commands,
+            "Also load commands from the chat's working folder",
+        )
+        .on_hover_text(
+            "Each .cleanrstai/commands/<name>.md file in the folder is a command. A first line \
+             description: ... gives its description; a command there replaces one here with the \
+             same name.",
+        );
+        ui.add_space(6.0);
+        let mut remove = None;
+        for (i, c) in s.commands.iter_mut().enumerate() {
+            ui.push_id(("slash-command", i), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut c.name)
+                            .hint_text("name")
+                            .desired_width(140.0),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut c.description)
+                            .hint_text("description")
+                            .desired_width(FIELD_WIDTH - 60.0),
+                    );
+                    if icon_button(ui, icon::TRASH, "Delete command").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                if !c.name.trim().is_empty() && !crate::commands::valid_name(c.name.trim()) {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "Names use letters, digits, - and _ only; this command is dropped on save",
+                    );
+                }
+                ui.add(
+                    egui::TextEdit::multiline(&mut c.prompt)
+                        .hint_text("The prompt; {{args}} is replaced by what follows the name")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(i) = remove {
+            s.commands.remove(i);
+        }
+        if ui
+            .small_button(format!("{}  Add command", icon::PLUS))
+            .clicked()
+        {
+            s.commands.push(SlashCommand::default());
+        }
+    });
+}
+
 /// Settings the search box can find: (tab, section, label).
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::General, "General", "System prompt"),
@@ -2741,6 +2817,7 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily)",
     ),
     (Tab::Tools, "Tools", "Web search API key"),
+    (Tab::Tools, "Tools", "Slash commands (saved prompts)"),
     (
         Tab::Context,
         "Context & files",
@@ -2844,6 +2921,8 @@ mod tests {
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("slash command")[0].0, Tab::Tools);
+        assert_eq!(search_settings("saved prompts")[0].0, Tab::Tools);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert!(search_settings("zzzz").is_empty());
     }

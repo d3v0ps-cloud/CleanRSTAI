@@ -86,6 +86,8 @@ too, as an installer and a portable `.exe`.
   - **Diffs and undo**: `write_file` and `edit_file` show their change as a diff on the
     approval prompt and in the tool card, and keep a checkpoint, so **Undo file edits** puts
     back the files a turn changed (files changed again since are left alone).
+- **Slash commands**: saved prompts typed as `/name` in the message box, with `{{args}}`
+  filled in, kept in Settings or as `.cleanrstai/commands/*.md` files in the chat's folder.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
