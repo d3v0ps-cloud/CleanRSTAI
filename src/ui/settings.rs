@@ -517,21 +517,56 @@ fn web_search_rows(
     s: &mut crate::config::WebSearchSettings,
     show_key: &mut bool,
 ) {
-    use crate::config::SearchBackend;
+    use crate::config::{MAX_NATIVE_SEARCH_USES, NativeSearch, SearchBackend};
     ui.strong("Web search");
+    // The provider's own search replaces the service below for providers that have one.
+    let native = s.native == NativeSearch::PreferProvider;
     egui::Grid::new("web-search-grid")
         .num_columns(2)
         .spacing([12.0, 10.0])
         .show(ui, |ui| {
-            ui.label("Service");
-            egui::ComboBox::from_id_salt("search-backend")
-                .selected_text(s.backend.label())
+            ui.label("Search with");
+            egui::ComboBox::from_id_salt("search-native")
+                .selected_text(s.native.label())
                 .width(FIELD_WIDTH)
                 .show_ui(ui, |ui| {
-                    for b in SearchBackend::ALL {
-                        ui.selectable_value(&mut s.backend, b, b.label());
+                    for n in NativeSearch::ALL {
+                        ui.selectable_value(&mut s.native, n, n.label());
                     }
                 });
+            ui.end_row();
+            if native {
+                ui.label("");
+                weak_note(
+                    ui,
+                    "Anthropic (Messages API), OpenAI (Responses API) and OpenRouter search \
+                     on the provider's side and cite the pages they used. Other providers \
+                     keep the service below. The service's settings are not used then.",
+                );
+                ui.end_row();
+                ui.label("Searches");
+                ui.add(
+                    egui::DragValue::new(&mut s.native_max_uses)
+                        .range(1..=MAX_NATIVE_SEARCH_USES)
+                        .suffix(" per reply"),
+                )
+                .on_hover_text("The most searches the model may run for one reply");
+                ui.end_row();
+            }
+
+            ui.add_enabled_ui(!native, |ui| {
+                ui.label("Service");
+            });
+            ui.add_enabled_ui(!native, |ui| {
+                egui::ComboBox::from_id_salt("search-backend")
+                    .selected_text(s.backend.label())
+                    .width(FIELD_WIDTH)
+                    .show_ui(ui, |ui| {
+                        for b in SearchBackend::ALL {
+                            ui.selectable_value(&mut s.backend, b, b.label());
+                        }
+                    });
+            });
             ui.end_row();
 
             match s.backend {
@@ -573,7 +608,8 @@ fn web_search_rows(
             }
 
             ui.label("Results");
-            ui.add(
+            ui.add_enabled(
+                !native,
                 egui::DragValue::new(&mut s.max_results)
                     .range(1..=crate::config::MAX_SEARCH_RESULTS)
                     .suffix(" per search"),
@@ -584,7 +620,7 @@ fn web_search_rows(
             ui.label("Options");
             ui.vertical(|ui| {
                 ui.add_enabled(
-                    !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
+                    !native && !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
                     egui::Checkbox::new(&mut s.safe_search, "Safe search"),
                 );
                 ui.checkbox(&mut s.ask, "Ask before each search")
@@ -592,6 +628,13 @@ fn web_search_rows(
                         "The query leaves this computer and can contain parts of the chat. \
                          Subagents and auto-approved calls never ask.",
                     );
+                if native {
+                    weak_note(
+                        ui,
+                        "Doesn't apply to the provider's own search: it runs on the provider's \
+                         side, so it can't ask before each search.",
+                    );
+                }
                 ui.checkbox(
                     &mut s.subagents,
                     "Subagents may search (when they may use the built-in tools)",
@@ -1520,7 +1563,7 @@ impl SettingsUi {
                         &mut b.web_search,
                         icon::SEARCH,
                         "Web search",
-                        "Searches the web with the service below and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
+                        "Searches the web with the service below (or the provider's own search, when Search with says so) and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
                     ),
                     (
                         &mut b.workspace,
@@ -3424,6 +3467,12 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     ),
     (Tab::Tools, "Tools", "Web search API key"),
     (
+        Tab::Tools,
+        "Tools",
+        "Web search with the provider's own search (Anthropic, OpenAI, OpenRouter)",
+    ),
+    (Tab::Tools, "Tools", "Provider search: searches per reply"),
+    (
         Tab::Extensions,
         "Skills & hooks",
         "Slash commands (saved prompts)",
@@ -3605,6 +3654,8 @@ mod tests {
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("provider search")[0].0, Tab::Tools);
+        assert_eq!(search_settings("searches per reply")[0].0, Tab::Tools);
         assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
         assert_eq!(search_settings("saved prompts")[0].0, Tab::Extensions);
         assert_eq!(search_settings("skills")[0].0, Tab::Extensions);

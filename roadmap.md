@@ -27,7 +27,8 @@ settings, and keeping running in the menu bar or system tray), scheduled tasks, 
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
-in **v0.9.2-dev.5**.
+and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
+Built-in Tools) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -331,7 +332,7 @@ in them follows the same rule:
 - [x] A built-in `web_search` tool with a choice of backend (DuckDuckGo without a key, SearXNG,
   Brave, Tavily), with the API key in the keychain
 - [x] Kagi Search API backend
-- [ ] The provider's own search when it has one
+- [x] The provider's own search when it has one
 - [x] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
   subagents may use it
 - [x] Per chat: on/off in the tools menu, like the other built-in tools

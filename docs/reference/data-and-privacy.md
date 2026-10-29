@@ -39,6 +39,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   web search sends the model's query to the search service chosen in
   [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
   Tavily and Kagi also get your API key). They ask for approval unless you turned that off.
+  With **Search with** set to the provider's own search, the query goes to the chat's provider
+  instead, which searches on its side; the search service isn't contacted and nothing is asked.
 - **OCR for scanned PDFs**, when on: each page image of a PDF with no text layer goes to the
   vision model's provider (chosen in [Context & files](../settings/context.html#ocr-for-scanned-pdfs)),
   one request per page, with the prompt to transcribe it. With **Tesseract** the pages are read

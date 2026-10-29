@@ -196,9 +196,16 @@ impl AgentRequest {
                 provider: settings.compaction_provider(&provider),
                 auto: selection.feature_on(tools::COMPACTION),
             });
+        // The provider's own search replaces the built-in tool when the setting asks for it.
+        let mut request_provider = provider.with_chat_options(&conv.model_options);
+        request_provider.native_search = crate::native::native_search_request(
+            &settings.general.builtin_tools.search,
+            selection.builtin_on("web_search"),
+            &request_provider,
+        );
         Self {
             conv_id: conv.id,
-            provider: provider.with_chat_options(&conv.model_options),
+            provider: request_provider,
             general: settings.general.clone(),
             history: conv.messages[from..]
                 .iter()
@@ -303,7 +310,11 @@ pub async fn run(
         .unwrap_or_default();
     }
     let skills = Arc::new(skill_files);
-    let selection = req.selection.clone().with_skills(!skills.is_empty());
+    let selection = req
+        .selection
+        .clone()
+        .with_skills(!skills.is_empty())
+        .with_native_search(req.provider.native_search.is_some());
     let skills_on = selection.builtin_on("skills");
     if skills_on {
         system_prompt = format!(
@@ -481,6 +492,8 @@ pub async fn run(
         }
         msg.tool_calls = turn.tool_calls;
         msg.native = turn.native;
+        msg.sources = turn.sources;
+        msg.searched = turn.searched;
         let mut stats = turn.stats;
         // Only llama.cpp sends `timings` (source Server). Ask for the context size after such
         // a reply too: when Server type is left on Generic, or when a router had not loaded
@@ -506,6 +519,11 @@ pub async fn run(
         emit(ChatEvent::AssistantFinal(Box::new(msg)));
 
         if calls.is_empty() {
+            // Anthropic pauses a long turn of its own web search: the reply goes back as it
+            // is, and the next request continues it (the rounds still bound this).
+            if turn.finish_reason.as_deref() == Some("pause_turn") && round + 1 < max_rounds {
+                continue;
+            }
             if turn.finish_reason.as_deref() == Some("length") {
                 emit(ChatEvent::Error(
                     "The response was cut off (max tokens reached).".into(),
@@ -1789,6 +1807,149 @@ mod tests {
         assert!(
             with_args > 0 && without_args > 0,
             "{with_args} / {without_args}"
+        );
+    }
+
+    #[test]
+    fn for_chat_asks_the_provider_for_its_search_when_the_setting_says_so() {
+        let mut settings = crate::config::Settings::default();
+        settings.providers[0] = ProviderConfig {
+            base_url: "http://127.0.0.1:9/v1".into(),
+            api: crate::config::ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        let mut conv = crate::types::Conversation::new();
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.native_search, None, "off by default");
+
+        settings.general.builtin_tools.search.native = crate::config::NativeSearch::PreferProvider;
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.native_search, Some(5));
+
+        // The chat's own switch turns the search off for that chat only.
+        conv.tool_overrides.set(
+            crate::tools::ToolOverrides::builtin_key("web_search"),
+            false,
+            settings.general.builtin_tools.web_search,
+        );
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.native_search, None);
+
+        // A provider without a search of its own keeps the built-in tool.
+        let generic = crate::types::Conversation::new();
+        settings.providers[0].api = crate::config::ProviderApi::ChatCompletions;
+        let req = AgentRequest::for_chat(&settings, &generic, None, false, false, None);
+        assert_eq!(req.provider.native_search, None);
+    }
+
+    #[tokio::test]
+    async fn provider_search_runs_through_a_paused_turn_and_keeps_its_sources() {
+        use crate::testutil::{Response, serve};
+        let (base, log) = serve(|r| {
+            let body = r.json();
+            let msgs = body["messages"].as_array().cloned().unwrap_or_default();
+            let searched = msgs.iter().any(|m| {
+                m["content"]
+                    .as_array()
+                    .is_some_and(|b| b.iter().any(|x| x["type"] == "server_tool_use"))
+            });
+            let events = if searched {
+                vec![
+                    serde_json::json!({"type": "message_start", "message": {"model": "c",
+                        "usage": {"input_tokens": 9, "output_tokens": 1}}}),
+                    serde_json::json!({"type": "content_block_start", "index": 0,
+                        "content_block": {"type": "text", "text": ""}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 0,
+                        "delta": {"type": "text_delta", "text": "Final answer."}}),
+                    serde_json::json!({"type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"}}),
+                    serde_json::json!({"type": "message_stop"}),
+                ]
+            } else {
+                vec![
+                    serde_json::json!({"type": "message_start", "message": {"model": "c",
+                        "usage": {"input_tokens": 9, "output_tokens": 1}}}),
+                    serde_json::json!({"type": "content_block_start", "index": 0,
+                        "content_block": {"type": "server_tool_use", "id": "srv_1",
+                            "name": "web_search", "input": {}}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 0,
+                        "delta": {"type": "input_json_delta",
+                            "partial_json": "{\"query\": \"news\"}"}}),
+                    serde_json::json!({"type": "content_block_stop", "index": 0}),
+                    serde_json::json!({"type": "content_block_start", "index": 1,
+                        "content_block": {"type": "web_search_tool_result",
+                            "tool_use_id": "srv_1", "content": [{"type": "web_search_result",
+                            "url": "https://n.example/1", "title": "News",
+                            "encrypted_content": "enc"}]}}),
+                    serde_json::json!({"type": "content_block_stop", "index": 1}),
+                    serde_json::json!({"type": "content_block_start", "index": 2,
+                        "content_block": {"type": "text", "text": "", "citations": []}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 2,
+                        "delta": {"type": "text_delta", "text": "Looking."}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 2,
+                        "delta": {"type": "citations_delta", "citation": {
+                            "type": "web_search_result_location", "url": "https://n.example/1",
+                            "title": "News", "cited_text": "x", "encrypted_index": "i"}}}),
+                    serde_json::json!({"type": "content_block_stop", "index": 2}),
+                    serde_json::json!({"type": "message_delta",
+                        "delta": {"stop_reason": "pause_turn"}}),
+                    serde_json::json!({"type": "message_stop"}),
+                ]
+            };
+            Response::sse(&events)
+        })
+        .await;
+        let mut settings = crate::config::Settings::default();
+        settings.providers[0] = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "claude".into(),
+            api: crate::config::ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        settings.general.builtin_tools.search.native = crate::config::NativeSearch::PreferProvider;
+        let mut conv = crate::types::Conversation::new();
+        conv.messages
+            .push(ChatMessage::new(Role::User, "what's new?"));
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        let http = llm::build_http_client();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run(req, http, mcp, tx, || {}).await;
+
+        let mut replies = Vec::new();
+        while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
+            if let ChatEvent::AssistantFinal(m) = event {
+                replies.push(*m);
+            }
+        }
+        // The paused turn continues in a second request: two replies, the first cites
+        // its source and says it searched.
+        assert_eq!(replies.len(), 2);
+        assert!(replies[0].searched);
+        assert_eq!(replies[0].sources[0].url, "https://n.example/1");
+        assert_eq!(replies[1].content, "Final answer.");
+        assert!(replies[1].sources.is_empty());
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 2, "one request for the pause, one to continue");
+        let first = log[0].json();
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"web_search"),
+            "the provider's search is offered"
+        );
+        assert!(
+            !names.contains(&tools::WEB_SEARCH),
+            "the built-in one is not"
+        );
+        assert_eq!(
+            first["tools"].as_array().unwrap().last().unwrap()["type"],
+            "web_search_20250305"
         );
     }
 }
