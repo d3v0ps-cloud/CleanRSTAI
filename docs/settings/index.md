@@ -14,10 +14,11 @@ opens on **General** and takes over the main window.
 | [Providers](providers.html) | Endpoints: base URL, API (Chat Completions, Responses, Anthropic), API key, model, reasoning effort and sampling options per provider and model, server type, token usage, streaming, timeout, extra headers |
 | [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
 | [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch, web search (service, key, results) and workspace tools on or off by default |
+| [Skills & hooks](skills-and-hooks.html) | Slash commands (saved prompts), and skills: folders of instructions the model loads when a task matches, from your skills folder or the workspace |
 | [Context & files](context.html) | Context compaction (threshold, kept messages, context size, summary model and instructions, shortening older tool results), project instructions (`AGENTS.md`, `CLAUDE.md`), diffs and undo for file edits |
 | [Subagents](subagents.html) | Delegation on or off; provider and model; tools, including the workspace in sandbox containers of their own; parallelism and limits; system prompt |
-| [Background](background.html) | Desktop notifications for finished, failed and approval-waiting replies; how many replies run at once (the rest queue); a time limit per reply |
 | [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or custom Dockerfile (small and full examples), network (none, normal, or allowed hosts, protocols and ports), CPU, memory and process limits, read-only folder |
+| [Background](background.html) | Desktop notifications for finished, failed and approval-waiting replies; how many replies run at once (the rest queue); a time limit per reply |
 
 ## Finding a setting
 

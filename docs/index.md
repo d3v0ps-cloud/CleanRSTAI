@@ -20,6 +20,7 @@ too, as an installer and a portable `.exe`.
   or local servers such as Ollama, LM Studio, llama.cpp and vLLM.
 - **Streaming replies** with speed and token stats, and a *Thought process* section for
   reasoning models.
+- **Skills**: folders of instructions the model loads when a task matches, from your skills folder or a chat's workspace
 - **Built-in tools**: time and date, calculator, task list and web fetch, with no MCP server
   needed.
 - **Workspace**: give a chat a folder and the model can read, search, edit and run commands in

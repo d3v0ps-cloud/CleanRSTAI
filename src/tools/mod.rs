@@ -8,6 +8,7 @@ pub mod search;
 pub mod workspace;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
@@ -19,6 +20,7 @@ use crate::config::{BuiltinToolSettings, Settings};
 use crate::llm::ToolSpec;
 use crate::mcp::ToolOutput;
 use crate::mcp::manager::{McpManager, ToolRouter};
+use crate::skills::{self, Skill};
 
 pub const TIME: &str = "builtin__get_time";
 pub const CALCULATE: &str = "builtin__calculate";
@@ -26,15 +28,17 @@ pub const TASKS: &str = "builtin__update_tasks";
 pub const FETCH: &str = "builtin__fetch";
 pub const WEB_SEARCH: &str = "builtin__web_search";
 pub const DELEGATE: &str = "builtin__delegate";
+pub const LOAD_SKILL: &str = "builtin__load_skill";
 
 /// Built-in tools in display order, with the key used for per-chat switches.
-pub const BUILTINS: [(&str, &str, &str); 6] = [
+pub const BUILTINS: [(&str, &str, &str); 7] = [
     (TIME, "time", "Time & date"),
     (CALCULATE, "calculator", "Calculator"),
     (TASKS, "tasks", "Task list"),
     (FETCH, "fetch", "Web fetch"),
     (WEB_SEARCH, "web_search", "Web search"),
     (DELEGATE, "subagents", "Subagents"),
+    (LOAD_SKILL, "skills", "Skills"),
 ];
 
 pub fn is_builtin(function: &str) -> bool {
@@ -137,6 +141,8 @@ pub struct ToolSelection {
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
     features: [bool; 4],
+    /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
+    skills_available: bool,
 }
 
 impl ToolSelection {
@@ -157,6 +163,7 @@ impl ToolSelection {
                 g.file_edits.checkpoints,
                 g.background.notify,
             ],
+            skills_available: false,
         }
     }
 
@@ -166,6 +173,14 @@ impl ToolSelection {
             .iter()
             .position(|(k, ..)| *k == key)
             .is_some_and(|i| self.features[i])
+    }
+
+    /// Whether the chat has skills to list: the `skills` built-in is on by default only then,
+    /// and `load_skill` is offered only then. Off unless set, so subagents and tests don't
+    /// offer it by accident.
+    pub fn with_skills(mut self, available: bool) -> Self {
+        self.skills_available = available;
+        self
     }
 
     /// This selection under a chat's permissions: Read only turns off the workspace tools
@@ -220,6 +235,7 @@ impl ToolSelection {
             "web_search" => self.builtins.web_search,
             ws if workspace::TOOLS.iter().any(|(name, _)| *name == ws) => self.builtins.workspace,
             "subagents" => self.subagents,
+            "skills" => self.skills_available,
             _ => false,
         }
     }
@@ -246,6 +262,9 @@ pub struct Toolbox {
     workspace: Option<workspace::Workspace>,
     /// The web search service and its options.
     search: crate::config::WebSearchSettings,
+    /// The skills `load_skill` reads, and the most text one load returns.
+    skills: Arc<Vec<Skill>>,
+    skills_max_bytes: usize,
 }
 
 impl Toolbox {
@@ -281,7 +300,17 @@ impl Toolbox {
             fetch_private: selection.builtins.fetch_private_networks,
             workspace: None,
             search: selection.builtins.search.clone(),
+            skills: Arc::default(),
+            skills_max_bytes: 0,
         }
+    }
+
+    /// The skills `load_skill` can read (offered when the selection allows it), cut to
+    /// `max_kb` per load.
+    pub fn with_skills(mut self, skills: Arc<Vec<Skill>>, max_kb: u32) -> Self {
+        self.skills = skills;
+        self.skills_max_bytes = max_kb as usize * 1024;
+        self
     }
 
     /// Offer the workspace tools that `selection` allows, working in `ws`.
@@ -352,6 +381,16 @@ impl Toolbox {
             return match parse_args(arguments) {
                 Ok(args) => ws.call(function, &args, timeout).await,
                 Err(e) => error_output(format!("Error: {e:#}")),
+            };
+        }
+        if function == LOAD_SKILL {
+            let result = match parse_args(arguments) {
+                Ok(args) => skills::call(&self.skills, &args, self.skills_max_bytes),
+                Err(e) => Err(format!("{e:#}")),
+            };
+            return match result {
+                Ok(text) => text_output(text),
+                Err(e) => error_output(format!("Error: {e}")),
             };
         }
         if function == FETCH {
@@ -479,6 +518,22 @@ fn builtin_spec(name: &str) -> ToolSpec {
             name: FETCH.into(),
             description: fetch::spec_description(),
             parameters: fetch::spec_parameters(),
+        },
+        LOAD_SKILL => ToolSpec {
+            name: LOAD_SKILL.into(),
+            description: "Load a skill: a folder of instructions listed under \"Skills \
+                available\" in the system prompt. When a task matches a skill, call this with \
+                its name and follow the text it returns. Other files in the skill's folder \
+                are named at the end of the text; pass one as `file` to read it."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The skill's name, as listed."},
+                    "file": {"type": "string", "description": "Optional: a file in the skill's folder, by relative path, instead of SKILL.md."}
+                },
+                "required": ["name"]
+            }),
         },
         other => unreachable!("not a built-in tool: {other}"),
     }
@@ -726,6 +781,45 @@ mod tests {
         assert!(Toolbox::needs_approval(FETCH));
         assert!(!Toolbox::needs_approval(CALCULATE));
         assert!(Toolbox::needs_approval("server__tool"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_is_offered_only_with_skills_and_reads_them() {
+        let dir =
+            std::env::temp_dir().join(format!("cleanrstai-tools-skill-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("one")).unwrap();
+        std::fs::write(
+            dir.join("one/SKILL.md"),
+            "---\ndescription: first\n---\nDo it.",
+        )
+        .unwrap();
+        let skills = crate::skills::discover(
+            &[(dir.clone(), crate::skills::SkillSource::User)],
+            &crate::config::SkillSettings::default(),
+        );
+        let settings = Settings::default();
+        let sel = ToolSelection::new(&settings, &ToolOverrides::default());
+        assert!(!Toolbox::new(ToolRouter::default(), &sel, None).has(LOAD_SKILL));
+
+        let sel = sel.with_skills(true);
+        let tb = Toolbox::new(ToolRouter::default(), &sel, None).with_skills(Arc::new(skills), 64);
+        assert!(tb.has(LOAD_SKILL));
+        assert!(!Toolbox::needs_approval(LOAD_SKILL));
+        let out = tb
+            .call(LOAD_SKILL, r#"{"name": "one"}"#, Duration::from_secs(5))
+            .await;
+        assert!(!out.is_error);
+        assert!(out.text.contains("Do it."));
+        let missing = tb
+            .call(LOAD_SKILL, r#"{"name": "two"}"#, Duration::from_secs(5))
+            .await;
+        assert!(missing.is_error);
+
+        let mut ov = ToolOverrides::default();
+        ov.set(ToolOverrides::builtin_key("skills"), false, true);
+        let sel = ToolSelection::new(&settings, &ov).with_skills(true);
+        assert!(!Toolbox::new(ToolRouter::default(), &sel, None).has(LOAD_SKILL));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

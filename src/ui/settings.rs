@@ -108,6 +108,7 @@ pub enum Tab {
     Providers,
     Mcp,
     Tools,
+    Extensions,
     Context,
     Docker,
     Subagents,
@@ -167,8 +168,13 @@ pub struct SettingsUi {
     pub update_available: bool,
     /// A Docker test, pull or build is running.
     pub sandbox_busy: bool,
-    /// Outcome of the last Docker test, pull or build: Ok(message) or Err(error).
+    /// Outcome of the Docker test, pull or build: Ok(message) or Err(error).
     pub sandbox_status: Option<Result<String, String>>,
+    /// Skills in the app's skills folder, read when the Skills & hooks tab is first shown
+    /// (and again after "Refresh").
+    user_skills: Option<Vec<crate::skills::Skill>>,
+    /// Why the skills folder couldn't be opened.
+    skills_folder_error: Option<String>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -641,6 +647,8 @@ impl SettingsUi {
             update_available: false,
             sandbox_busy: false,
             sandbox_status: None,
+            user_skills: None,
+            skills_folder_error: None,
         }
     }
 
@@ -698,6 +706,7 @@ impl SettingsUi {
                         (Tab::Providers, "Providers"),
                         (Tab::Mcp, "MCP servers"),
                         (Tab::Tools, "Built-in tools"),
+                        (Tab::Extensions, "Skills & hooks"),
                         (Tab::Context, "Context & files"),
                         (Tab::Docker, "Docker sandbox"),
                         (Tab::Subagents, "Subagents"),
@@ -770,6 +779,7 @@ impl SettingsUi {
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
                 Tab::Tools => "Built-in Tools",
+                Tab::Extensions => "Skills & hooks",
                 Tab::Context => "Context & files",
                 Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
@@ -780,6 +790,7 @@ impl SettingsUi {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
+                Tab::Extensions => "Saved prompts you type as /name, and skills the model loads when a task matches.",
                 Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, and code review.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
@@ -791,6 +802,7 @@ impl SettingsUi {
                 Tab::Providers => self.providers_tab(ui, &mut actions),
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
+                Tab::Extensions => self.extensions_tab(ui),
                 Tab::Context => self.context_tab(ui),
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
@@ -1536,15 +1548,132 @@ impl SettingsUi {
                 ui.add_enabled_ui(b.web_search, |ui| {
                     web_search_rows(ui, &mut b.search, &mut self.show_search_key);
                 });
-                ui.add_space(12.0);
-                slash_command_rows(ui, &mut self.draft.general.slash_commands);
                 ui.add_space(8.0);
                 ui.weak(format!(
                     "{}  The subagent tool has its own page: Subagents. Context compaction, \
-                     project instructions and undo for file edits are on Context & files.",
+                     project instructions and undo for file edits are on Context & files. \
+                     Slash commands and skills are on Skills & hooks.",
                     icon::ROBOT
                 ));
             });
+    }
+
+    fn extensions_tab(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                slash_command_rows(ui, &mut self.draft.general.slash_commands);
+                ui.add_space(16.0);
+                self.skill_rows(ui);
+            });
+    }
+
+    /// Skills: the on/off switch, the workspace switch, the size limit, the skills folder and
+    /// the skills it holds, each with its own switch.
+    fn skill_rows(&mut self, ui: &mut egui::Ui) {
+        let s = &mut self.draft.general.skills;
+        ui.label(egui::RichText::new(format!("{}  Skills", icon::BOOKS)).strong());
+        ui.indent("skills-help", |ui| {
+            ui.weak(
+                "A skill is a folder with a SKILL.md file: instructions the model reads with \
+                 its load_skill tool when a task matches the skill's description. Only the \
+                 names and descriptions are sent with each message; the text is sent when the \
+                 model loads it.",
+            );
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut s.enabled, "Offer skills to the model");
+        ui.add_enabled_ui(s.enabled, |ui| {
+            ui.checkbox(
+                &mut s.workspace_skills,
+                "Load skills from the workspace's .cleanrstai/skills folder",
+            )
+            .on_hover_text(
+                "Each .cleanrstai/skills/<name>/SKILL.md in a chat's working folder is a skill. \
+                 It replaces a skill from your skills folder with the same name.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Size limit per load");
+                ui.add(
+                    egui::DragValue::new(&mut s.max_kb)
+                        .range(1..=1024)
+                        .suffix(" KB"),
+                )
+                .on_hover_text("Text beyond this is left out when the model loads a skill");
+            });
+        });
+        ui.add_space(8.0);
+
+        let folder = crate::skills::user_root();
+        ui.horizontal(|ui| {
+            if ui
+                .button(format!("{}  Open skills folder", icon::FOLDER))
+                .on_hover_text("Create the folder if it's missing and show it")
+                .clicked()
+            {
+                self.skills_folder_error = match std::fs::create_dir_all(&folder)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| open::that_detached(&folder).map_err(|e| e.to_string()))
+                {
+                    Ok(()) => None,
+                    Err(e) => Some(format!("Couldn't open {}: {e}", folder.display())),
+                };
+                self.user_skills = None;
+            }
+            if ui.button("Refresh").clicked() {
+                self.user_skills = None;
+            }
+        });
+        ui.weak(format!("Your skills folder: {}", folder.display()));
+        if let Some(e) = &self.skills_folder_error {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+        ui.add_space(6.0);
+
+        let found = self
+            .user_skills
+            .get_or_insert_with(|| {
+                // Listed without the disabled names, so switched-off skills can be switched on.
+                let all = crate::config::SkillSettings {
+                    disabled: Vec::new(),
+                    ..self.draft.general.skills.clone()
+                };
+                crate::skills::discover(&[(folder.clone(), crate::skills::SkillSource::User)], &all)
+            })
+            .clone();
+        if found.is_empty() {
+            ui.weak(
+                "No skills yet. Add a folder with a SKILL.md file to the skills folder above, \
+                 then press Refresh.",
+            );
+        }
+        let disabled = &mut self.draft.general.skills.disabled;
+        for skill in &found {
+            ui.push_id(("skill", &skill.dir), |ui| {
+                let mut on = !disabled.contains(&skill.name);
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut on, egui::RichText::new(&skill.name).strong())
+                        .changed()
+                    {
+                        if on {
+                            disabled.retain(|n| *n != skill.name);
+                        } else if !disabled.contains(&skill.name) {
+                            disabled.push(skill.name.clone());
+                        }
+                    }
+                    ui.weak(skill.source.label());
+                });
+                ui.indent("skill-desc", |ui| {
+                    if skill.description.is_empty() {
+                        ui.weak("No description");
+                    } else {
+                        ui.weak(skill.description.as_str());
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
     }
 
     fn context_tab(&mut self, ui: &mut egui::Ui) {
@@ -2929,7 +3058,20 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily, Kagi)",
     ),
     (Tab::Tools, "Tools", "Web search API key"),
-    (Tab::Tools, "Tools", "Slash commands (saved prompts)"),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Slash commands (saved prompts)",
+    ),
+    (Tab::Extensions, "Skills & hooks", "Skills (load on demand)"),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Load skills from the workspace folder",
+    ),
+    (Tab::Extensions, "Skills & hooks", "Skill size limit"),
+    (Tab::Extensions, "Skills & hooks", "Open skills folder"),
+    (Tab::Extensions, "Skills & hooks", "Disable a skill"),
     (
         Tab::Context,
         "Context & files",
@@ -3046,8 +3188,11 @@ mod tests {
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
-        assert_eq!(search_settings("slash command")[0].0, Tab::Tools);
-        assert_eq!(search_settings("saved prompts")[0].0, Tab::Tools);
+        assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("saved prompts")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("skills")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("skill folder")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("disable a skill")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
         assert_eq!(search_settings("notify")[0].0, Tab::Background);

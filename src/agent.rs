@@ -212,6 +212,35 @@ pub async fn run(
             emit(ChatEvent::Instructions(loaded.files));
         }
     }
+    // Skills: listed in the system prompt and loaded with `load_skill`, when the chat allows
+    // them (subagents are switched off in their own selection).
+    let switched_off = req
+        .selection
+        .overrides
+        .get(&tools::ToolOverrides::builtin_key("skills"))
+        == Some(false);
+    let mut skill_files = Vec::new();
+    if req.general.skills.enabled && !switched_off {
+        let (settings, root) = (
+            req.general.skills.clone(),
+            workspace.as_ref().map(|ws| ws.path().to_path_buf()),
+        );
+        skill_files = tokio::task::spawn_blocking(move || {
+            crate::skills::for_chat(&settings, root.as_deref())
+        })
+        .await
+        .unwrap_or_default();
+    }
+    let skills = Arc::new(skill_files);
+    let selection = req.selection.clone().with_skills(!skills.is_empty());
+    let skills_on = selection.builtin_on("skills");
+    if skills_on {
+        system_prompt = format!(
+            "{}\n\n{}",
+            system_prompt.trim_end(),
+            crate::skills::prompt_section(&skills)
+        );
+    }
     // Subagents may get the workspace too, with commands in containers of their own.
     let delegation = req.delegation.map(|d| d.with_workspace(workspace.as_ref()));
     let mut history = req.history;
@@ -273,13 +302,18 @@ pub async fn run(
         let toolbox = if round < max_rounds {
             let toolbox = Toolbox::new(
                 mcp.router(),
-                &req.selection,
+                &selection,
                 delegation.as_ref().map(Delegation::tool_description),
             )
             .with_http(http.clone());
-            match &workspace {
-                Some(ws) => toolbox.with_workspace(ws.clone(), &req.selection),
+            let toolbox = match &workspace {
+                Some(ws) => toolbox.with_workspace(ws.clone(), &selection),
                 None => toolbox,
+            };
+            if skills_on {
+                toolbox.with_skills(skills.clone(), req.general.skills.max_kb)
+            } else {
+                toolbox
             }
         } else {
             Toolbox::default()
@@ -1060,6 +1094,54 @@ mod tests {
             .unwrap()
             .to_owned();
         assert!(!system.contains("cargo fmt"), "{system}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn workspace_skills_are_listed_and_offered_unless_switched_off() {
+        let dir = temp_dir("agent-skill");
+        let skill = crate::skills::workspace_root(&dir).join("notes");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\ndescription: Take meeting notes\n---\nWrite the notes.",
+        )
+        .unwrap();
+        let settings = crate::config::Settings::default();
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.clone());
+        drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+        assert!(system.contains("- notes: Take meeting notes"), "{system}");
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&tools::LOAD_SKILL), "{names:?}");
+
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::builtin_key("skills"),
+            false,
+            true,
+        );
+        let mut req = request(&base, &settings, &ov);
+        req.workspace = Some(dir.clone());
+        drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+        assert!(!system.contains("Skills available"), "{system}");
+        let has_tool = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["function"]["name"] == tools::LOAD_SKILL);
+        assert!(!has_tool);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

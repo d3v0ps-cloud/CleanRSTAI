@@ -89,6 +89,12 @@ too, as an installer and a portable `.exe`.
     lists every file a chat changed, with its diffs.
 - **Slash commands**: saved prompts typed as `/name` in the message box, with `{{args}}`
   filled in, kept in Settings or as `.cleanrstai/commands/*.md` files in the chat's folder.
+- **Skills**: folders of instructions (a `SKILL.md` file, optionally with a name and a
+  description in front matter) from your skills folder or the chat's `.cleanrstai/skills`
+  folder. The model sees their names and descriptions and loads one with `load_skill` when a
+  task matches; other files in a skill's folder can be read the same way. Each skill can be
+  switched off, and **Settings → Skills & hooks** has the size limit and an **Open skills
+  folder** button.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
@@ -324,6 +330,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
+| Skills & hooks | Slash commands (saved prompts), and skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder |
 | Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
 | Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply |
