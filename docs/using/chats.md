@@ -158,7 +158,7 @@ A saved prompt can be sent by typing its name after a slash: `/explain fn main()
 *explain* prompt with `fn main() {}` filled in. Type `/` in the message box and the matching
 commands are listed above it; click one to put its name in the box. The message in the chat is
 the expanded prompt, not the command. Commands come from
-[Settings → Built-in Tools](../settings/built-in-tools.html#slash-commands), and from
+[Settings → Skills & hooks](../settings/skills-and-hooks.html#slash-commands), and from
 `.cleanrstai/commands/` in the chat's working folder: each `<name>.md` file there is a command,
 and a first line `description: …` gives its description. A folder command replaces a setting
 with the same name. A `/name` that matches no command is sent as typed.

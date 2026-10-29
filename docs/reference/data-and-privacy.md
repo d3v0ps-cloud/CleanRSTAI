@@ -44,6 +44,10 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   have them summarised.
 - **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
   chat's workspace folder, go to the provider with the system prompt.
+- **Skills**: the names and descriptions of the skills (from your skills folder and the chat's
+  `.cleanrstai/skills` folder) go to the provider with every message while skills are on and
+  some exist. A skill's text, and any other file of the skill that the model asks for, go to
+  the provider when the model loads it. Nothing else is read from a skill folder.
 - **Code review** sends the working folder's git diff (up to the size you set, and the names of
   new files) to the provider and model chosen in
   [Context & files](../settings/context.html#code-review), when you choose Review changes.

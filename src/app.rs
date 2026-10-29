@@ -132,6 +132,8 @@ pub struct ChatApp {
     keyboard_nav: bool,
     /// Slash commands suggested under the message box while a `/name` is typed.
     slash_cache: crate::commands::SuggestionCache,
+    /// Skills of the current chat's folder, for the tools menu (read once per folder).
+    skill_cache: crate::skills::SkillCache,
     /// The Docker sandbox for the workspace shell tool, while it's on.
     sandbox: Option<crate::sandbox::Sandbox>,
     /// When idle sandbox containers were last removed.
@@ -359,6 +361,7 @@ impl ChatApp {
             input_focused_once: false,
             keyboard_nav: false,
             slash_cache: Default::default(),
+            skill_cache: Default::default(),
             sandbox,
             sandbox_reaped: Instant::now(),
             remote: None,
@@ -600,7 +603,17 @@ impl ChatApp {
         let permissions_before = permissions.clone();
         let read_only = permissions.mode == crate::approval::ApprovalMode::ReadOnly;
         let sandbox_on = self.settings.sandbox.enabled;
-        let sel = ToolSelection::new(&self.settings, &overrides).with_mode(permissions.mode);
+        let workspace_dir = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .and_then(|c| c.workspace.clone());
+        let has_skills = !self
+            .skill_cache
+            .get(&self.settings.general.skills, workspace_dir.as_deref())
+            .is_empty();
+        let sel = ToolSelection::new(&self.settings, &overrides)
+            .with_mode(permissions.mode)
+            .with_skills(has_skills);
         let views = self.mcp_views();
         let servers: Vec<(String, String)> = self
             .settings
@@ -680,6 +693,10 @@ impl ChatApp {
                         .show(ui, |ui| {
                             ui.label(RichText::new("Built-in").small().weak());
                             for (_, key, name) in BUILTINS {
+                                // Skills only appear for a chat whose folder has some.
+                                if key == "skills" && !has_skills {
+                                    continue;
+                                }
                                 let mut on = sel.builtin_on(key);
                                 let ic = match key {
                                     "time" => icon::CLOCK,
@@ -687,6 +704,7 @@ impl ChatApp {
                                     "tasks" => icon::LIST_CHECKS,
                                     "fetch" => icon::GLOBE,
                                     "web_search" => icon::SEARCH,
+                                    "skills" => icon::BOOKS,
                                     _ => icon::ROBOT,
                                 };
                                 if ui.checkbox(&mut on, format!("{ic}  {name}")).changed() {
@@ -1585,6 +1603,7 @@ impl ChatApp {
         self.settings = new;
         self.settings.normalize();
         self.slash_cache.clear();
+        self.skill_cache.clear();
         if self.settings.sandbox != sandbox_before {
             // Dropping the old sandbox removes its containers.
             self.sandbox = self

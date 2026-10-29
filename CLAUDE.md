@@ -133,6 +133,15 @@ public addresses (its own client with a filtering DNS resolver and redirect poli
   holds the diff, the previous content and the SHA-256 of what was written. Undo restores a
   turn newest first and skips files whose hash changed; `prune` drops old checkpoints.
 
+**Skills** (`skills.rs`): a skill is a folder with `SKILL.md` (optional `name:`/`description:`
+front matter, parsed by hand) from `<config dir>/skills/` and, with `skills.workspace_skills`,
+`<workspace>/.cleanrstai/skills/` (a workspace skill replaces a user one of the same name).
+`for_chat` discovers them per run (`agent::run`), the system prompt lists names and
+descriptions, and the built-in `builtin__load_skill` tool (key `builtin:skills`, read only, never
+asks) returns a skill's text or one file of its folder, confined to that folder. `ToolSelection::with_skills`
+offers the tool only when some exist; subagents are forced off. The tools menu caches the list
+per folder in `SkillCache`, cleared when settings are applied.
+
 **Approvals** (`approval.rs`): the agent sends `ChatEvent::ToolApproval` with a oneshot
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by

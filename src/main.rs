@@ -24,6 +24,7 @@ mod review;
 mod sandbox;
 mod secrets;
 mod servers;
+mod skills;
 mod sse;
 mod stats;
 mod subagent;

@@ -21,7 +21,7 @@ reasoning and sampling options per provider, model and chat, the Anthropic Messa
 Responses APIs, and per-chat permission modes in **v0.9.1**, and forking a chat, slash
 commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's stats, review
 strictness, a context size per provider, a default permission mode, Kagi search, the changed
-files list and read-only git tools in **v0.9.2-dev.2**.
+files list and read-only git tools in **v0.9.2-dev.2**, and skills in **v0.9.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -362,7 +362,7 @@ in them follows the same rule:
 
 - [x] Slash commands: saved prompts with arguments, typed as `/name` in the message box, kept in
   Settings and optionally in the workspace (`.cleanrstai/commands/`)
-- [ ] Skills: folders of instructions and files the model loads when a task matches, each
+- [x] Skills: folders of instructions and files the model loads when a task matches, each
   with its own on/off switch
 - [ ] Hooks: run a command before or after a tool call, or when a reply finishes (for example
   a formatter after `edit_file`), each with its own switch, in the sandbox when it is on

@@ -95,6 +95,9 @@ impl Delegation {
         }
         force(&mut selection, "tasks", false);
         force(&mut selection, "subagents", false);
+        // Subagents don't load skills either (the instructions would reach them only through
+        // their own tool, which they don't have).
+        force(&mut selection, "skills", false);
         for id in &sa.excluded_servers {
             selection
                 .overrides

@@ -559,6 +559,32 @@ impl Default for ReviewSettings {
     }
 }
 
+/// Skills: folders of instructions the model loads with `load_skill` (see `skills`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SkillSettings {
+    /// List the skills in the system prompt and offer the `load_skill` tool.
+    pub enabled: bool,
+    /// Also load `.cleanrstai/skills/*/SKILL.md` from the chat's working folder; a workspace
+    /// skill replaces a user skill of the same name.
+    pub workspace_skills: bool,
+    /// Names of skills that are switched off, from either folder.
+    pub disabled: Vec<String>,
+    /// Most text one load returns, in KB (1–1024).
+    pub max_kb: u32,
+}
+
+impl Default for SkillSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            workspace_skills: true,
+            disabled: Vec::new(),
+            max_kb: 64,
+        }
+    }
+}
+
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`, …) read from a chat's workspace folder.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -850,6 +876,8 @@ pub struct GeneralSettings {
     pub file_edits: FileEditSettings,
     /// Slash commands: saved prompts typed as `/name` (see `commands`).
     pub slash_commands: SlashCommandSettings,
+    /// Skills the model loads on demand (see `skills`).
+    pub skills: SkillSettings,
     /// Browser remote access (see `remote`).
     pub remote: RemoteSettings,
 }
@@ -883,6 +911,7 @@ impl Default for GeneralSettings {
             review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
             slash_commands: SlashCommandSettings::default(),
+            skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
         }
     }
@@ -1232,6 +1261,16 @@ impl Settings {
             })
             .filter(|c| crate::commands::valid_name(&c.name) && names.insert(c.name.clone()))
             .collect();
+        let skills = &mut self.general.skills;
+        skills.max_kb = skills.max_kb.clamp(1, 1024);
+        // Names are trimmed; blanks and repeats are dropped.
+        let mut disabled: Vec<String> = Vec::new();
+        for name in skills.disabled.iter().map(|n| n.trim().to_owned()) {
+            if !name.is_empty() && !disabled.contains(&name) {
+                disabled.push(name);
+            }
+        }
+        skills.disabled = disabled;
         let search = &mut self.general.builtin_tools.search;
         search.max_results = search.max_results.clamp(1, MAX_SEARCH_RESULTS);
         search.searxng_url = search.searxng_url.trim().trim_end_matches('/').to_owned();
@@ -1421,6 +1460,26 @@ pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn skill_settings_load_from_older_files_and_are_kept_tidy() {
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.skills, SkillSettings::default());
+        assert!(old.skills.enabled && old.skills.workspace_skills);
+
+        let partial: SkillSettings =
+            serde_json::from_str(r#"{"disabled": ["x"], "max_kb": 8}"#).unwrap();
+        assert!(partial.enabled && partial.workspace_skills);
+        assert_eq!(partial.disabled, ["x"]);
+        assert_eq!(partial.max_kb, 8);
+
+        let mut s = Settings::default();
+        s.general.skills.max_kb = 0;
+        s.general.skills.disabled = vec![" a ".into(), "".into(), "a".into(), "b".into()];
+        s.normalize();
+        assert_eq!(s.general.skills.max_kb, 1);
+        assert_eq!(s.general.skills.disabled, ["a", "b"]);
+    }
+
     #[test]
     fn review_strictness_and_provider_context_size_load_from_older_files() {
         let old: ReviewSettings = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
