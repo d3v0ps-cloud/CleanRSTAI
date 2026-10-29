@@ -60,9 +60,9 @@ refusal in place of the result and can carry on without it, and stderr shows:
 denied: write_file (use --mode to allow)
 ```
 
-Nothing is asked and nothing waits for an answer, so the command works in scripts and in CI. The
-setting "Tool calls: Run MCP tools and subagents without asking" also applies to command-line
-requests, as it does to chats.
+Nothing is asked and nothing waits for an answer, so the command works in scripts and in CI. Only
+the mode decides what runs: the setting "Tool calls: Run MCP tools and subagents without asking"
+does not apply to command-line requests, so a read-only run never calls a tool that would ask.
 
 Use `allow-all` only where a run may change anything in the workspace or call any MCP server.
 

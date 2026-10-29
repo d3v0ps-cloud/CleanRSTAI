@@ -197,6 +197,13 @@ pub fn compose_prompt(text: &str, stdin: Option<&str>) -> String {
     }
 }
 
+/// The request as exec runs it: only `--mode` (or the exec setting) decides what runs unasked,
+/// so the GUI's "Run all tools without asking" never lets a read-only run call tools.
+fn headless(mut req: AgentRequest) -> AgentRequest {
+    req.general.auto_approve_tools = false;
+    req
+}
+
 /// Whether a tool call that would ask for approval runs anyway, with nobody to ask. The agent
 /// asks only for the calls the mode doesn't run unasked, so the rest are denied here.
 /// `sandboxed`: shell commands run in the Docker sandbox.
@@ -498,7 +505,14 @@ pub fn run(args: &[String]) -> i32 {
             .sandbox
             .enabled
             .then(|| Sandbox::new(settings.sandbox.clone()));
-        let req = AgentRequest::for_chat(&settings, &conv, sandbox.as_ref(), false, false, None);
+        let req = headless(AgentRequest::for_chat(
+            &settings,
+            &conv,
+            sandbox.as_ref(),
+            false,
+            false,
+            None,
+        ));
         drive(req, http, mcp, &mut conv, &mut sink).await
     });
     runtime.shutdown_timeout(Duration::from_millis(500));
@@ -811,6 +825,17 @@ mod tests {
         // The conversation keeps the prompt and the answer, ready to save.
         assert_eq!(conv.messages.len(), 2);
         assert_eq!(conv.messages[1].content, "Hello from the mock.");
+    }
+
+    #[test]
+    fn headless_runs_ignore_auto_approve() {
+        let mut settings = crate::config::Settings::default();
+        settings.general.auto_approve_tools = true;
+        let conv = Conversation::with_permission_mode(ApprovalMode::ReadOnly);
+        let req = headless(AgentRequest::for_chat(
+            &settings, &conv, None, false, false, None,
+        ));
+        assert!(!req.general.auto_approve_tools);
     }
 
     #[tokio::test]
