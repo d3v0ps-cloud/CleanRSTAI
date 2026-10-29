@@ -360,6 +360,7 @@ pub fn permissions_picker(
     ui: &mut egui::Ui,
     permissions: &mut crate::approval::ChatPermissions,
     sandbox_on: bool,
+    plan_on: bool,
 ) {
     use super::theme::icon;
     use crate::approval::ApprovalMode;
@@ -368,8 +369,9 @@ pub fn permissions_picker(
         ApprovalMode::AutoWorkspace => icon::SHIELD_CHECK,
         ApprovalMode::AllowAll => icon::LIGHTNING,
         ApprovalMode::ReadOnly => icon::EYE,
+        ApprovalMode::Plan => icon::LIST_CHECKS,
     };
-    let current = permissions.mode;
+    let current = permissions.mode.effective(plan_on);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Permissions").small().weak());
         ui.menu_button(
@@ -385,7 +387,7 @@ pub fn permissions_picker(
                 let small = ui.style().text_styles[&egui::TextStyle::Small].clone();
                 let strong = ui.visuals().strong_text_color();
                 let weak = ui.visuals().weak_text_color();
-                for m in ApprovalMode::ALL {
+                for m in ApprovalMode::offered(plan_on) {
                     let mut job = egui::text::LayoutJob::default();
                     job.append(
                         &format!("{}  {}\n", mode_icon(m), m.label()),
@@ -397,7 +399,7 @@ pub fn permissions_picker(
                         24.0,
                         egui::TextFormat::simple(small.clone(), weak),
                     );
-                    if ui.selectable_label(permissions.mode == m, job).clicked() {
+                    if ui.selectable_label(current == m, job).clicked() {
                         permissions.mode = m;
                     }
                 }
@@ -481,6 +483,7 @@ mod tests {
         ctx.enable_accesskit();
         let mut p = ChatPermissions::default();
         let frame = |events: Vec<egui::Event>, p: &mut ChatPermissions| {
+            let plan_on = true;
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -498,7 +501,7 @@ mod tests {
                     )
                     .ui(ui, |ui| {
                         ui.label("Tools for this chat");
-                        permissions_picker(ui, p, true);
+                        permissions_picker(ui, p, true, plan_on);
                     });
             });
             out.textures_delta.clear();

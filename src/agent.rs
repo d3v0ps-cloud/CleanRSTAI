@@ -173,8 +173,9 @@ impl AgentRequest {
         provider_id: Option<&str>,
     ) -> Self {
         let permissions = &conv.permissions;
-        let selection =
-            ToolSelection::new(settings, &conv.tool_overrides).with_mode(permissions.mode);
+        // A Plan chat is read only while plan mode is off in Settings.
+        let mode = permissions.mode.effective(settings.general.plan.enabled);
+        let selection = ToolSelection::new(settings, &conv.tool_overrides).with_mode(mode);
         // After a compaction only its summary and the messages since are sent.
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
@@ -211,7 +212,7 @@ impl AgentRequest {
             summary,
             compaction,
             compact_only,
-            approval_mode: permissions.mode,
+            approval_mode: mode,
         }
     }
 }
@@ -309,6 +310,14 @@ pub async fn run(
             "{}\n\n{}",
             system_prompt.trim_end(),
             crate::skills::prompt_section(&skills)
+        );
+    }
+    // A Plan chat is told to investigate and propose a plan, not to change anything.
+    if req.approval_mode == crate::approval::ApprovalMode::Plan {
+        system_prompt = format!(
+            "{}\n\n{}",
+            system_prompt.trim_end(),
+            req.general.plan.prompt_text()
         );
     }
     // Subagents may get the workspace too, with commands in containers of their own.
@@ -1302,6 +1311,73 @@ mod tests {
             .unwrap()
             .to_owned();
         assert!(!system.contains("cargo fmt"), "{system}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn plan_mode_adds_the_plan_prompt_and_offers_only_read_tools() {
+        use crate::approval::ApprovalMode;
+        let dir = temp_dir("agent-plan");
+        let settings = crate::config::Settings::default();
+        // The first request of a run in `mode`: its system prompt and tool names.
+        let first_request = |mode: ApprovalMode, settings: crate::config::Settings| {
+            let dir = dir.clone();
+            async move {
+                let (base, log) =
+                    tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+                let mut conv = crate::types::Conversation::with_permission_mode(mode);
+                conv.workspace = Some(dir);
+                conv.messages
+                    .push(ChatMessage::new(Role::User, "plan the change"));
+                let mut req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+                req.provider.base_url = format!("{base}/v1");
+                req.provider.stream = false;
+                drive(req).await;
+                let first = log.lock().unwrap()[0].json();
+                let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+                let names: Vec<String> = first["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+                    .collect();
+                (system, names)
+            }
+        };
+
+        let (system, names) = first_request(ApprovalMode::Plan, settings.clone()).await;
+        assert!(system.contains(crate::plan::PLAN_PROMPT), "{system}");
+        assert!(
+            names.iter().any(|n| n == tools::workspace::READ_FILE),
+            "{names:?}"
+        );
+        for write in [
+            tools::workspace::WRITE_FILE,
+            tools::workspace::EDIT_FILE,
+            tools::workspace::SHELL,
+        ] {
+            assert!(
+                !names.iter().any(|n| n == write),
+                "{write} offered: {names:?}"
+            );
+        }
+
+        // The same tools as Read only, with the same prompt absent.
+        let (read_system, read_names) =
+            first_request(ApprovalMode::ReadOnly, settings.clone()).await;
+        assert!(!read_system.contains(crate::plan::PLAN_PROMPT));
+        assert_eq!(read_names, names);
+
+        // Plan mode off in Settings: the chat is read only.
+        let mut off = settings.clone();
+        off.general.plan.enabled = false;
+        let (system, off_names) = first_request(ApprovalMode::Plan, off).await;
+        assert!(!system.contains(crate::plan::PLAN_PROMPT));
+        assert_eq!(off_names, read_names);
+
+        let (system, names) = first_request(ApprovalMode::Default, settings).await;
+        assert!(!system.contains(crate::plan::PLAN_PROMPT));
+        assert!(names.iter().any(|n| n == tools::workspace::WRITE_FILE));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

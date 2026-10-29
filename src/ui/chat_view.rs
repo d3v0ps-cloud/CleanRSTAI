@@ -61,6 +61,8 @@ pub struct View<'a> {
     /// Every artifact in the chat, and the one open in the panel.
     pub artifacts: &'a [Artifact],
     pub open_artifact: Option<(usize, usize)>,
+    /// A Plan chat's latest reply is a finished plan: show Approve plan under it.
+    pub plan_ready: bool,
 }
 
 pub fn show(
@@ -170,6 +172,10 @@ pub fn show(
                         }
                     }
                     ui.add_space(18.0);
+                }
+                if v.plan_ready {
+                    plan_buttons(ui, conv.id, &mut actions);
+                    ui.add_space(12.0);
                 }
                 if v.run.is_some_and(|r| r.compacting) {
                     ui.horizontal(|ui| {
@@ -430,6 +436,24 @@ fn assistant_body(
             }
         });
     }
+}
+
+/// The buttons under a finished plan: approve it (the chat carries it out) or keep planning.
+fn plan_buttons(ui: &mut egui::Ui, conv: Uuid, actions: &mut Vec<Action>) {
+    ui.horizontal(|ui| {
+        let approve = ui
+            .button(theme::labelled(icon::LIST_CHECKS, "Approve plan"))
+            .on_hover_text(
+                "Switch this chat to its approval mode after a plan (Settings → General → Plan \
+                 mode) and have the model carry the plan out",
+            );
+        if approve.clicked() {
+            actions.push(Action::ApprovePlan(conv));
+        }
+        if ui.button("Keep planning").clicked() {
+            actions.push(Action::KeepPlanning);
+        }
+    });
 }
 
 /// Whether a reasoning section starts open, per the user's setting.
