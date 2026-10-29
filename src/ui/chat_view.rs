@@ -382,6 +382,10 @@ fn assistant_body(
             actions,
         );
     }
+    if msg.searched || !msg.sources.is_empty() {
+        let id = ui.make_persistent_id(("sources", cx.conv, cx.idx));
+        sources_section(ui, id, msg);
+    }
     for call in &msg.tool_calls {
         let result = cx.results.get(call.id.as_str()).copied();
         if call.name == tools::TASKS
@@ -435,6 +439,40 @@ fn assistant_body(
                 super::stats_view::request_line(ui, s);
             }
         });
+    }
+}
+
+/// What the provider's own web search cited for a reply: a small expander with the links
+/// (they open in the browser), or just a line when the search cited nothing.
+fn sources_section(ui: &mut egui::Ui, id: egui::Id, msg: &ChatMessage) {
+    if msg.sources.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(icon::SEARCH).small().weak());
+            ui.label(RichText::new("Searched the web").small().weak());
+        });
+        return;
+    }
+    let label = sources_label(msg.sources.len());
+    let state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    state
+        .show_header(ui, |ui| {
+            ui.label(RichText::new(icon::SEARCH).small().weak());
+            ui.label(RichText::new(label).small().weak());
+        })
+        .body(|ui| {
+            for source in &msg.sources {
+                ui.hyperlink_to(RichText::new(&source.title).small(), &source.url)
+                    .on_hover_text(&source.url);
+            }
+        });
+}
+
+/// The expander's heading for a reply that cites `n` pages.
+fn sources_label(n: usize) -> String {
+    match n {
+        1 => "Searched the web · 1 source".to_owned(),
+        n => format!("Searched the web · {n} sources"),
     }
 }
 
@@ -963,6 +1001,12 @@ mod tests {
         assert_eq!(results_after(&messages, 1)["call_0"].content, "one");
         // The second turn's call has not been answered yet.
         assert!(results_after(&messages, 4).is_empty());
+    }
+
+    #[test]
+    fn sources_heading_counts_pages() {
+        assert_eq!(sources_label(1), "Searched the web · 1 source");
+        assert_eq!(sources_label(3), "Searched the web · 3 sources");
     }
 
     #[test]
