@@ -83,6 +83,15 @@ tray-icon = "0.26.1"
 lto = "thin"
 strip = true
 
+[dev-dependencies]
+# Tests only: an RSA key made at run time for the Cloudflare Access tests (src/remote/access.rs).
+rand = "0.8"
+rsa = "0.9"
+
+# Making that key is slow without optimisation.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
 [build-dependencies]
 # The Windows .exe icon (build.rs); does nothing for other targets.
 winresource = "0.1"

@@ -475,29 +475,47 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Tokens signed the way Cloudflare Access signs them, with the test-only key in
-/// `tests/fixtures/access/` (see its README). Shared with the server tests.
+/// Tokens signed the way Cloudflare Access signs them, with an RSA key made once per test run
+/// (no private key is kept in the repository). Shared with the server tests.
 #[cfg(test)]
 pub(crate) mod testkeys {
     use super::*;
     use ring::rand::SystemRandom;
     use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
     use serde_json::json;
+    use std::sync::OnceLock;
 
     pub const TEAM: &str = "myteam.cloudflareaccess.com";
     pub const AUD: &str = "aud-tag-123";
     pub const KID: &str = "test-key-2026";
-    pub const JWKS: &str = include_str!("../../tests/fixtures/access/jwks.json");
     pub const NOW: u64 = 1_800_000_000;
-    const PEM: &str = include_str!("../../tests/fixtures/access/test-key.pem");
 
-    /// The test-only key as a key pair, from its PKCS#8 PEM.
+    /// The test key: its PKCS#8 DER, and the JWK set publishing its public half under `KID`,
+    /// shaped like the set Cloudflare serves at `https://<team>/cdn-cgi/access/certs`.
+    fn generated() -> &'static (Vec<u8>, String) {
+        static KEY: OnceLock<(Vec<u8>, String)> = OnceLock::new();
+        KEY.get_or_init(|| {
+            use rsa::pkcs8::EncodePrivateKey;
+            use rsa::traits::PublicKeyParts;
+            let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+            let der = key.to_pkcs8_der().unwrap().as_bytes().to_vec();
+            let jwks = json!({"keys": [{
+                "kty": "RSA", "alg": "RS256", "use": "sig", "kid": KID,
+                "n": b64(&key.n().to_bytes_be()),
+                "e": b64(&key.e().to_bytes_be()),
+            }]});
+            (der, jwks.to_string())
+        })
+    }
+
+    /// The JWK set with the test key's public half.
+    pub fn jwks() -> &'static str {
+        &generated().1
+    }
+
+    /// The test key as a key pair.
     pub fn key_pair() -> RsaKeyPair {
-        let body: String = PEM.lines().filter(|l| !l.starts_with("-----")).collect();
-        let der = base64::engine::general_purpose::STANDARD
-            .decode(body)
-            .unwrap();
-        RsaKeyPair::from_pkcs8(&der).unwrap()
+        RsaKeyPair::from_pkcs8(&generated().0).unwrap()
     }
 
     pub fn b64(bytes: &[u8]) -> String {
@@ -565,7 +583,7 @@ mod tests {
     use serde_json::json;
 
     fn keys() -> HashMap<String, RsaKey> {
-        parse_keys(JWKS).unwrap()
+        parse_keys(jwks()).unwrap()
     }
 
     /// Parses, looks the key up and checks, as `Gate::check` does, at a fixed time.
@@ -818,7 +836,7 @@ mod tests {
         );
     }
 
-    /// Serves the test JWKS on a local port; `keys` counts the fetches.
+    /// Serves the test JWK set on a local port; `keys` counts the fetches.
     async fn serve_keys(body: &'static str) -> (String, std::sync::Arc<Mutex<usize>>) {
         let fetches = std::sync::Arc::new(Mutex::new(0));
         let seen = fetches.clone();
@@ -846,7 +864,7 @@ mod tests {
 
     #[tokio::test]
     async fn gate_accepts_a_valid_token_and_clears_the_error() {
-        let (gate, fetches) = gate_with_keys(JWKS, false).await;
+        let (gate, fetches) = gate_with_keys(jwks(), false).await;
         // Times are checked against the real clock, so the tokens are made from it.
         let now = now_secs();
         let mut stale = claims_at(now);
@@ -865,14 +883,14 @@ mod tests {
 
     #[tokio::test]
     async fn gate_refuses_a_missing_token_without_recording_an_error() {
-        let (gate, _) = gate_with_keys(JWKS, false).await;
+        let (gate, _) = gate_with_keys(jwks(), false).await;
         assert_eq!(gate.verify(None).await.err(), Some(AccessError::Missing));
         assert_eq!(gate.last_error(), None);
     }
 
     #[tokio::test]
     async fn unknown_kid_refetches_the_keys_at_most_once_a_minute() {
-        let (gate, fetches) = gate_with_keys(JWKS, false).await;
+        let (gate, fetches) = gate_with_keys(jwks(), false).await;
         let other = sign_with(&json!({ "alg": "RS256", "kid": "rotated" }), &claims());
         let other = other.as_str();
         assert_eq!(
