@@ -162,7 +162,9 @@ too, as an installer and a portable `.exe`.
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
   for that tool or MCP server for the rest of the chat (until the app quits). **Permissions**
   in each chat's tools menu picks Default, Auto in workspace (file edits and sandboxed commands
-  run without asking), Allow all or Read only, and can switch the terminal sandbox off for it.
+  run without asking), Allow all, Read only or Plan. In Plan, the model reads and proposes a
+  numbered plan, and **Approve plan** under the reply carries it out in the chat's chosen mode.
+  It can switch the terminal sandbox off for the chat.
 - **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
   accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
   the model picker beneath; your messages sit in bubbles on the right, replies run full

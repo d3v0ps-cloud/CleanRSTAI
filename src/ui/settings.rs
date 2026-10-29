@@ -2365,6 +2365,7 @@ impl SettingsUi {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
+        let plan_on = self.draft.general.plan.enabled;
         let schedules = &mut self.draft.general.schedules;
         let bg = &mut self.draft.general.background;
         let ex = &mut self.draft.general.exec;
@@ -2460,7 +2461,7 @@ impl SettingsUi {
                                 egui::ComboBox::from_id_salt("exec-approval-mode")
                                     .selected_text(ex.approval_mode.label())
                                     .show_ui(ui, |ui| {
-                                        for m in ApprovalMode::ALL {
+                                        for m in ApprovalMode::offered(plan_on) {
                                             ui.selectable_value(
                                                 &mut ex.approval_mode,
                                                 m,
@@ -2518,7 +2519,9 @@ impl SettingsUi {
                          `cleanrstai exec --help` for every option.",
                     );
                 });
-                super::schedule_settings::section(ui, schedules, &providers, chats, actions);
+                super::schedule_settings::section(
+                    ui, schedules, &providers, chats, plan_on, actions,
+                );
             });
     }
 
@@ -2724,6 +2727,7 @@ impl SettingsUi {
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
         let g = &mut self.draft.general;
+        let plan_on = g.plan.enabled;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2937,7 +2941,7 @@ impl SettingsUi {
                         egui::ComboBox::from_id_salt("default-approval-mode")
                             .selected_text(g.default_approval_mode.label())
                             .show_ui(ui, |ui| {
-                                for m in ApprovalMode::ALL {
+                                for m in ApprovalMode::offered(plan_on) {
                                     ui.selectable_value(&mut g.default_approval_mode, m, m.label())
                                         .on_hover_text(m.description());
                                 }
@@ -2960,6 +2964,63 @@ impl SettingsUi {
                         ui.end_row();
                     });
 
+                ui.add_space(16.0);
+                ui.separator();
+                ui.strong("Plan mode");
+                ui.checkbox(&mut g.plan.enabled, "Offer Plan in the permission menus")
+                    .on_hover_text(
+                        "A Plan chat investigates with read-only tools and proposes a numbered \
+                         plan. Off, Plan is hidden, and a chat set to it is read only.",
+                    );
+                ui.add_enabled_ui(g.plan.enabled, |ui| {
+                    egui::Grid::new("plan-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Mode after approval");
+                            egui::ComboBox::from_id_salt("plan-after-approval")
+                                .selected_text(g.plan.after_mode().label())
+                                .show_ui(ui, |ui| {
+                                    for m in [
+                                        ApprovalMode::Default,
+                                        ApprovalMode::AutoWorkspace,
+                                        ApprovalMode::AllowAll,
+                                    ] {
+                                        ui.selectable_value(&mut g.plan.after_approval, m, m.label())
+                                            .on_hover_text(m.description());
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Approval message");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut g.plan.approve_message)
+                                    .desired_width(FIELD_WIDTH),
+                            )
+                            .on_hover_text("Sent as the user's message when a plan is approved");
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    weak_note(
+                        ui,
+                        "Under a finished plan, Approve plan switches the chat to the mode \
+                         above and sends the approval message. Plan and Read only can't be the \
+                         mode after approval.",
+                    );
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Plan instructions");
+                    if g.plan.prompt != crate::plan::PLAN_PROMPT
+                        && ui.small_button("Reset").clicked()
+                    {
+                        g.plan.prompt = crate::plan::PLAN_PROMPT.into();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut g.plan.prompt)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.add_space(16.0);
                 ui.separator();
                 ui.strong("Export & import");
@@ -3259,6 +3320,10 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "General",
         "Default permission mode for new chats",
     ),
+    (Tab::General, "General", "Plan mode"),
+    (Tab::General, "General", "Plan mode after approval"),
+    (Tab::General, "General", "Plan approval message"),
+    (Tab::General, "General", "Plan instructions"),
     (Tab::General, "General", "Max tool rounds"),
     (Tab::General, "General", "Tool timeout"),
     (Tab::General, "General", "Export settings"),
@@ -3486,6 +3551,8 @@ mod tests {
         assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
+        assert_eq!(search_settings("plan mode")[0].0, Tab::General);
+        assert_eq!(search_settings("plan instructions")[0].0, Tab::General);
         assert_eq!(search_settings("notify")[0].0, Tab::Background);
         assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);

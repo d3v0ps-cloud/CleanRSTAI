@@ -149,9 +149,13 @@ sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` 
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by
 server id and MCP tool name (not the routed function name), so it survives renames.
 Per-chat permission modes live in `approval.rs` (`ApprovalMode`: Default, AutoWorkspace,
-AllowAll, ReadOnly; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
-`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly switches the
-write/shell workspace tools off via `ToolSelection::with_mode`.
+AllowAll, ReadOnly, Plan; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
+`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly and Plan switch the
+write/shell workspace tools off via `ToolSelection::with_mode` (`is_read_only`). Plan mode (`plan.rs`,
+Settings → General → Plan mode) appends its prompt to the system prompt; `plan::approve` switches the
+chat to its after-approval mode and returns the approval message, and `plan::awaiting_approval` decides
+whether the buttons under a finished reply are shown. `offered` and `effective` hide Plan and map it to
+ReadOnly while plan mode is off.
 
 **Subagents** (`subagent.rs`): the `delegate` tool runs tasks in parallel, each with its own
 model/tool loop and a derived `ToolSelection` (never the task list or `delegate`;
@@ -252,8 +256,9 @@ Provider web search (`native.rs`): with `builtin_tools.search.native` = `PreferP
 whose `web_search` is on and whose provider has a search (`native_search_support`: Anthropic's
 `web_search_20250305` tool, Responses' `web_search` tool, OpenRouter's `web` plugin).
 `ToolSelection::with_native_search` then leaves the built-in `web_search` out of the toolbox, so
-subagents keep it. The readers keep `server_tool_use`/`web_search_tool_result` and
-`web_search_call` items in `ChatMessage.native` (sent back only to their API), collect
+subagents keep it. The Anthropic reader keeps `server_tool_use`/`web_search_tool_result` blocks in
+`ChatMessage.native` (sent back only to that API; Responses' `web_search_call` isn't kept, since
+`store: false` means the server can't look it up later), collect
 citations into `ChatMessage.sources` and set `searched`; `chat_view` shows them under the reply.
 An Anthropic `pause_turn` continues the reply in the agent loop.
 

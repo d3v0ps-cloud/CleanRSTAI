@@ -154,6 +154,7 @@ each mode, which sets the current chat's mode (or the next chat's, before a chat
 | **Auto in workspace** | `write_file`, `edit_file` and commands in the Docker sandbox run without asking; commands on this computer, MCP tools, web fetch and `delegate` still ask. |
 | **Allow all** | Every tool call runs without asking, as with the setting below but for this chat only. |
 | **Read only** | The workspace tools that write files or run commands are off (also for subagents); other tools ask as by default. |
+| **Plan** | Read only, plus a plan: the model investigates with the read-only tools and replies with a numbered plan. Under the reply, **Approve plan** switches the chat to the mode set in [Settings → General](../settings/general.html#plan-mode) (Default permissions unless changed) and sends the approval message; **Keep planning** leaves the chat as it is. Plan is listed only while Plan mode is on in Settings; with it off, a chat set to Plan is read only. |
 
 **Sandboxing for terminal** (on when the [Docker sandbox](#docker-sandbox) is on) runs this
 chat's commands in the sandbox. Turn it off to run them on this computer; subagents then get no
