@@ -81,6 +81,9 @@ too, as an installer and a portable `.exe`.
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
   **Settings → Built-in Tools** or per chat.
+  - **Commits**: with **Commit (git_commit)** on (off by default), the model can commit the
+    folder's changes, or chosen files, to its git repository locally. Every commit asks for
+    approval, nothing is pushed, and a **Commit…** dialog does the same by hand.
   - **Project instructions**: an `AGENTS.md` or `CLAUDE.md` in the folder (names, order,
     parent folders and size limit are configurable) goes into the system prompt.
   - **Diffs and undo**: `write_file` and `edit_file` show their change as a diff on the

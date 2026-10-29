@@ -72,12 +72,21 @@ impl ApprovalMode {
     /// commands run in the Docker sandbox.
     pub fn runs_unasked(self, function: &str, sandboxed: bool) -> bool {
         use crate::tools::workspace::{SHELL, changes_things};
+        if always_asks(function) {
+            return self == Self::AllowAll;
+        }
         match self {
             Self::AllowAll => true,
             Self::AutoWorkspace => changes_things(function) && (function != SHELL || sandboxed),
             Self::Default | Self::ReadOnly => false,
         }
     }
+}
+
+/// Whether `function` asks even where the mode or "Run all tools without asking" would let it
+/// run: a commit always asks, except in Allow all. It is never remembered by "Always allow".
+pub fn always_asks(function: &str) -> bool {
+    function == crate::tools::workspace::GIT_COMMIT
 }
 
 /// A chat's tool permissions.
@@ -158,6 +167,9 @@ pub struct AlwaysAllow {
 
 impl AlwaysAllow {
     pub fn allows(&self, p: &PendingApproval) -> bool {
+        if always_asks(&p.call.name) {
+            return false;
+        }
         self.tools.contains(&p.tool_key())
             || p.origin
                 .as_ref()
@@ -166,6 +178,9 @@ impl AlwaysAllow {
 
     /// Remember an "Always allow" answer to `p`. Other answers change nothing.
     pub fn remember(&mut self, p: &PendingApproval, answer: Approval) {
+        if always_asks(&p.call.name) {
+            return;
+        }
         match answer {
             Approval::AlwaysTool => {
                 self.tools.insert(p.tool_key());
@@ -245,6 +260,15 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_is_never_always_allowed() {
+        let mut allow = AlwaysAllow::default();
+        let (commit, _) = pending(crate::tools::workspace::GIT_COMMIT, None);
+        allow.remember(&commit, Approval::AlwaysTool);
+        assert!(allow.is_empty());
+        assert!(!allow.allows(&commit));
+    }
+
+    #[test]
     fn approval_deserializes_snake_case() {
         assert_eq!(
             serde_json::from_str::<Approval>("\"always_server\"").unwrap(),
@@ -267,6 +291,13 @@ mod mode_tests {
         assert!(!AutoWorkspace.runs_unasked("exec_shell_command", false));
         assert!(!AutoWorkspace.runs_unasked("srv__tool", true));
         assert!(!ReadOnly.runs_unasked("builtin__fetch", true));
+        // A commit asks in every mode but Allow all, Auto in workspace included.
+        assert!(!Default.runs_unasked("git_commit", false));
+        assert!(!AutoWorkspace.runs_unasked("git_commit", false));
+        assert!(!ReadOnly.runs_unasked("git_commit", false));
+        assert!(AllowAll.runs_unasked("git_commit", false));
+        assert!(always_asks("git_commit"));
+        assert!(!always_asks("edit_file"));
         let p: ChatPermissions = serde_json::from_str("{}").unwrap();
         assert!(p.is_default());
         assert_eq!(serde_json::to_string(&p).unwrap(), "{}");

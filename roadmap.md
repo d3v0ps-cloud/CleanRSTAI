@@ -25,7 +25,8 @@ files list and read-only git tools in **v0.9.2-dev.2**, and skills and backgroun
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
 settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
-settings on the Background tab) in **v0.9.2-dev.4**.
+settings on the Background tab) in **v0.9.2-dev.4**, and committing the working folder's changes
+from the chat (`git_commit`, which asks every time, and the Commit dialog) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -313,7 +314,10 @@ in them follows the same rule:
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
 - [x] Read-only `git_status` and `git_diff` workspace tools
-- [ ] Commit from the chat (with approval)
+- [x] Commit from the chat (with approval): a `git_commit` workspace tool (off by default, in
+  Settings and per chat) that commits the chosen paths, or every change, locally and never
+  pushes; every commit asks, in every mode but Allow all; and a **Commit…** dialog in the
+  changed files window and the command palette
 
 ## 20. Approval modes
 

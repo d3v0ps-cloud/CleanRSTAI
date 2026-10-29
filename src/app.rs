@@ -22,12 +22,14 @@ use crate::remote::{
     RemoteEvent, RemoteStatus, StateView, ToolCallView,
 };
 use crate::schedule::{self, ScheduleSettings, ScheduledTask, Target};
+use crate::tools::workspace::Workspace;
 use crate::tools::{self, ToolOverrides, ToolSelection};
 use crate::tray;
 use crate::types::{ChatMessage, Conversation, Role, fork_messages};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
+use crate::ui::commit_dialog::{CommitAction, CommitDialog};
 use crate::ui::palette::{Command, Entry, Palette};
 use crate::ui::settings::{SettingsAction, SettingsUi, Tab};
 use crate::ui::theme::{self, icon};
@@ -129,6 +131,8 @@ pub struct ChatApp {
     prompt_form: Option<PromptForm>,
     /// The "Changed files" window is open.
     changed_files_open: bool,
+    /// The Commit dialog, while it is open.
+    commit_dialog: Option<crate::ui::commit_dialog::CommitDialog>,
     /// For background tasks to request a repaint when their results arrive.
     repaint_ctx: egui::Context,
     palette: Palette,
@@ -393,6 +397,7 @@ impl ChatApp {
             viewing: None,
             prompt_form: None,
             changed_files_open: false,
+            commit_dialog: None,
             repaint_ctx: cc.egui_ctx.clone(),
             palette: Palette::default(),
             sidebar_open: true,
@@ -1429,6 +1434,31 @@ impl ChatApp {
                         self.notice = Some(e);
                     }
                 }
+                AppEvent::CommitListed { conv_id, result } => {
+                    if let Some(d) = self.commit_dialog.as_mut().filter(|d| d.conv == conv_id) {
+                        d.set_listing(result);
+                    }
+                }
+                AppEvent::Committed { conv_id, result } => {
+                    if self
+                        .commit_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.conv == conv_id)
+                    {
+                        match result {
+                            Ok(text) => {
+                                self.commit_dialog = None;
+                                self.notice = text.lines().next().map(str::to_owned);
+                            }
+                            Err(e) => {
+                                if let Some(d) = self.commit_dialog.as_mut() {
+                                    d.busy = false;
+                                    d.error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
                 AppEvent::FileAttached { result } => {
                     self.reading_files = self.reading_files.saturating_sub(1);
                     match result {
@@ -2113,6 +2143,77 @@ impl ChatApp {
         }
     }
 
+    /// Opens the Commit dialog on chat `id` and asks for its working folder's changes.
+    fn open_commit_dialog(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
+        let root = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("Chat not found")?
+            .workspace
+            .clone()
+            .ok_or("This chat has no working folder")?;
+        self.commit_dialog = Some(CommitDialog::new(id, root.clone()));
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = match Workspace::open(&root) {
+                Ok(ws) => ws.commit_changes_list().await,
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(AppEvent::CommitListed {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        Ok(())
+    }
+
+    /// Commits `paths` (as the Commit dialog checked them) in the dialog's working folder.
+    fn start_commit(&mut self, id: Uuid, message: String, paths: Vec<String>, ctx: &egui::Context) {
+        let Some(dialog) = self.commit_dialog.as_mut() else {
+            return;
+        };
+        dialog.busy = true;
+        dialog.error = None;
+        let root = dialog.root.clone();
+        // The user's click in the dialog is the approval; signing follows Settings.
+        let sign = self.settings.general.builtin_tools.allow_signing;
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = match Workspace::open(&root) {
+                Ok(ws) => {
+                    ws.with_commit_signing(sign)
+                        .commit_changes(&message, Some(&paths))
+                        .await
+                }
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(AppEvent::Committed {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Draws the Commit dialog and runs what the user asks for.
+    fn commit_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.commit_dialog.take() else {
+            return;
+        };
+        let idle = !self.busy(dialog.conv);
+        match crate::ui::commit_dialog::show(ctx, &mut dialog, idle) {
+            CommitAction::Keep => self.commit_dialog = Some(dialog),
+            CommitAction::Close => {}
+            CommitAction::Commit { message, paths } => {
+                let id = dialog.conv;
+                self.commit_dialog = Some(dialog);
+                self.start_commit(id, message, paths, ctx);
+            }
+        }
+    }
+
     /// The current chat's file edits, one collapsible section per file, with their diffs.
     fn changed_files_window(&mut self, ctx: &egui::Context) {
         if !self.changed_files_open {
@@ -2123,11 +2224,25 @@ impl ChatApp {
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
             .map(|c| crate::checkpoints::changed_files(&c.messages))
             .unwrap_or_default();
+        let has_workspace = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some());
+        let mut commit = false;
         egui::Window::new("Changed files")
             .open(&mut self.changed_files_open)
             .resizable(true)
             .default_width(600.0)
             .show(ctx, |ui| {
+                let button = egui::Button::new("Commit…").small();
+                if ui
+                    .add_enabled(has_workspace, button)
+                    .on_hover_text("Commit the working folder's changes to its git repository")
+                    .clicked()
+                {
+                    commit = true;
+                }
+                ui.add_space(4.0);
                 if files.is_empty() {
                     ui.label(RichText::new("This chat hasn't changed any files.").weak());
                     return;
@@ -2180,6 +2295,12 @@ impl ChatApp {
                         });
                 }
             });
+        if commit
+            && let Some(id) = self.current
+            && let Err(e) = self.open_commit_dialog(id, ctx)
+        {
+            self.notice = Some(e);
+        }
     }
 
     fn prompt_form_window(&mut self, ctx: &egui::Context) {
@@ -2589,6 +2710,18 @@ impl ChatApp {
                 Command::ReviewChanges,
             ));
         }
+        if self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some())
+        {
+            e.push(Entry::new(
+                icon::CHECK_SQUARE,
+                "Commit changes…",
+                "Chat",
+                Command::CommitChanges,
+            ));
+        }
         for c in &self.conversations {
             e.push(Entry::new(
                 icon::CHAT,
@@ -2689,6 +2822,13 @@ impl ChatApp {
             Command::ReviewChanges => {
                 if let Some(id) = self.current
                     && let Err(e) = self.start_review(id, ctx)
+                {
+                    self.notice = Some(e);
+                }
+            }
+            Command::CommitChanges => {
+                if let Some(id) = self.current
+                    && let Err(e) = self.open_commit_dialog(id, ctx)
                 {
                     self.notice = Some(e);
                 }
@@ -4267,6 +4407,7 @@ fn approval_view(p: &PendingApproval) -> ApprovalView {
         label: tools::display_name(&p.call.name),
         arguments: p.call.arguments.clone(),
         server_name: p.server_name.clone(),
+        can_always_tool: !crate::approval::always_asks(&p.call.name),
         can_always_server: p.origin.is_some(),
     }
 }
@@ -4523,6 +4664,7 @@ impl eframe::App for ChatApp {
 
         self.prompt_form_window(&ctx);
         self.changed_files_window(&ctx);
+        self.commit_dialog_window(&ctx);
         if let Some(image) = &self.viewing
             && !attach_ui::viewer(&ctx, image)
         {

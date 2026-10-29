@@ -1536,6 +1536,31 @@ impl SettingsUi {
                     });
                     ui.add_space(8.0);
                 }
+                ui.add_enabled_ui(b.workspace, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut b.git_commit,
+                            egui::RichText::new(format!("{}  Commit (git_commit)", icon::CHECK_SQUARE))
+                                .strong(),
+                        );
+                    });
+                    ui.indent("git-commit", |ui| {
+                        ui.weak(
+                            "Lets the model commit the workspace's changes to its git repository as \
+                             one local commit. Every commit asks for approval, even in Auto in \
+                             workspace mode. Nothing is pushed, and git hooks don't run. Off by \
+                             default.",
+                        );
+                        ui.add_enabled_ui(b.git_commit, |ui| {
+                            ui.checkbox(&mut b.allow_signing, "Allow signed commits");
+                            ui.weak(
+                                "Off: commits are never signed. On: a repository set to sign its \
+                                 commits signs them, and gpg may ask for a passphrase.",
+                            );
+                        });
+                    });
+                    ui.add_space(8.0);
+                });
                 ui.add_enabled_ui(b.fetch, |ui| {
                     ui.checkbox(
                         &mut b.fetch_private_networks,
@@ -3325,6 +3350,8 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Tools",
         "Workspace tools (files, search, shell)",
     ),
+    (Tab::Tools, "Tools", "Commit changes (git_commit)"),
+    (Tab::Tools, "Tools", "Allow signed commits"),
     (
         Tab::Subagents,
         "Subagents",
@@ -3426,6 +3453,8 @@ mod tests {
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("git commit")[0].0, Tab::Tools);
+        assert_eq!(search_settings("signed commits")[0].0, Tab::Tools);
         assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
         assert_eq!(search_settings("saved prompts")[0].0, Tab::Extensions);
         assert_eq!(search_settings("skills")[0].0, Tab::Extensions);

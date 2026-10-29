@@ -59,6 +59,9 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   for an after-tool hook, the tool's result, in environment variables. What a hook prints is
   kept in the chat, and an after-tool hook's output goes to the provider with the result. A
   command can do anything you could do in a terminal, so only set hooks you have read.
+- **Commits** (the `git_commit` tool and the Commit dialog) write a commit to the working folder's
+  git repository on your computer, in its `.git` folder. Nothing is pushed, and no commit leaves
+  the computer. Git hooks don't run for them.
 - **Code review** sends the working folder's git diff (up to the size you set, and the names of
   new files) to the provider and model chosen in
   [Context & files](../settings/context.html#code-review), when you choose Review changes.

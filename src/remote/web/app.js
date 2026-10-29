@@ -776,7 +776,8 @@
 
   function approvalNode(a, chatId) {
     var card = el("div", { cls: "approval" });
-    var answers = [["Once", "once", "btn-primary"], ["Always allow this tool", "always_tool", "btn"]];
+    var answers = [["Once", "once", "btn-primary"]];
+    if (a.can_always_tool) answers.push(["Always allow this tool", "always_tool", "btn"]);
     if (a.can_always_server) answers.push(["Always allow this server", "always_server", "btn"]);
     answers.push(["Deny", "deny", "btn-danger"]);
     var buttons = answers.map(function (ans) {
