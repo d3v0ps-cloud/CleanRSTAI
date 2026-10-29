@@ -73,6 +73,11 @@ pub struct ServerReport {
 pub enum AppEvent {
     /// A request from a browser connected to the remote access server.
     Remote(crate::remote::RemoteCommand),
+    /// The working folder's diff for "Review changes", or why it couldn't be read.
+    ReviewReady {
+        conv_id: Uuid,
+        result: Result<crate::review::ReviewDiff, String>,
+    },
     /// Result of a GitHub Releases check. `explicit` when the user asked for it.
     UpdateChecked {
         result: Result<crate::update::UpdateCheck, String>,

@@ -20,6 +20,7 @@ pub enum Command {
     ExportChatMarkdown,
     ExportChatHtml,
     CompactChat,
+    ReviewChanges,
     UndoLastEdits,
     ExportSettings,
     ExportConversations,

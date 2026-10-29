@@ -8,8 +8,8 @@ use super::widgets::{code_block, icon_button, kv_editor, list_editor};
 use crate::config::{
     DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
     McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings, Settings,
-    Theme, TunnelMode, import_mcp_json,
+    ReviewScope, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings,
+    Settings, Theme, TunnelMode, import_mcp_json,
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
@@ -775,7 +775,7 @@ impl SettingsUi {
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
-                Tab::Context => "Context compaction, project instructions from the workspace, and diffs and undo for file edits.",
+                Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, and code review.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
@@ -1805,6 +1805,123 @@ impl SettingsUi {
                             ui.end_row();
                         });
                 });
+                ui.add_space(16.0);
+
+                // ---- code review
+                let r = &mut g.review;
+                ui.checkbox(
+                    &mut r.enabled,
+                    egui::RichText::new(format!("{}  Code review", icon::CODE)).strong(),
+                )
+                .on_hover_text("Adds Review changes to the tools menu and the command palette");
+                ui.indent("review-help", |ui| {
+                    ui.weak(
+                        "Review changes sends the working folder's git diff to a model with the \
+                         instructions below, as a new message in the chat. The diff leaves your \
+                         computer for the provider chosen here.",
+                    );
+                });
+                ui.add_enabled_ui(r.enabled, |ui| {
+                    ui.add_space(6.0);
+                    ui.label("Changes to review");
+                    ui.radio_value(
+                        &mut r.scope,
+                        ReviewScope::Uncommitted,
+                        "Uncommitted changes (staged, unstaged and new files)",
+                    );
+                    ui.radio_value(
+                        &mut r.scope,
+                        ReviewScope::Branch,
+                        "This branch against its base",
+                    );
+                    ui.add_space(6.0);
+                    egui::Grid::new("review-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Base branch");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut r.base_branch)
+                                    .hint_text("auto: origin/HEAD, main or master")
+                                    .desired_width(FIELD_WIDTH),
+                            )
+                            .on_hover_text("Used by \"This branch against its base\"");
+                            ui.end_row();
+
+                            ui.label("Review by");
+                            let current = providers
+                                .iter()
+                                .find(|(id, ..)| *id == r.provider_id)
+                                .map_or("The chat's provider".to_owned(), |(_, n, _)| n.clone());
+                            egui::ComboBox::from_id_salt("review-provider")
+                                .selected_text(current)
+                                .width(FIELD_WIDTH)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut r.provider_id,
+                                        String::new(),
+                                        "The chat's provider",
+                                    );
+                                    for (id, name, _) in &providers {
+                                        ui.selectable_value(&mut r.provider_id, id.clone(), name);
+                                    }
+                                });
+                            ui.end_row();
+
+                            ui.label("Review model");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut r.model)
+                                        .hint_text("the provider's selected model")
+                                        .desired_width(FIELD_WIDTH - 40.0),
+                                );
+                                let models = providers
+                                    .iter()
+                                    .find(|(id, ..)| *id == r.provider_id)
+                                    .map(|(.., m)| m.clone())
+                                    .unwrap_or_default();
+                                if !models.is_empty() {
+                                    ui.menu_button(icon::CARET_DOWN, |ui| {
+                                        ui.set_max_height(320.0);
+                                        egui::ScrollArea::vertical().show(ui, |ui| {
+                                            for m in models {
+                                                if ui.button(&m).clicked() {
+                                                    r.model = m;
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Largest diff");
+                            ui.add(
+                                egui::DragValue::new(&mut r.max_diff_kb)
+                                    .range(16..=4096)
+                                    .suffix(" KB"),
+                            )
+                            .on_hover_text(
+                                "A longer diff is cut to this size, and the model is told so",
+                            );
+                            ui.end_row();
+                        });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.strong("Review instructions");
+                        if r.prompt != crate::config::DEFAULT_REVIEW_PROMPT
+                            && ui.small_button("Reset").clicked()
+                        {
+                            r.prompt = crate::config::DEFAULT_REVIEW_PROMPT.into();
+                        }
+                    });
+                    ui.add(
+                        egui::TextEdit::multiline(&mut r.prompt)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
             });
     }
 
@@ -2638,6 +2755,12 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (
         Tab::Context,
         "Context & files",
+        "Code review (review changes)",
+    ),
+    (Tab::Context, "Context & files", "Review prompt and model"),
+    (
+        Tab::Context,
+        "Context & files",
         "Project instructions (AGENTS.md, CLAUDE.md)",
     ),
     (
@@ -2718,6 +2841,8 @@ mod tests {
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
+        assert_eq!(search_settings("review changes")[0].0, Tab::Context);
+        assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert!(search_settings("zzzz").is_empty());

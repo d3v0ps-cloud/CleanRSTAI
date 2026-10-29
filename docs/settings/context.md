@@ -64,3 +64,25 @@ turn changed, newest first. A file that changed again after the edit (by you, a 
 a shell command) is left alone, and the notice says so. Commands run with
 `exec_shell_command` aren't undone. Checkpoints are saved in the chat's file, so they survive a
 restart and are deleted with the chat.
+
+## Code review
+
+**Review changes** in the tools menu, and in the command palette (⌘/Ctrl + K), reads the
+working folder's git diff and sends it to a model with the instructions below, as a new message
+in the chat. The diff goes as the attached file `changes.diff`. The review runs with the provider
+chosen here, for that one reply; the chat's own provider is unchanged. The button is enabled
+when the chat has a working folder and no reply is running. Turn **Code review** off to hide
+both entries.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Code review** | on | Shows **Review changes** in the tools menu and the command palette. |
+| **Uncommitted changes** or **This branch against its base** | Uncommitted changes | Uncommitted: everything since the last commit (staged, unstaged, and new files, which are listed by name only). Branch: the commits on this branch since it forked from its base, plus nothing uncommitted. |
+| **Base branch** | auto | The branch for the branch scope. Empty uses `origin/HEAD`, then `main`, then `master`. |
+| **Review by** | The chat's provider | The provider profile that writes the review. |
+| **Review model** | the provider's selected model | A model for the review, such as a stronger one. |
+| **Largest diff** | 200 KB | A longer diff is cut to this size (16–4096 KB), and the model is told where it was cut. |
+| **Review instructions** | (built in) | What the model is asked to look for. **Reset** restores the built-in text. |
+
+The working folder must be a git repository. If there are no changes, or the base branch can't
+be found, the app says so and sends nothing.
