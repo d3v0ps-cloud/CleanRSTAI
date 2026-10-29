@@ -111,10 +111,14 @@ pub enum AppEvent {
         name: String,
         result: Result<Vec<crate::attach::Attachment>, String>,
     },
-    /// A file read (and, for documents, its text extracted) for the next message.
+    /// A file read (and, for documents, its text extracted) for the next message. `ocr` is
+    /// set when the file was a scanned PDF read by OCR (after an `OcrStarted`).
     FileAttached {
         result: Result<crate::attach::Attachment, String>,
+        ocr: bool,
     },
+    /// A scanned PDF has started to be read with OCR.
+    OcrStarted,
     /// Messages from an MCP prompt, to insert into the chat.
     McpPromptReady {
         name: String,

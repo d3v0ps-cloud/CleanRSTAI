@@ -176,7 +176,13 @@ content (not extension) and extracts their text: `pdf-extract` for PDF, `zip` + 
 for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers for legacy
 `.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
 `tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
-`AppEvent::FileAttached`.
+`AppEvent::FileAttached`. `attach::read_bytes` returns `Reading::Scanned` for a PDF whose text
+is (nearly) empty (`documents::extract_or_scanned`, `ocr::is_scanned`); `ocr.rs` then reads it
+when `general.ocr` is on: `lopdf` gives each page's image XObjects (JPEG as is, 8-bit Flate
+RGB/grey as PNG), sent to a vision model through `llm::chat_completion` or run through
+`tesseract`, and the text comes back as `Attachment::ocr_text`. `read_files` runs it on the
+tokio runtime and sends `AppEvent::OcrStarted` first; with OCR off the note
+`attach::NO_TEXT_LAYER_NOTE` is attached instead.
 
 **Docker sandbox** (`sandbox/`): only `exec_shell_command` is sandboxed. `docker.rs` talks to
 Docker only through the `docker` CLI; its argument builders (`run_args`, `exec_args`) are pure, and

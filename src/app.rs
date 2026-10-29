@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::approval::{AlwaysAllow, Approval, PendingApproval};
-use crate::attach::Attachment;
+use crate::attach::{Attachment, Reading};
 use crate::background::{self, Outcome, Queued, RunQueue};
 use crate::config::{RemoteTls, Settings, Theme};
 use crate::export;
@@ -122,6 +122,8 @@ pub struct ChatApp {
     pending_attachments: Vec<Attachment>,
     /// Files still being read for `pending_attachments`.
     reading_files: usize,
+    /// Of those, scanned PDFs being read with OCR.
+    reading_ocr: usize,
     images: ImageCache,
     /// MCP server state for the composer and top bar, re-read when the manager changes.
     mcp_views: (u64, Arc<Vec<crate::mcp::manager::ServerView>>),
@@ -273,9 +275,9 @@ enum FileSource {
 }
 
 impl FileSource {
-    fn read(self) -> anyhow::Result<Attachment> {
+    fn read(self) -> anyhow::Result<Reading> {
         match self {
-            Self::Path(p) => Attachment::from_path(&p),
+            Self::Path(p) => Attachment::read_path(&p),
             Self::Dropped(f) => {
                 let name = f
                     .path()
@@ -283,7 +285,7 @@ impl FileSource {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "file".into());
                 let bytes = f.bytes().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
-                Attachment::from_bytes(name, bytes)
+                Attachment::read_bytes(name, bytes)
             }
         }
     }
@@ -388,6 +390,7 @@ impl ChatApp {
             keychain_warned: false,
             pending_attachments: Vec::new(),
             reading_files: 0,
+            reading_ocr: 0,
             images: ImageCache::default(),
             mcp_views: (u64::MAX, Arc::default()),
             viewing: None,
@@ -1429,8 +1432,12 @@ impl ChatApp {
                         self.notice = Some(e);
                     }
                 }
-                AppEvent::FileAttached { result } => {
+                AppEvent::OcrStarted => self.reading_ocr += 1,
+                AppEvent::FileAttached { result, ocr } => {
                     self.reading_files = self.reading_files.saturating_sub(1);
+                    if ocr {
+                        self.reading_ocr = self.reading_ocr.saturating_sub(1);
+                    }
                     match result {
                         Ok(a) => self.pending_attachments.push(a),
                         // Several files can fail in one drop; list them together.
@@ -2284,17 +2291,38 @@ impl ChatApp {
     }
 
     /// Read files into attachments off the UI thread, since extracting a large document's
-    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`.
+    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`. A scanned PDF goes
+    /// through OCR when it is on (`ocr::attach`), which announces itself with `OcrStarted`.
     fn read_files(&mut self, files: Vec<FileSource>) {
         if files.is_empty() {
             return;
         }
         self.reading_files += files.len();
         let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
-        self.rt.spawn_blocking(move || {
+        let ocr = crate::ocr::Job::from_settings(&self.settings, &self.http);
+        self.rt.spawn(async move {
             for file in files {
-                let result = file.read().map_err(|e| format!("{e:#}"));
-                let _ = tx.send(AppEvent::FileAttached { result });
+                let read = tokio::task::spawn_blocking(move || file.read()).await;
+                let (ocr_used, result) = match read {
+                    Ok(Ok(Reading::Done(a))) => (false, Ok(a)),
+                    Ok(Ok(Reading::Scanned(s))) => match &ocr {
+                        Some(job) => {
+                            let _ = tx.send(AppEvent::OcrStarted);
+                            let name = s.name.clone();
+                            let result = crate::ocr::attach(job, s.name, s.bytes)
+                                .await
+                                .map_err(|e| format!("{name} couldn't be read with OCR: {e:#}"));
+                            (true, result)
+                        }
+                        None => (false, Ok(Reading::Scanned(s).without_ocr())),
+                    },
+                    Ok(Err(e)) => (false, Err(format!("{e:#}"))),
+                    Err(e) => (false, Err(e.to_string())),
+                };
+                let _ = tx.send(AppEvent::FileAttached {
+                    result,
+                    ocr: ocr_used,
+                });
                 ctx.request_repaint();
             }
         });
@@ -3574,14 +3602,12 @@ impl ChatApp {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             let n = self.reading_files;
-                            ui.label(
-                                RichText::new(format!(
-                                    "Reading {n} file{}…",
-                                    if n == 1 { "" } else { "s" }
-                                ))
-                                .small()
-                                .weak(),
-                            );
+                            let text = if self.reading_ocr > 0 {
+                                "Reading scanned PDF… (OCR)".to_owned()
+                            } else {
+                                format!("Reading {n} file{}…", if n == 1 { "" } else { "s" })
+                            };
+                            ui.label(RichText::new(text).small().weak());
                         });
                     }
                     let hint = if fresh {

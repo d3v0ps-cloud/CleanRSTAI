@@ -186,8 +186,8 @@ too, as an installer and a portable `.exe`.
   - **Documents** are sent as their text: PDF (`.pdf`), Word (`.docx`, `.doc`), Excel
     (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`), PowerPoint (`.pptx`, `.ppt`, with speaker notes),
     OpenDocument (`.odt`, `.ods`, `.odp`) and RTF. Spreadsheets become one CSV block per
-    sheet and slides are numbered. Scanned PDFs without a text layer and password-protected
-    files can't be read.
+    sheet and slides are numbered. Scanned PDFs without a text layer are read by OCR when it is
+    on (a vision model, or Tesseract on your computer); password-protected files can't be read.
   - **Text files** of any kind (code, Markdown, CSV, JSON, logs…) are included inline, in
     UTF-8, UTF-16 or Windows-1252.
 
@@ -476,6 +476,7 @@ src/
   secrets.rs      OS keychain storage for API keys and tokens
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
+  ocr.rs          OCR for scanned PDFs: page images, a vision model or Tesseract
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
   remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client

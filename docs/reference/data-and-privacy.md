@@ -39,6 +39,10 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   web search sends the model's query to the search service chosen in
   [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
   Tavily and Kagi also get your API key). They ask for approval unless you turned that off.
+- **OCR for scanned PDFs**, when on: each page image of a PDF with no text layer goes to the
+  vision model's provider (chosen in [Context & files](../settings/context.html#ocr-for-scanned-pdfs)),
+  one request per page, with the prompt to transcribe it. With **Tesseract** the pages are read
+  by the `tesseract` program on this computer and nothing leaves it.
 - **Context compaction** sends the older messages of a long chat (shortened where they are
   long) to the provider and model chosen in [Context & files](../settings/context.html), to
   have them summarised.
