@@ -9,6 +9,8 @@ use super::theme::{self, icon};
 use super::widgets::icon_button;
 use crate::app::Action;
 use crate::artifacts::{Artifact, Kind};
+use crate::config::SaveAsSettings;
+use crate::save_as::Content;
 
 /// The artifact shown in the panel.
 pub struct ArtifactView {
@@ -223,6 +225,7 @@ pub fn show(
     remote_images: bool,
     live_html: Result<(), &str>,
     own_window: Option<bool>,
+    save_as: SaveAsSettings,
     actions: &mut Vec<Action>,
 ) -> Option<(egui::Rect, String)> {
     let Some(newest) = artifacts.len().checked_sub(1) else {
@@ -259,6 +262,16 @@ pub fn show(
             }
             if icon_button(ui, icon::COPY, "Copy").clicked() {
                 actions.push(Action::Copy(a.source.clone()));
+            }
+            if let Some(content) = Content::for_artifact(a) {
+                super::chat_view::save_as_menu(
+                    ui,
+                    view.conv,
+                    Some(a.title.clone()),
+                    content,
+                    save_as,
+                    actions,
+                );
             }
             // The rest of the row, from the left.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {

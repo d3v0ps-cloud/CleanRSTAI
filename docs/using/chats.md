@@ -205,6 +205,8 @@ tables and images.
 - Images from the web show as links unless **Load web images in replies** is on in
   [General](../settings/general.html#images). Loading them tells the image's server that the
   chat was opened, so it is off by default.
+- **Save as…** (the download icon under the reply) saves it as a Word document, a PDF or an
+  Excel workbook; see [Saving as files](#saving-as-files).
 
 ## Artifacts
 
@@ -242,6 +244,30 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
   panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar
   button still open it.
+- **Save as…** in the panel's title row saves Markdown documents, code, and CSV or TSV
+  artifacts as a Word document, a PDF or (for CSV and TSV) an Excel workbook.
+
+## Saving as files
+
+A reply or a Markdown, code or CSV artifact can be saved as a file from its **Save as…** menu.
+Each format is switched on or off in [General](../settings/general.html#save-as-files); the menu
+offers only the enabled ones that suit the content. The file dialog suggests the chat's name (or
+the artifact's title) with the new extension.
+
+- **Word (.docx)**: headings, paragraphs with bold, italic and `code`, links as their text
+  followed by the address, bulleted and numbered lists (nested too), code blocks in a monospace
+  font on a grey background, block quotes, tables with a bold header row, and rules.
+- **PDF (.pdf)**: the same elements on A4 pages, with word wrap and page breaks. Text is set in
+  Instrument Sans and code in IBM Plex Mono, both embedded. The PDF has no italic face, so
+  italic text is upright. Characters the fonts lack (most non-Latin scripts) are left out.
+- **Excel (.xlsx)**: offered when the reply has a table, and for CSV and TSV artifacts. Each
+  Markdown table becomes a sheet named "Table 1", "Table 2" and so on, with a bold header row;
+  a CSV or TSV file becomes one sheet, "Sheet1". Cells that read as numbers (plain digits with
+  an optional sign and point) are stored as numbers, so they sum and sort; codes with leading
+  zeros, numbers with separators or exponents, and numbers longer than 15 digits stay text.
+
+Images in a reply are saved as their alt text and address, and raw HTML is left out. The files
+are written only where you choose; nothing is sent anywhere.
 
 ## Attachments
 
@@ -251,7 +277,7 @@ attached; text beyond a million characters is cut, with a note saying so.
 | Kind | Sent as |
 |---|---|
 | Images (PNG, JPEG, GIF, WebP) | images for vision models; click one to enlarge it |
-| PDF (`.pdf`) | its text; scanned PDFs without a text layer can't be read |
+| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Context & files](../settings/context.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
 | Word (`.docx`, `.doc`) | its text |
 | Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`) | one CSV block per sheet |
 | PowerPoint (`.pptx`, `.ppt`) | numbered slides, with speaker notes |

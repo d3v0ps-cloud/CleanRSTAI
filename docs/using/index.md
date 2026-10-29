@@ -13,6 +13,8 @@ How to work with CleanRSTAI day to day.
 - [MCP servers](mcp.html): connecting Model Context Protocol servers, signing in, resources
   and prompts.
 - [Subagents](subagents.html): letting the model delegate tasks to parallel agents.
+- [Projects](projects.html): grouping chats with shared instructions and files, and exporting
+  a project with its chats.
 - [Docker sandbox](../settings/docker.html): running the model's shell commands in a container,
   with network rules.
 - [Command line](command-line.html): running one request from a terminal or a script with

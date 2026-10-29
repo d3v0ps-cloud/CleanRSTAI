@@ -78,6 +78,12 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
     **Show** toggle. It is kept in the keychain like your API keys.
   - **Public hostname** (named tunnel): optional, the hostname of the tunnel's route, such as
     `chat.example.com`. The app also learns it from `cloudflared` once the tunnel connects.
+  - **Cloudflare Access** (named tunnel only): tick *Require Cloudflare Access in front of the
+    tunnel's hostname* to require an Access login before the app's login page. Enter the **Team
+    domain** (`name.cloudflareaccess.com`) and the **Audience (AUD) tag** of the Access application.
+    *Sign in with Access* also signs the browser in, so the app password is not asked. The status
+    line shows the last Access error or a missing team domain or tag. See
+    [Cloudflare Access](../using/cloudflare-tunnel.html#cloudflare-access-sign-in-before-the-login).
   - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
     with **Browse…**.
   - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy
@@ -139,6 +145,19 @@ it was found. Without it, or without a display, **Open live preview** opens the 
 browser instead, with a notice the first time.
 
 Links in a previewed page open in your browser, never in the panel or the Linux window.
+
+## Save as files
+
+Which formats the **Save as…** menu of a [reply or artifact](../using/chats.html#saving-as-files)
+offers. The menu lists only the checked formats that suit the content.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Word document (.docx)** | on | Replies and Markdown, code and CSV artifacts can be saved as Word documents. |
+| **PDF (.pdf)** | on | Replies and Markdown, code and CSV artifacts can be saved as PDF files on A4 pages. |
+| **Excel workbook (.xlsx)** | on | Replies with a table, and CSV and TSV artifacts, can be saved as Excel workbooks: one sheet per table. |
+
+With all three off, no reply or artifact offers **Save as…**.
 
 ## Tool calls
 
