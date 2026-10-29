@@ -1021,6 +1021,9 @@ pub struct GeneralSettings {
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
+    /// Voice input (dictation into the message box) and reading replies aloud (see `voice`).
+    #[serde(default)]
+    pub voice: crate::voice::VoiceSettings,
     /// Regenerating and editing keep the replaced version as a branch (see `branches`).
     #[serde(default)]
     pub branching: crate::branches::BranchSettings,
@@ -1090,6 +1093,7 @@ impl Default for GeneralSettings {
             save_as: Default::default(),
             projects: Default::default(),
             plan: Default::default(),
+            voice: Default::default(),
             branching: Default::default(),
         }
     }
@@ -1400,6 +1404,8 @@ impl Settings {
             url.to_owned()
         };
         self.general.plan.normalized();
+        let providers = &self.providers;
+        self.general.voice.normalize(providers);
         self.general.branching.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);

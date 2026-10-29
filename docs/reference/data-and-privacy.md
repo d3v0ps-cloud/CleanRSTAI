@@ -55,6 +55,14 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   Nothing is saved unless you pass `--save` or turn on **Save each run's chat**
   ([Background](../settings/background.html#command-line)). Its tools act on the `--workspace`
   folder with the mode you chose.
+- **Voice input**: a recording is sent as WAV to the transcription endpoint of the provider
+  chosen under [Voice](../settings/voice.html) (`POST …/audio/transcriptions`), with that
+  provider's key. It is not kept after the text comes back. A local server keeps it on your
+  network; a cloud provider receives it.
+- **Reading replies aloud**: with the speech endpoint, the reply's text (after the Markdown is
+  cut out) goes to the provider chosen under Voice, and the WAV audio that comes back is played
+  here. The system voice (`say`, System.Speech, spd-say or espeak) runs on this computer and
+  sends nothing.
 - **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
   chat's workspace folder, go to the provider with the system prompt.
 - **Projects**: in a chat that belongs to a [project](../using/projects.html), the project's

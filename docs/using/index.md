@@ -19,6 +19,7 @@ How to work with CleanRSTAI day to day.
   with network rules.
 - [Command line](command-line.html): running one request from a terminal or a script with
   `cleanrstai exec`.
+- [Voice](voice.html): dictating into the message box and having replies read aloud.
 - [Updates](updates.html): checking for and installing new versions.
 - [Remote access](remote-access.html): using your chats from a browser on a phone or another
   computer, and its security.
