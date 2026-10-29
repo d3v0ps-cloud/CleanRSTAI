@@ -76,7 +76,7 @@ too, as an installer and a portable `.exe`.
   the rest of the chat). Switch each one in **Settings → Built-in Tools**.
 - **Workspace**: give a chat a local working folder with **Set working directory** under the
   message box, and the model gets tools to work in it: `read_file`, `file_glob_search`,
-  `grep_search` and `get_info` run freely; `write_file`, `edit_file` and
+  `grep_search`, `get_info`, `git_status` and `git_diff` run freely; `write_file`, `edit_file` and
   `exec_shell_command` ask for approval first. Every path is kept inside the folder (no `..`,
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in

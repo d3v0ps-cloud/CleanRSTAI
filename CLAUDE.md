@@ -98,8 +98,12 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
   `tools/search.rs` asks DuckDuckGo's HTML page, SearXNG, Brave or Tavily with the app's own
   client, since the service comes from Settings, never the model);
 - workspace tools with plain names (`read_file`, `file_glob_search`, `grep_search`,
-  `get_info`, `write_file`, `edit_file`, `exec_shell_command`, in `tools/workspace.rs`),
-  offered only when the chat has a `workspace` folder;
+  `get_info`, `git_status`, `git_diff`, `write_file`, `edit_file`, `exec_shell_command`, in
+  `tools/workspace.rs`), offered only when the chat has a `workspace` folder. Every git call the
+  app makes goes through `git::safe_command` (`git.rs`), which switches off the repository's own
+  fsmonitor, external diff, textconv and pager programs, blanks its clean/smudge/process filter
+  drivers (git runs them on `status` and `diff`), and leaves submodules out
+  (`--ignore-submodules=all`); `review.rs` uses it too;
 - MCP tools routed as `<server>__<tool>` by `mcp::manager::ToolRouter`.
 
 `ToolSelection` resolves what is on: Settings defaults plus per-chat `ToolOverrides` keyed

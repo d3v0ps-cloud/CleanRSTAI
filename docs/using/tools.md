@@ -39,12 +39,19 @@ these tools for that chat:
 | `file_glob_search` | Find files by glob pattern | No |
 | `grep_search` | Search file contents with a regular expression | No |
 | `get_info` | The workspace's path, OS, shell, git branch and top-level contents, or a file's or folder's details | No |
+| `git_status` | The repository's status: the branch, and the changed, staged and untracked files | No |
+| `git_diff` | The repository's diff: unstaged changes, or staged ones with `staged`; optionally one `path` or against a `base` branch, tag or commit | No |
 | `write_file` | Create or overwrite a file | Yes |
 | `edit_file` | Replace exact text in a file | Yes |
 | `exec_shell_command` | Run a command in the folder (`sh`, or `cmd` on Windows); 120 s by default, at most 600 s | Yes |
 
 Every path stays inside the folder: `..`, absolute paths outside it and symlinks that lead out
 are refused. Searches skip files ignored by `.gitignore`.
+
+`git_status` and `git_diff` only read, so they run on this computer even when the Docker sandbox
+is on. A repository's own config can't make them run programs: its fsmonitor hook, external diff
+drivers, textconv filters and clean, smudge and process filters are switched off, submodules are
+left out, and repository hooks never run.
 
 Hover over the folder name to see the full path; click it to choose another folder, or click
 **×** to stop using it.

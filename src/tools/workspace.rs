@@ -23,13 +23,17 @@ pub const SHELL: &str = "exec_shell_command";
 pub const WRITE_FILE: &str = "write_file";
 pub const EDIT_FILE: &str = "edit_file";
 pub const INFO: &str = "get_info";
+pub const GIT_STATUS: &str = "git_status";
+pub const GIT_DIFF: &str = "git_diff";
 
 /// The workspace tools in display order: (function name, label).
-pub const TOOLS: [(&str, &str); 7] = [
+pub const TOOLS: [(&str, &str); 9] = [
     (READ_FILE, "Read file"),
     (GLOB, "Find files"),
     (GREP, "Search in files"),
     (INFO, "File info"),
+    (GIT_STATUS, "Git status"),
+    (GIT_DIFF, "Git diff"),
     (WRITE_FILE, "Write file"),
     (EDIT_FILE, "Edit file"),
     (SHELL, "Run command"),
@@ -142,7 +146,8 @@ impl Workspace {
              to look around before changing anything: get_info, file_glob_search, \
              grep_search and read_file. Paths are relative to the workspace. Make changes \
              with edit_file (exact string replacement) or write_file, and run commands with \
-             exec_shell_command{}.",
+             exec_shell_command{}. In a git repository, git_status and git_diff show what has \
+             changed (read-only).",
             self.root.display(),
             if self.subagent {
                 ""
@@ -251,6 +256,8 @@ impl Workspace {
     pub async fn call(&self, function: &str, args: &Value, timeout: Duration) -> ToolOutput {
         let result = if function == SHELL {
             self.shell(args, timeout).await
+        } else if function == GIT_STATUS || function == GIT_DIFF {
+            self.git(function, args, timeout).await
         } else {
             // File-system work can take a while on big trees; keep it off the async runtime.
             let (ws, f, a) = (self.clone(), function.to_owned(), args.clone());
@@ -687,6 +694,92 @@ impl Workspace {
         })
     }
 
+    /// `git status` or `git diff` in the workspace. They only read, so they run on this computer
+    /// even when shell commands run in a sandbox. Every call goes through
+    /// [`crate::git::safe_command`], which keeps the repository's own config from running
+    /// programs (filter drivers included).
+    async fn git(&self, function: &str, args: &Value, timeout: Duration) -> Result<ToolOutput> {
+        let mut cmd = crate::git::safe_command(&self.root)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        if function == GIT_STATUS {
+            cmd.args(["status", "--short", "--branch", "--ignore-submodules=all"]);
+        } else {
+            let mut diff = vec![
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=all",
+            ];
+            if args["staged"].as_bool().unwrap_or(false) {
+                diff.push("--staged");
+            }
+            if let Some(base) = opt_str(args, "base").map(str::trim) {
+                // A value starting with "-" would be read as an option; the "--" after it
+                // makes git read it as a revision.
+                if base.starts_with('-') {
+                    bail!("\"base\" must name a branch, tag or commit, not an option");
+                }
+                diff.push(base);
+            }
+            diff.push("--");
+            cmd.args(&diff);
+            if let Some(path) = opt_str(args, "path") {
+                // Literal, so a path can't be read as a pathspec pattern.
+                cmd.arg(self.diff_path(path)?)
+                    .env("GIT_LITERAL_PATHSPECS", "1");
+            }
+        }
+        let output = tokio::time::timeout(timeout, cmd.output())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "git didn't finish within {} s and was stopped",
+                    timeout.as_secs()
+                )
+            })?
+            .context("couldn't run git")?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let err = err.trim();
+            if err.contains("not a git repository") {
+                bail!("The workspace isn't a git repository");
+            }
+            bail!(
+                "{}",
+                if err.is_empty() {
+                    "git didn't say why it failed"
+                } else {
+                    err
+                }
+            );
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let text = if text.trim().is_empty() {
+            "No changes.".to_owned()
+        } else {
+            keep_ends(&text)
+        };
+        Ok(super::text_output(text))
+    }
+
+    /// `rel` as a path relative to the workspace, for `git diff`. A deleted file has no file on
+    /// disk but still has a diff, so the nearest existing ancestor must be inside the workspace.
+    fn diff_path(&self, rel: &str) -> Result<String> {
+        let joined = self.join(rel)?;
+        let mut probe = joined.as_path();
+        while !probe.exists() {
+            probe = probe
+                .parent()
+                .with_context(|| format!("{rel} is outside the workspace"))?;
+        }
+        let real = probe.canonicalize()?;
+        self.check_inside(&real, rel)?;
+        let tail = joined.strip_prefix(probe).unwrap_or(Path::new(""));
+        Ok(self.show(&real.join(tail)))
+    }
+
     /// Runs the command in the chat's sandbox container. A Docker error is returned as is:
     /// the command never runs on this computer instead.
     async fn sandboxed_shell(&self, place: &Place, command: &str, secs: u64) -> Result<ToolOutput> {
@@ -932,6 +1025,29 @@ fn base_spec(name: &str) -> ToolSpec {
                     "max_results": {"type": "integer", "description": format!("Most matching lines to return (default {DEFAULT_GREP_RESULTS}).")}
                 },
                 "required": ["pattern"]
+            }),
+        ),
+        GIT_STATUS => (
+            "Show the git status of the workspace: the current branch, then the changed, staged \
+             and untracked files (git status --short --branch). Read-only; the workspace must \
+             be a git repository.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        GIT_DIFF => (
+            "Show the diff of the workspace's git repository: the unstaged changes, or with \
+             staged, the changes staged for the next commit. Optionally limit it to one path or \
+             compare against a branch, tag or commit. Untracked files are not in the diff; \
+             git_status lists them. Read-only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "staged": {"type": "boolean", "description": "Show the staged changes instead (default false)."},
+                    "path": {"type": "string", "description": "Only this file or folder, relative to the workspace."},
+                    "base": {"type": "string", "description": "Compare with this branch, tag or commit, e.g. \"main\", instead of the default comparison."}
+                }
             }),
         ),
         INFO => (
@@ -1420,5 +1536,222 @@ mod tests {
              terminal or input; use non-interactive flags."
         );
         assert!(!ws.prompt_note().contains("Linux container"));
+    }
+
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// Runs git in `dir` (with commit signing off); a failure fails the test.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// A workspace that is a git repository: the test files committed, then README.md changed
+    /// and new.txt added (untracked). `None` when git isn't installed.
+    fn git_workspace() -> Option<(tempdir::Dir, Workspace)> {
+        if !git_available() {
+            eprintln!("git isn't installed; skipping");
+            return None;
+        }
+        let (dir, ws) = temp_workspace();
+        git_in(&dir.0, &["init", "-q"]);
+        git_in(&dir.0, &["config", "user.name", "Test"]);
+        git_in(&dir.0, &["config", "user.email", "test@example.com"]);
+        git_in(&dir.0, &["add", "."]);
+        git_in(&dir.0, &["commit", "-qm", "init"]);
+        std::fs::write(dir.0.join("README.md"), "# Project\nchanged\n").unwrap();
+        std::fs::write(dir.0.join("new.txt"), "untracked\n").unwrap();
+        Some((dir, ws))
+    }
+
+    #[tokio::test]
+    async fn git_status_shows_the_branch_and_the_changed_files() {
+        let Some((_d, ws)) = git_workspace() else {
+            return;
+        };
+        let out = call(&ws, GIT_STATUS, json!({})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("## "), "{}", out.text);
+        assert!(out.text.contains(" M README.md"), "{}", out.text);
+        assert!(out.text.contains("?? new.txt"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn git_diff_shows_the_unstaged_change_but_not_untracked_files() {
+        let Some((_d, ws)) = git_workspace() else {
+            return;
+        };
+        let out = call(&ws, GIT_DIFF, json!({})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("+changed"), "{}", out.text);
+        assert!(!out.text.contains("untracked"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn git_diff_staged_shows_what_is_in_the_index() {
+        let Some((d, ws)) = git_workspace() else {
+            return;
+        };
+        let before = call(&ws, GIT_DIFF, json!({"staged": true})).await;
+        assert_eq!(before.text, "No changes.", "{}", before.text);
+        git_in(&d.0, &["add", "README.md"]);
+        let out = call(&ws, GIT_DIFF, json!({"staged": true})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("+changed"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn git_diff_path_limits_the_diff_and_works_for_deleted_files() {
+        let Some((d, ws)) = git_workspace() else {
+            return;
+        };
+        let out = call(&ws, GIT_DIFF, json!({"path": "README.md"})).await;
+        assert!(out.text.contains("+changed"), "{}", out.text);
+        assert!(!out.text.contains("fn main"), "{}", out.text);
+        std::fs::remove_file(d.0.join("src/main.rs")).unwrap();
+        let gone = call(&ws, GIT_DIFF, json!({"path": "src/main.rs"})).await;
+        assert!(!gone.is_error, "{}", gone.text);
+        assert!(gone.text.contains("-fn main()"), "{}", gone.text);
+    }
+
+    #[tokio::test]
+    async fn git_diff_refuses_paths_outside_the_workspace() {
+        let Some((_d, ws)) = git_workspace() else {
+            return;
+        };
+        let up = call(&ws, GIT_DIFF, json!({"path": "../secret"})).await;
+        assert!(up.is_error, "{}", up.text);
+        let elsewhere = std::env::temp_dir().join("cleanrstai-not-here");
+        let abs = call(&ws, GIT_DIFF, json!({"path": elsewhere.to_string_lossy()})).await;
+        assert!(abs.is_error, "{}", abs.text);
+        assert!(abs.text.contains("outside the workspace"), "{}", abs.text);
+    }
+
+    #[tokio::test]
+    async fn git_diff_refuses_a_base_that_is_an_option() {
+        let Some((d, ws)) = git_workspace() else {
+            return;
+        };
+        let out = call(&ws, GIT_DIFF, json!({"base": "--output=pwned.txt"})).await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("not an option"), "{}", out.text);
+        assert!(!d.0.join("pwned.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn git_diff_compares_against_a_base_ref() {
+        let Some((_d, ws)) = git_workspace() else {
+            return;
+        };
+        let out = call(&ws, GIT_DIFF, json!({"base": "HEAD"})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("+changed"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn git_status_outside_a_repository_says_so() {
+        if !git_available() {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let (_d, ws) = temp_workspace();
+        let out = call(&ws, GIT_STATUS, json!({})).await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("The workspace isn't a git repository"),
+            "{}",
+            out.text
+        );
+    }
+
+    /// A repository's own `core.fsmonitor` program runs on plain `git status`; the git tools
+    /// must not run it. Skipped when plain git doesn't run the program here, since then the
+    /// test would prove nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_status_does_not_run_the_repositorys_fsmonitor_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some((d, ws)) = git_workspace() else {
+            return;
+        };
+        let elsewhere = tempdir::Dir::new();
+        let marker = elsewhere.0.join("ran");
+        let script = d.0.join("fsmonitor.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_in(
+            &d.0,
+            &["config", "core.fsmonitor", &script.to_string_lossy()],
+        );
+
+        std::process::Command::new("git")
+            .args(["status", "--short"])
+            .current_dir(&d.0)
+            .output()
+            .unwrap();
+        if !marker.exists() {
+            eprintln!("plain git doesn't run core.fsmonitor here; skipping");
+            return;
+        }
+        std::fs::remove_file(&marker).unwrap();
+
+        let out = call(&ws, GIT_STATUS, json!({})).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            !marker.exists(),
+            "git_status ran the repository's fsmonitor"
+        );
+    }
+
+    /// A repository's clean, process and smudge filters run on plain `git status` and
+    /// `git diff` (see `git::test_support`). The git tools must not run them. Each check first
+    /// proves plain git runs the filters for that state, so the check can't pass vacuously.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_tools_do_not_run_the_repositorys_filter_drivers() {
+        use crate::git::test_support::{assert_plain_git_runs_filters, dirty, setup_filter_repo};
+        if !git_available() {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let (d, ws) = temp_workspace();
+        let markers = tempdir::Dir::new();
+        let repo = setup_filter_repo(&d.0, &markers.0);
+
+        assert_plain_git_runs_filters(&d.0, &repo);
+        dirty(&d.0, 'c');
+        let status = call(&ws, GIT_STATUS, json!({})).await;
+        assert!(!status.is_error, "{}", status.text);
+        assert!(status.text.contains(" M a.txt"), "{}", status.text);
+        assert!(
+            !repo.any_marker(),
+            "git_status ran a filter driver of the repository"
+        );
+
+        assert_plain_git_runs_filters(&d.0, &repo);
+        dirty(&d.0, 'e');
+        let diff = call(&ws, GIT_DIFF, json!({})).await;
+        assert!(!diff.is_error, "{}", diff.text);
+        assert!(diff.text.contains("+eeeeeeee"), "{}", diff.text);
+        assert!(
+            !repo.any_marker(),
+            "git_diff ran a filter driver of the repository"
+        );
     }
 }
