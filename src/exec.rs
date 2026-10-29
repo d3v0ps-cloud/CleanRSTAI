@@ -66,7 +66,7 @@ Options:
   --provider NAME     provider profile to use (default: the active one)
   --model MODEL       model to use instead of the provider's
   --workspace DIR     working folder for the file, search and shell tools
-  --mode MODE         read-only, default, auto or allow-all
+  --mode MODE         read-only, default, auto, allow-all or plan
                       (default: the mode in Settings → Background)
   --json              print one JSON object at the end instead of streaming
   --no-mcp            don't start MCP servers
@@ -174,8 +174,9 @@ pub fn parse_mode(value: &str) -> Result<ApprovalMode, String> {
         "default" => Ok(ApprovalMode::Default),
         "auto" => Ok(ApprovalMode::AutoWorkspace),
         "allow-all" => Ok(ApprovalMode::AllowAll),
+        "plan" => Ok(ApprovalMode::Plan),
         other => Err(format!(
-            "unknown mode '{other}': use read-only, default, auto or allow-all"
+            "unknown mode '{other}': use read-only, default, auto, allow-all or plan"
         )),
     }
 }
@@ -636,7 +637,9 @@ mod tests {
         assert_eq!(parse_mode("default"), Ok(ApprovalMode::Default));
         assert_eq!(parse_mode("auto"), Ok(ApprovalMode::AutoWorkspace));
         assert_eq!(parse_mode("allow-all"), Ok(ApprovalMode::AllowAll));
+        assert_eq!(parse_mode("plan"), Ok(ApprovalMode::Plan));
         assert!(parse_mode("Read Only").is_err());
+        assert!(parse_mode("Plan").is_err());
     }
 
     #[test]
@@ -836,6 +839,24 @@ mod tests {
             &settings, &conv, None, false, false, None,
         ));
         assert!(!req.general.auto_approve_tools);
+    }
+
+    #[test]
+    fn plan_mode_request_offers_no_writes() {
+        let dir = temp_folder();
+        let (req, _) = request_for(
+            "http://127.0.0.1:9",
+            parse_mode("plan").unwrap(),
+            Some(dir.clone()),
+        );
+        assert_eq!(req.approval_mode, ApprovalMode::Plan);
+        assert!(
+            !req.selection
+                .builtin_on(crate::tools::workspace::WRITE_FILE)
+        );
+        assert!(!req.selection.builtin_on(crate::tools::workspace::SHELL));
+        assert!(req.selection.builtin_on(crate::tools::workspace::READ_FILE));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

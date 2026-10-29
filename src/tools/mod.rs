@@ -191,10 +191,11 @@ impl ToolSelection {
         self
     }
 
-    /// This selection under a chat's permissions: Read only turns off the workspace tools
-    /// that write files or run commands (for subagents too, which start from this selection).
+    /// This selection under a chat's permissions: Read only (and Plan) turns off the workspace
+    /// tools that write files or run commands (for subagents too, which start from this
+    /// selection).
     pub fn with_mode(mut self, mode: crate::approval::ApprovalMode) -> Self {
-        if mode == crate::approval::ApprovalMode::ReadOnly {
+        if mode.is_read_only() {
             for (key, _) in workspace::TOOLS {
                 if workspace::changes_things(key) {
                     self.overrides

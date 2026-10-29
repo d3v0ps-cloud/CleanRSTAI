@@ -69,6 +69,10 @@ pub(crate) enum Action {
     OpenArtifactInBrowser(crate::artifacts::Artifact),
     /// Undo the file edits of the turn holding this message.
     UndoTurn(Uuid, usize),
+    /// Approve the plan a Plan chat's latest reply proposed (see `plan`).
+    ApprovePlan(Uuid),
+    /// Keep planning: focus the message box.
+    KeepPlanning,
 }
 
 pub struct ChatApp {
@@ -647,7 +651,8 @@ impl ChatApp {
         let overrides = self.tool_overrides().clone();
         let mut permissions = self.permissions();
         let permissions_before = permissions.clone();
-        let read_only = permissions.mode == crate::approval::ApprovalMode::ReadOnly;
+        let plan_on = self.settings.general.plan.enabled;
+        let read_only = permissions.mode.effective(plan_on).is_read_only();
         let sandbox_on = self.settings.sandbox.enabled;
         let workspace_dir = self
             .current
@@ -732,7 +737,12 @@ impl ChatApp {
                             .weak(),
                     );
                     ui.separator();
-                    crate::ui::widgets::permissions_picker(ui, &mut permissions, sandbox_on);
+                    crate::ui::widgets::permissions_picker(
+                        ui,
+                        &mut permissions,
+                        sandbox_on,
+                        plan_on,
+                    );
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .max_height(420.0)
@@ -1064,6 +1074,20 @@ impl ChatApp {
         conv.save();
         self.start_run_with(id, ctx, false, review);
         Ok(())
+    }
+
+    /// Approves the plan a Plan chat proposed: the chat switches to its after-approval mode and
+    /// the approval message starts a reply that carries the plan out.
+    fn approve_plan(&mut self, id: Uuid, ctx: &egui::Context) {
+        if self.busy(id) {
+            return;
+        }
+        let plan = self.settings.general.plan.clone();
+        let Some(conv) = self.conv_mut(id) else {
+            return;
+        };
+        let text = crate::plan::approve(conv, &plan);
+        let _ = self.send_message(id, text, Vec::new(), ctx);
     }
 
     fn start_run(&mut self, id: Uuid, ctx: &egui::Context) {
@@ -2557,7 +2581,7 @@ impl ChatApp {
                 Command::RunScheduledTask(task.id),
             ));
         }
-        for mode in crate::approval::ApprovalMode::ALL {
+        for mode in crate::approval::ApprovalMode::offered(self.settings.general.plan.enabled) {
             e.push(Entry::new(
                 icon::SHIELD,
                 format!("Permissions: {}", mode.label()),
@@ -3726,6 +3750,9 @@ impl ChatApp {
             .current
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
             .expect("not a fresh chat");
+        let plan_ready = !self.busy(conv.id)
+            && !self.errors.contains_key(&conv.id)
+            && crate::plan::awaiting_approval(conv, &self.settings.general.plan);
         chat_view::show(
             ui,
             &mut self.md_cache,
@@ -3745,6 +3772,7 @@ impl ChatApp {
                     .as_ref()
                     .filter(|v| v.conv == conv.id)
                     .map(|v| (v.message, v.index)),
+                plan_ready,
             },
         )
     }
@@ -3758,6 +3786,10 @@ impl ChatApp {
                 }
                 Action::Approve(conv, call_id, answer) => {
                     self.approve(conv, &call_id, answer);
+                }
+                Action::ApprovePlan(conv) => self.approve_plan(conv, ctx),
+                Action::KeepPlanning => {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                 }
                 Action::ViewImage(uri, bytes, name) => self.viewing = Some((uri, bytes, name)),
                 Action::SaveSvg(svg) => {
