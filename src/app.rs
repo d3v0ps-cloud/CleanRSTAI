@@ -112,8 +112,8 @@ pub struct ChatApp {
     draft_tool_overrides: ToolOverrides,
     /// Reasoning and sampling options picked before the chat exists.
     draft_model_options: crate::model_options::ModelOptions,
-    /// Tool permissions picked before the chat exists.
-    draft_permissions: crate::approval::ChatPermissions,
+    /// Tool permissions picked before the chat exists (`None`: Settings' default mode).
+    draft_permissions: Option<crate::approval::ChatPermissions>,
     /// A newer release found on GitHub.
     update: Option<crate::update::Release>,
     /// Progress of installing `update`, once the user starts it.
@@ -348,7 +348,7 @@ impl ChatApp {
             sidebar_open: true,
             draft_tool_overrides: ToolOverrides::default(),
             draft_model_options: Default::default(),
-            draft_permissions: Default::default(),
+            draft_permissions: None,
             update: None,
             update_install: None,
             window_icon_dark: None,
@@ -407,7 +407,8 @@ impl ChatApp {
         let id = match self.conversations.iter().find(|c| c.messages.is_empty()) {
             Some(c) => c.id,
             None => {
-                let c = Conversation::new();
+                let c =
+                    Conversation::with_permission_mode(self.settings.general.default_approval_mode);
                 let id = c.id;
                 self.conversations.insert(0, c);
                 id
@@ -419,8 +420,7 @@ impl ChatApp {
         {
             c.tool_overrides = draft;
         }
-        let permissions = std::mem::take(&mut self.draft_permissions);
-        if !permissions.is_default()
+        if let Some(permissions) = self.draft_permissions.take()
             && let Some(c) = self.conv_mut(id)
         {
             c.permissions = permissions;
@@ -434,11 +434,23 @@ impl ChatApp {
         id
     }
 
-    /// The current chat's tool permissions (or the draft ones).
-    fn permissions(&self) -> &crate::approval::ChatPermissions {
-        self.current
+    /// The current chat's tool permissions (or the draft ones; without a draft, the mode
+    /// Settings gives new chats).
+    fn permissions(&self) -> crate::approval::ChatPermissions {
+        match self
+            .current
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
-            .map_or(&self.draft_permissions, |c| &c.permissions)
+        {
+            Some(c) => c.permissions.clone(),
+            None => {
+                self.draft_permissions
+                    .clone()
+                    .unwrap_or_else(|| crate::approval::ChatPermissions {
+                        mode: self.settings.general.default_approval_mode,
+                        ..Default::default()
+                    })
+            }
+        }
     }
 
     fn set_permissions(&mut self, permissions: crate::approval::ChatPermissions) {
@@ -449,7 +461,7 @@ impl ChatApp {
                     conv.save();
                 }
             }
-            None => self.draft_permissions = permissions,
+            None => self.draft_permissions = Some(permissions),
         }
     }
 
@@ -581,7 +593,7 @@ impl ChatApp {
         use egui::containers::menu::{MenuButton, MenuConfig};
 
         let overrides = self.tool_overrides().clone();
-        let mut permissions = self.permissions().clone();
+        let mut permissions = self.permissions();
         let permissions_before = permissions.clone();
         let read_only = permissions.mode == crate::approval::ApprovalMode::ReadOnly;
         let sandbox_on = self.settings.sandbox.enabled;
@@ -2102,6 +2114,14 @@ impl ChatApp {
                 Command::CheckForUpdates,
             ),
         ];
+        for mode in crate::approval::ApprovalMode::ALL {
+            e.push(Entry::new(
+                icon::SHIELD,
+                format!("Permissions: {}", mode.label()),
+                "Chat",
+                Command::SetApprovalMode(mode),
+            ));
+        }
         for (i, p) in self.settings.providers.iter().enumerate() {
             e.push(Entry::new(
                 icon::SERVER,
@@ -2240,6 +2260,11 @@ impl ChatApp {
                         _ => SettingsAction::ImportConversations,
                     });
                 }
+            }
+            Command::SetApprovalMode(mode) => {
+                let mut permissions = self.permissions();
+                permissions.mode = mode;
+                self.set_permissions(permissions);
             }
             Command::CheckForUpdates => {
                 self.open_settings(Tab::General);

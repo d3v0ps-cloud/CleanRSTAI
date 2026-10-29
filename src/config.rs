@@ -808,6 +808,9 @@ pub struct GeneralSettings {
     pub send_with_enter: bool,
     /// Run MCP tool calls without asking first.
     pub auto_approve_tools: bool,
+    /// The permission mode new chats start in (each chat can change its own).
+    #[serde(default)]
+    pub default_approval_mode: crate::approval::ApprovalMode,
     pub max_tool_rounds: u32,
     pub tool_timeout_secs: u64,
     /// Show prefill/decode speed and token counts under each response.
@@ -855,6 +858,7 @@ impl Default for GeneralSettings {
             zoom: 1.0,
             send_with_enter: true,
             auto_approve_tools: false,
+            default_approval_mode: Default::default(),
             max_tool_rounds: 20,
             tool_timeout_secs: 120,
             show_stats: true,
@@ -1791,6 +1795,25 @@ mod tests {
         s.normalize();
         assert_eq!(s.general.review.provider_id, "");
         assert_eq!(s.general.review.max_diff_kb, 4096);
+    }
+
+    #[test]
+    fn default_approval_mode_defaults_and_round_trips() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            s.default_approval_mode,
+            crate::approval::ApprovalMode::Default
+        );
+        let g = GeneralSettings {
+            default_approval_mode: crate::approval::ApprovalMode::ReadOnly,
+            ..Default::default()
+        };
+        let back: GeneralSettings =
+            serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert_eq!(
+            back.default_approval_mode,
+            crate::approval::ApprovalMode::ReadOnly
+        );
     }
 
     #[test]

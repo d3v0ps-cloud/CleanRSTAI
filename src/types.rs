@@ -251,6 +251,13 @@ impl Conversation {
         }
     }
 
+    /// A new chat that starts in `mode` (Settings' default for new chats).
+    pub fn with_permission_mode(mode: crate::approval::ApprovalMode) -> Self {
+        let mut c = Self::new();
+        c.permissions.mode = mode;
+        c
+    }
+
     fn dir() -> PathBuf {
         crate::config::data_dir().join("conversations")
     }
@@ -317,6 +324,15 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_chat_takes_the_default_permission_mode() {
+        use crate::approval::ApprovalMode;
+        assert_eq!(Conversation::new().permissions.mode, ApprovalMode::Default);
+        let c = Conversation::with_permission_mode(ApprovalMode::AutoWorkspace);
+        assert_eq!(c.permissions.mode, ApprovalMode::AutoWorkspace);
+        assert!(!c.permissions.no_sandbox);
+    }
 
     #[test]
     fn auto_title_from_attachment() {

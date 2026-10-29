@@ -121,6 +121,9 @@ the change as a diff) and asks **Allow this tool to run?**:
 
 **Permissions** at the top of the tools menu picks how this chat's tool calls are approved,
 from the next call on. The tools menu icon turns the accent colour when a chat changes it.
+New chats start in the mode set under [Settings → General](../settings/general.html#tool-calls)
+(Default permissions unless changed). The ⌘K command palette has a "Permissions: …" entry for
+each mode, which sets the current chat's mode (or the next chat's, before a chat is open).
 
 | Mode | What happens |
 |---|---|

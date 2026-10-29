@@ -142,6 +142,10 @@ Links in a previewed page open in your browser, never in the panel.
 > This skips every approval, including web fetch and the workspace tools that write files and
 > run shell commands.
 
+**New chats start in** (default **Default permissions**) picks the [permission mode](../using/tools.html#permissions)
+a new chat starts in: Default permissions, Auto in workspace, Allow all or Read only. Each chat
+can change its own mode in the tools menu or with ⌘K; chats that already exist keep theirs.
+
 ## Max tool rounds
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.

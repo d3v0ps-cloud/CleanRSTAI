@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use super::settings::Tab;
 use super::theme::icon;
+use crate::approval::ApprovalMode;
 use crate::config::Theme;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +29,7 @@ pub enum Command {
     ImportSettings,
     ImportConversations,
     CheckForUpdates,
+    SetApprovalMode(ApprovalMode),
 }
 
 #[derive(Clone, Debug)]
