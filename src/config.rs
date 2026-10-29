@@ -696,6 +696,9 @@ pub struct BackgroundSettings {
     /// Stop a reply after this many minutes, counted from when it starts; 0 for no limit
     /// (0–1440).
     pub time_limit_mins: u32,
+    /// Closing the window hides it to the menu bar (macOS) or system tray (Windows) and keeps
+    /// replies and MCP connections running. Not available on Linux yet.
+    pub keep_running: bool,
 }
 
 /// Most replies that run at once.
@@ -710,6 +713,7 @@ impl Default for BackgroundSettings {
             notify_only_unfocused: true,
             max_parallel: 4,
             time_limit_mins: 0,
+            keep_running: false,
         }
     }
 }
@@ -919,6 +923,9 @@ pub struct GeneralSettings {
     /// Commands run around tool calls and when a reply is done (see `hooks`).
     #[serde(default)]
     pub hooks: crate::hooks::HookSettings,
+    /// Prompts that run on a schedule into a chat (Settings → Background).
+    #[serde(default)]
+    pub schedules: crate::schedule::ScheduleSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -954,6 +961,7 @@ impl Default for GeneralSettings {
             remote: RemoteSettings::default(),
             background: BackgroundSettings::default(),
             hooks: Default::default(),
+            schedules: Default::default(),
         }
     }
 }
@@ -1324,6 +1332,7 @@ impl Settings {
         bg.max_parallel = bg.max_parallel.clamp(1, MAX_PARALLEL_RUNS);
         bg.time_limit_mins = bg.time_limit_mins.min(MAX_TIME_LIMIT_MINS);
         crate::hooks::normalize(&mut self.general.hooks);
+        self.general.schedules.normalize();
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -1966,6 +1975,16 @@ mod tests {
         assert!(s.general.background.notify_only_unfocused);
         assert_eq!(s.general.background.max_parallel, 4);
         assert_eq!(s.general.background.time_limit_mins, 0);
+        assert!(!s.general.background.keep_running);
+
+        // Settings from before "keep running" existed (a block without the field) load it off.
+        let s: Settings = serde_json::from_str(
+            r#"{"general": {"background": {"notify": false, "time_limit_mins": 3}}}"#,
+        )
+        .unwrap();
+        assert!(!s.general.background.keep_running);
+        assert!(!s.general.background.notify);
+        assert_eq!(s.general.background.time_limit_mins, 3);
 
         // A partial block keeps the rest at their defaults.
         let s: Settings =

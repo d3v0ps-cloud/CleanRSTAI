@@ -59,6 +59,10 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   [Context & files](../settings/context.html#code-review), when you choose Review changes.
 - **Update checks** ask the [update source](../using/updates.html#update-source) for its latest
   release, at startup if enabled and when you check by hand.
+- **Scheduled tasks** send their prompt to the provider chosen for the task (or the active one)
+  while the app is open, without anyone watching. The prompt goes with the chat's messages and
+  tools as for any reply, and the tools may run as the task's approval mode allows (read only by
+  default). Settings → Background lists them; see [Scheduled tasks](../settings/background.html#scheduled-tasks).
 - **Notifications** when a reply finishes, fails or needs approval are handed to the system's notification service (Notification Center, Windows notifications, or D-Bus on Linux). They contain the chat's title and what happened, never the reply, and the system may show them on your other devices. Off in [Background](../settings/background.html) settings, or per chat.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
 - **Docker sandbox**: while it is on, the app runs the `docker` command on your computer to run

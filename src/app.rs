@@ -21,8 +21,10 @@ use crate::remote::{
     ApprovalView, AttachmentView, ChatSummary, ChatView, MessageView, ProviderView, RemoteCommand,
     RemoteEvent, RemoteStatus, StateView, ToolCallView,
 };
+use crate::schedule::{self, ScheduleSettings, ScheduledTask, Target};
 use crate::subagent::Delegation;
 use crate::tools::{self, ToolOverrides, ToolSelection};
+use crate::tray;
 use crate::types::{ChatMessage, Conversation, Role, fork_messages};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
@@ -87,6 +89,17 @@ pub struct ChatApp {
     unread: HashSet<Uuid>,
     /// Whether the window has focus, as of the last frame (for notifications).
     window_focused: bool,
+    /// The menu bar / system tray icon, while "Keep running" is on (see `tray.rs`).
+    tray: Option<tray::Tray>,
+    /// The tray icon was tried since the setting was last turned on, so a failed one isn't
+    /// retried every frame.
+    tray_tried: bool,
+    /// The window is hidden to the tray.
+    hidden_to_tray: bool,
+    /// Quit was chosen, or the app is restarting for an update: the next close ends the app.
+    quitting: bool,
+    /// The "still running" notification was sent in this app run.
+    tray_notified: bool,
     errors: HashMap<Uuid, String>,
     /// First name for the greeting, from the OS account.
     user_name: Option<String>,
@@ -166,6 +179,8 @@ pub struct ChatApp {
     /// When each chat was last notified to the browsers, to space out a streaming chat's
     /// notices (see `chat_notices`).
     remote_sent: HashMap<Uuid, Instant>,
+    /// When scheduled tasks were last checked (see `run_schedules`).
+    schedule_checked: Option<Instant>,
 }
 
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
@@ -275,6 +290,18 @@ impl FileSource {
     }
 }
 
+/// Copies a task's run times and save time from the live settings to the Settings draft (the
+/// draft keeps the user's other edits to it).
+fn copy_run_state(live: &ScheduleSettings, draft: &mut ScheduleSettings, id: Uuid) {
+    let Some(from) = live.tasks.iter().find(|t| t.id == id) else {
+        return;
+    };
+    if let Some(to) = draft.tasks.iter_mut().find(|t| t.id == id) {
+        to.last_run = from.last_run;
+        to.created = from.created;
+    }
+}
+
 /// "aaron.bolton" or "aaron" → "Aaron", from the OS account; `None` for root or when unset.
 fn user_first_name() -> Option<String> {
     let user = std::env::var("USER")
@@ -341,6 +368,11 @@ impl ChatApp {
             queue: RunQueue::default(),
             unread: HashSet::new(),
             window_focused: true,
+            tray: None,
+            tray_tried: false,
+            hidden_to_tray: false,
+            quitting: false,
+            tray_notified: false,
             errors: HashMap::new(),
             user_name: user_first_name(),
             always_allow: HashMap::new(),
@@ -386,6 +418,7 @@ impl ChatApp {
             remote_seen: HashMap::new(),
             remote_list_seen: 0,
             remote_sent: HashMap::new(),
+            schedule_checked: None,
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false, app.settings.general.update_url.clone());
@@ -1090,18 +1123,26 @@ impl ChatApp {
     /// With `review` the reply uses the review provider. When `max_parallel` replies are already
     /// running, or others are waiting, the chat joins the queue; `start_queued` starts it later.
     fn start_run_with(&mut self, id: Uuid, ctx: &egui::Context, compact_only: bool, review: bool) {
-        if self.busy(id) {
+        self.enqueue_run(
+            Queued {
+                conv: id,
+                compact_only,
+                review,
+                provider: None,
+            },
+            ctx,
+        );
+    }
+
+    /// Starts a queued reply now, or puts it in the queue when the parallel limit is reached.
+    fn enqueue_run(&mut self, item: Queued, ctx: &egui::Context) {
+        if self.busy(item.conv) {
             return;
         }
         let limit = self.settings.general.background.max_parallel as usize;
-        let item = Queued {
-            conv: id,
-            compact_only,
-            review,
-        };
         if !self.queue.is_empty() || self.runs.len() >= limit.max(1) {
             // The last reply's error would read as this one's while it waits.
-            self.errors.remove(&id);
+            self.errors.remove(&item.conv);
             self.queue.push(item);
             return;
         }
@@ -1124,6 +1165,7 @@ impl ChatApp {
             conv: id,
             compact_only,
             review,
+            provider: provider_id,
         } = item;
         let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
             return;
@@ -1136,7 +1178,11 @@ impl ChatApp {
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
         let from = marker.map_or(0, |i| i + 1);
-        let chat_provider = self.settings.provider().clone();
+        let chat_provider = provider_id
+            .as_deref()
+            .and_then(|pid| self.settings.providers.iter().find(|p| p.id == pid))
+            .unwrap_or_else(|| self.settings.provider())
+            .clone();
         let provider = if review {
             self.settings.review_provider(&chat_provider)
         } else {
@@ -1728,6 +1774,155 @@ impl ChatApp {
         if let Some(next) = next {
             ctx.request_repaint_after(next);
         }
+    }
+
+    /// Starts the scheduled tasks that are due, checking at most every `schedule::CHECK_EVERY`
+    /// (and asking for a repaint then, so idle or hidden windows still check). Run times are
+    /// saved with the settings, so they survive a restart.
+    fn run_schedules(&mut self, ctx: &egui::Context) {
+        let schedules = &self.settings.general.schedules;
+        if !schedules.enabled || !schedules.tasks.iter().any(|t| t.enabled) {
+            return;
+        }
+        ctx.request_repaint_after(schedule::CHECK_EVERY);
+        if self
+            .schedule_checked
+            .is_some_and(|at| at.elapsed() < schedule::CHECK_EVERY)
+        {
+            return;
+        }
+        self.schedule_checked = Some(Instant::now());
+        let tick = schedule::check(
+            &mut self.settings.general.schedules.tasks,
+            chrono::Utc::now(),
+        );
+        if tick.fire.is_empty() && tick.touched.is_empty() {
+            return;
+        }
+        let mut sui = self.settings_ui.take();
+        for id in &tick.fire {
+            let Some(task) = self
+                .settings
+                .general
+                .schedules
+                .tasks
+                .iter()
+                .find(|t| t.id == *id)
+                .cloned()
+            else {
+                continue;
+            };
+            let draft = sui.as_mut().map(|s| &mut s.draft.general.schedules);
+            self.run_task(&task, ctx, draft);
+        }
+        if let Some(s) = sui.as_mut() {
+            for id in &tick.touched {
+                copy_run_state(
+                    &self.settings.general.schedules,
+                    &mut s.draft.general.schedules,
+                    *id,
+                );
+            }
+        }
+        self.settings_ui = sui;
+        self.save_settings();
+    }
+
+    /// Runs a task now, as the settings or the command palette asks: its last run becomes now.
+    /// `draft` is the open Settings draft's schedules, which get the same run times.
+    fn run_now(
+        &mut self,
+        task: ScheduledTask,
+        ctx: &egui::Context,
+        mut draft: Option<&mut ScheduleSettings>,
+    ) {
+        let now = chrono::Utc::now();
+        if let Some(live) = self
+            .settings
+            .general
+            .schedules
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == task.id)
+        {
+            live.last_run = Some(now);
+            live.created.get_or_insert(now);
+        }
+        // The task as given: from Settings, its draft, so unsaved edits run.
+        self.run_task(&task, ctx, draft.as_deref_mut());
+        if let Some(draft) = draft {
+            copy_run_state(&self.settings.general.schedules, draft, task.id);
+        }
+        self.save_settings();
+    }
+
+    /// Starts one run of a task: a new chat (or the task's own), with its prompt, through the
+    /// reply queue. A task whose chat was deleted is switched off, and a chat still replying
+    /// skips this run; both say so in the notice. `draft` is the open Settings draft's schedules,
+    /// to switch off the same task there.
+    fn run_task(
+        &mut self,
+        task: &ScheduledTask,
+        ctx: &egui::Context,
+        draft: Option<&mut ScheduleSettings>,
+    ) {
+        let id = match task.target {
+            Target::NewChat => {
+                let mut conv = Conversation::with_permission_mode(task.approval_mode);
+                conv.title = schedule::chat_title(&task.name, chrono::Local::now());
+                conv.workspace = task.workspace.clone();
+                let id = conv.id;
+                self.conversations.insert(0, conv);
+                id
+            }
+            Target::Chat(id) => {
+                if self.conversations.iter().all(|c| c.id != id) {
+                    if let Some(live) = self
+                        .settings
+                        .general
+                        .schedules
+                        .tasks
+                        .iter_mut()
+                        .find(|t| t.id == task.id)
+                    {
+                        live.enabled = false;
+                    }
+                    if let Some(d) =
+                        draft.and_then(|d| d.tasks.iter_mut().find(|t| t.id == task.id))
+                    {
+                        d.enabled = false;
+                    }
+                    self.save_settings();
+                    self.notice = Some(schedule::chat_gone_message(&task.name));
+                    return;
+                }
+                if self.busy(id) {
+                    self.notice = Some(schedule::chat_busy_message(&task.name));
+                    return;
+                }
+                if let Some(conv) = self.conv_mut(id) {
+                    conv.permissions.mode = task.approval_mode;
+                }
+                id
+            }
+        };
+        let Some(conv) = self.conv_mut(id) else {
+            return;
+        };
+        conv.messages
+            .push(ChatMessage::new(Role::User, task.prompt.clone()));
+        conv.auto_title();
+        conv.updated_at = chrono::Utc::now();
+        conv.save();
+        self.enqueue_run(
+            Queued {
+                conv: id,
+                compact_only: false,
+                review: false,
+                provider: task.provider.clone(),
+            },
+            ctx,
+        );
     }
 
     /// When a reply in the open chat made an artifact, show the newest in the panel.
@@ -2389,6 +2584,14 @@ impl ChatApp {
                 Command::CheckForUpdates,
             ),
         ];
+        for task in &self.settings.general.schedules.tasks {
+            e.push(Entry::new(
+                icon::CLOCK,
+                format!("Run scheduled task: {}", task.name),
+                "Schedule",
+                Command::RunScheduledTask(task.id),
+            ));
+        }
         for mode in crate::approval::ApprovalMode::ALL {
             e.push(Entry::new(
                 icon::SHIELD,
@@ -2443,6 +2646,25 @@ impl ChatApp {
                 self.current = Some(id);
             }
             Command::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
+            Command::RunScheduledTask(id) => {
+                if let Some(task) = self
+                    .settings
+                    .general
+                    .schedules
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .cloned()
+                {
+                    let mut sui = self.settings_ui.take();
+                    self.run_now(
+                        task,
+                        ctx,
+                        sui.as_mut().map(|s| &mut s.draft.general.schedules),
+                    );
+                    self.settings_ui = sui;
+                }
+            }
             Command::OpenSettings(tab) => self.open_settings(tab),
             Command::UseProvider(i) => {
                 self.settings.active_provider = i;
@@ -2630,6 +2852,8 @@ impl ChatApp {
                             if ui.add(link(label)).on_hover_text(hover).clicked() {
                                 match crate::update::relaunch(target) {
                                     Ok(()) => {
+                                        // The close must end the app, not hide it to the tray.
+                                        self.quitting = true;
                                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)
                                     }
                                     Err(e) => self.notice = Some(format!("{e:#}")),
@@ -4152,12 +4376,71 @@ fn run_export(kind: &str, doc: &serde_json::Value) -> Option<Result<String, Stri
     })
 }
 
+impl ChatApp {
+    /// Keeps the tray icon in step with "Keep running" (Settings → Background), hides the window
+    /// instead of closing it while that is on, and acts on the tray's clicks and menu choices.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        let keep = self.settings.general.background.keep_running && tray::SUPPORTED;
+        if keep {
+            if self.tray.is_none() && !self.tray_tried {
+                self.tray_tried = true;
+                self.tray = tray::Tray::new(self.window_icon_dark.unwrap_or(false));
+            }
+        } else {
+            self.tray_tried = false;
+            if self.tray.take().is_some() && self.hidden_to_tray {
+                // Turned off while hidden: show the window again, or nothing could.
+                self.show_from_tray(ctx);
+            }
+        }
+
+        // Quit and the update restart arrive as a close request too (egui sends its Close
+        // command as one), so `on_close` lets those through.
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested
+            && tray::on_close(keep, self.tray.is_some(), self.quitting) == tray::CloseAction::Hide
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden_to_tray = true;
+            if !self.tray_notified {
+                self.tray_notified = true;
+                background::notify(&self.rt, tray::hidden_notice().to_owned());
+            }
+        }
+
+        let commands = self.tray.as_ref().map(|t| t.poll()).unwrap_or_default();
+        for command in commands {
+            match command {
+                tray::Command::Show => self.show_from_tray(ctx),
+                tray::Command::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
+        if self.hidden_to_tray {
+            // A hidden window may not be redrawn, so wake up now and then to poll the tray.
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
+    fn show_from_tray(&mut self, ctx: &egui::Context) {
+        self.hidden_to_tray = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
+
 impl eframe::App for ChatApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.window_focused = ctx.input(|i| i.focused);
+        self.handle_tray(ctx);
         self.handle_events();
         self.reap_finished_runs();
         self.check_time_limits(ctx);
+        self.run_schedules(ctx);
         self.start_queued(ctx);
         if let Some(id) = self.current {
             self.unread.remove(&id);
@@ -4300,13 +4583,25 @@ impl eframe::App for ChatApp {
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
             let tunnel = self.tunnel_status();
+            let chats: Vec<(Uuid, String)> = self
+                .conversations
+                .iter()
+                .map(|c| (c.id, c.title.clone()))
+                .collect();
             let mut keep = true;
             let mut actions = sui.take_queued();
             actions.extend(
                 egui::CentralPanel::no_frame()
                     .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
                     .show(ui, |ui| {
-                        sui.show(ui, &self.settings, &views, &self.remote_status, &tunnel)
+                        sui.show(
+                            ui,
+                            &self.settings,
+                            &views,
+                            &self.remote_status,
+                            &tunnel,
+                            &chats,
+                        )
                     })
                     .inner,
             );
@@ -4319,6 +4614,9 @@ impl eframe::App for ChatApp {
                         sui.draft.active_provider = self.settings.active_provider;
                     }
                     SettingsAction::Close => keep = false,
+                    SettingsAction::RunScheduledTask(task) => {
+                        self.run_now(*task, &ctx, Some(&mut sui.draft.general.schedules));
+                    }
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,
                     SettingsAction::CheckSandbox(cfg) => {

@@ -24,6 +24,7 @@ mod native;
 mod remote;
 mod review;
 mod sandbox;
+mod schedule;
 mod secrets;
 mod servers;
 mod skills;
@@ -33,6 +34,7 @@ mod subagent;
 #[cfg(test)]
 mod testutil;
 mod tools;
+mod tray;
 mod types;
 mod ui;
 mod update;
