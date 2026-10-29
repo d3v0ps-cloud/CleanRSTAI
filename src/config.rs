@@ -710,7 +710,8 @@ impl Default for FileEditSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct HtmlPreviewSettings {
-    /// Show web pages live in the panel (where the platform has a web view).
+    /// Show web pages live: in the panel (a web view on macOS and Windows) or in their own
+    /// window (Linux, with WebKitGTK).
     pub enabled: bool,
     /// Let the page run its scripts.
     pub scripts: bool,

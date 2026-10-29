@@ -66,9 +66,13 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
+# Linux loads WebKitGTK and GTK at run time (the release builds link neither), so the live
+# preview needs only this pure Rust crate; see src/ui/linux_preview.rs.
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
+
 # The live preview of web page artifacts: WKWebView on macOS, WebView2 on Windows. Linux has
-# no preview (WebKitGTK would need GTK's event loop and system libraries the release builds
-# don't link), so web pages open in the browser there.
+# its own window (src/ui/linux_preview.rs) when WebKitGTK is installed.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 wry = { version = "0.57", default-features = false }
 # The menu bar (macOS) or system tray (Windows) icon for "Keep running when the window is closed".

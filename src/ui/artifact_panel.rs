@@ -213,7 +213,8 @@ pub fn toggle_button(ui: &mut egui::Ui, open: bool, enabled: bool) -> egui::Resp
 
 /// The panel's contents. Asks to close the panel when the chat has no artifacts left. With
 /// `live_html`, a web page's Preview tab leaves its area empty and returns it with the page,
-/// for the web view laid over it.
+/// for the web view laid over it. `own_window` is set where a live preview opens in a window of
+/// its own (Linux, while the preview is on): whether that window is open now.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -223,6 +224,7 @@ pub fn show(
     artifacts: &[Artifact],
     remote_images: bool,
     live_html: Result<(), &str>,
+    own_window: Option<bool>,
     save_as: SaveAsSettings,
     actions: &mut Vec<Action>,
 ) -> Option<(egui::Rect, String)> {
@@ -347,6 +349,20 @@ pub fn show(
     {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(why).small().color(p.pencil));
+            if let Some(open) = own_window {
+                let hint = if open {
+                    "Its window is open: this brings it to the front"
+                } else {
+                    "Show the page in a window of its own"
+                };
+                if ui
+                    .small_button("Open live preview")
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    actions.push(Action::OpenLivePreview(a.clone()));
+                }
+            }
             if ui.small_button("Open in browser").clicked() {
                 actions.push(Action::OpenArtifactInBrowser(a.clone()));
             }

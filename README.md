@@ -186,12 +186,12 @@ too, as an installer and a portable `.exe`.
   show as links unless you turn on **Load web images in replies** in Settings → General.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
-  save; the reply keeps a link that expands them inline.
+  save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
+  live in the panel, and on Linux in a window of their own when WebKitGTK is installed (scripts
+  on, network off by default; both switchable), and any page can open in your browser.
 - **Save as files**: a reply or a Markdown, code or CSV artifact can be saved as a Word document,
   a PDF or an Excel workbook (one sheet per table, numbers as numbers), each format switched on
-  or off in Settings → General. On macOS and Windows web pages run
-  live in the panel (scripts on, network off by default; both switchable), and any page can
-  open in your browser.
+  or off in Settings → General.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to
