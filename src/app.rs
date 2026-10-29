@@ -23,6 +23,7 @@ use crate::remote::{
 };
 use crate::subagent::Delegation;
 use crate::tools::{self, ToolOverrides, ToolSelection};
+use crate::tray;
 use crate::types::{ChatMessage, Conversation, Role, fork_messages};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
@@ -87,6 +88,17 @@ pub struct ChatApp {
     unread: HashSet<Uuid>,
     /// Whether the window has focus, as of the last frame (for notifications).
     window_focused: bool,
+    /// The menu bar / system tray icon, while "Keep running" is on (see `tray.rs`).
+    tray: Option<tray::Tray>,
+    /// The tray icon was tried since the setting was last turned on, so a failed one isn't
+    /// retried every frame.
+    tray_tried: bool,
+    /// The window is hidden to the tray.
+    hidden_to_tray: bool,
+    /// Quit was chosen, or the app is restarting for an update: the next close ends the app.
+    quitting: bool,
+    /// The "still running" notification was sent in this app run.
+    tray_notified: bool,
     errors: HashMap<Uuid, String>,
     /// First name for the greeting, from the OS account.
     user_name: Option<String>,
@@ -341,6 +353,11 @@ impl ChatApp {
             queue: RunQueue::default(),
             unread: HashSet::new(),
             window_focused: true,
+            tray: None,
+            tray_tried: false,
+            hidden_to_tray: false,
+            quitting: false,
+            tray_notified: false,
             errors: HashMap::new(),
             user_name: user_first_name(),
             always_allow: HashMap::new(),
@@ -2625,6 +2642,8 @@ impl ChatApp {
                             if ui.add(link(label)).on_hover_text(hover).clicked() {
                                 match crate::update::relaunch(target) {
                                     Ok(()) => {
+                                        // The close must end the app, not hide it to the tray.
+                                        self.quitting = true;
                                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)
                                     }
                                     Err(e) => self.notice = Some(format!("{e:#}")),
@@ -4147,9 +4166,67 @@ fn run_export(kind: &str, doc: &serde_json::Value) -> Option<Result<String, Stri
     })
 }
 
+impl ChatApp {
+    /// Keeps the tray icon in step with "Keep running" (Settings → Background), hides the window
+    /// instead of closing it while that is on, and acts on the tray's clicks and menu choices.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        let keep = self.settings.general.background.keep_running && tray::SUPPORTED;
+        if keep {
+            if self.tray.is_none() && !self.tray_tried {
+                self.tray_tried = true;
+                self.tray = tray::Tray::new(self.window_icon_dark.unwrap_or(false));
+            }
+        } else {
+            self.tray_tried = false;
+            if self.tray.take().is_some() && self.hidden_to_tray {
+                // Turned off while hidden: show the window again, or nothing could.
+                self.show_from_tray(ctx);
+            }
+        }
+
+        // Quit and the update restart arrive as a close request too (egui sends its Close
+        // command as one), so `on_close` lets those through.
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested
+            && tray::on_close(keep, self.tray.is_some(), self.quitting) == tray::CloseAction::Hide
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden_to_tray = true;
+            if !self.tray_notified {
+                self.tray_notified = true;
+                background::notify(&self.rt, tray::hidden_notice().to_owned());
+            }
+        }
+
+        let commands = self.tray.as_ref().map(|t| t.poll()).unwrap_or_default();
+        for command in commands {
+            match command {
+                tray::Command::Show => self.show_from_tray(ctx),
+                tray::Command::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
+        if self.hidden_to_tray {
+            // A hidden window may not be redrawn, so wake up now and then to poll the tray.
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
+    fn show_from_tray(&mut self, ctx: &egui::Context) {
+        self.hidden_to_tray = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
+
 impl eframe::App for ChatApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.window_focused = ctx.input(|i| i.focused);
+        self.handle_tray(ctx);
         self.handle_events();
         self.reap_finished_runs();
         self.check_time_limits(ctx);

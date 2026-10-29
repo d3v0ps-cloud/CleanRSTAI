@@ -696,6 +696,9 @@ pub struct BackgroundSettings {
     /// Stop a reply after this many minutes, counted from when it starts; 0 for no limit
     /// (0–1440).
     pub time_limit_mins: u32,
+    /// Closing the window hides it to the menu bar (macOS) or system tray (Windows) and keeps
+    /// replies and MCP connections running. Not available on Linux yet.
+    pub keep_running: bool,
 }
 
 /// Most replies that run at once.
@@ -710,6 +713,7 @@ impl Default for BackgroundSettings {
             notify_only_unfocused: true,
             max_parallel: 4,
             time_limit_mins: 0,
+            keep_running: false,
         }
     }
 }
@@ -1947,6 +1951,16 @@ mod tests {
         assert!(s.general.background.notify_only_unfocused);
         assert_eq!(s.general.background.max_parallel, 4);
         assert_eq!(s.general.background.time_limit_mins, 0);
+        assert!(!s.general.background.keep_running);
+
+        // Settings from before "keep running" existed (a block without the field) load it off.
+        let s: Settings = serde_json::from_str(
+            r#"{"general": {"background": {"notify": false, "time_limit_mins": 3}}}"#,
+        )
+        .unwrap();
+        assert!(!s.general.background.keep_running);
+        assert!(!s.general.background.notify);
+        assert_eq!(s.general.background.time_limit_mins, 3);
 
         // A partial block keeps the rest at their defaults.
         let s: Settings =

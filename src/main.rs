@@ -32,6 +32,7 @@ mod subagent;
 #[cfg(test)]
 mod testutil;
 mod tools;
+mod tray;
 mod types;
 mod ui;
 mod update;
