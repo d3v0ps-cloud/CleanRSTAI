@@ -18,6 +18,10 @@ default.
 | **Web fetch** | Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch. |
 | **Web search** | Searches the web with the service below (or the provider's own search, when **Search with** says so) and lists the results (title, address, snippet), so the model can read the useful pages with web fetch. Asks for approval before each search by default. |
 | **Workspace tools** | When a chat has a working folder: `read_file`, `file_glob_search`, `grep_search`, `get_info`, `git_status` and `git_diff` run freely inside it; `write_file`, `edit_file` and `exec_shell_command` ask for approval. Paths can't leave the folder. |
+| **Commit (git_commit)** | Off by default. Lets the model commit the folder's changes, or chosen files, to its git repository as one local commit. Every commit asks for approval, even in Auto in workspace mode; nothing is pushed and git hooks don't run. See [Commits](../using/tools.html#commits). |
+
+**Allow signed commits** (under the commit switch) lets `git_commit` sign its commits when the
+repository's git config asks for signing, and gpg may then prompt. Off, commits are never signed.
 
 ## Let web fetch reach this computer and private networks
 

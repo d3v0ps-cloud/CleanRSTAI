@@ -337,6 +337,14 @@ pub struct BuiltinToolSettings {
     pub fetch_private_networks: bool,
     /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
     pub workspace: bool,
+    /// Let the model commit a chat's workspace changes to its git repository, after approval.
+    /// Off by default; it is also a per-chat switch.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub git_commit: bool,
+    /// Let `git_commit` sign commits when the repository's git config asks for signing (gpg
+    /// may then prompt, and a failed signature fails the commit). Off: commits are never signed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub allow_signing: bool,
     /// Search the web through the service in `search`.
     pub web_search: bool,
     pub search: WebSearchSettings,
@@ -351,6 +359,8 @@ impl Default for BuiltinToolSettings {
             fetch: true,
             fetch_private_networks: false,
             workspace: true,
+            git_commit: false,
+            allow_signing: false,
             web_search: true,
             search: WebSearchSettings::default(),
         }
@@ -700,7 +710,8 @@ impl Default for FileEditSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct HtmlPreviewSettings {
-    /// Show web pages live in the panel (where the platform has a web view).
+    /// Show web pages live: in the panel (a web view on macOS and Windows) or in their own
+    /// window (Linux, with WebKitGTK).
     pub enabled: bool,
     /// Let the page run its scripts.
     pub scripts: bool,
@@ -889,6 +900,41 @@ pub struct TunnelSettings {
     pub hostname: String,
     /// Path to `cloudflared`; empty finds it on `PATH`.
     pub cloudflared: String,
+    /// Cloudflare Access in front of a named tunnel's hostname (see `remote::access`).
+    pub access: AccessSettings,
+}
+
+/// Cloudflare Access (Zero Trust) in front of a named tunnel's hostname. Access signs each
+/// request it lets through; the app checks that signature, so a request that skips Access is
+/// refused. Only named tunnels: a quick tunnel's address can't be put behind an application.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AccessSettings {
+    /// Require a valid Access token for requests that arrive through the tunnel's hostname.
+    pub enabled: bool,
+    /// The team domain, e.g. `myteam.cloudflareaccess.com`. A pasted `https://` is dropped.
+    pub team_domain: String,
+    /// The application's audience (AUD) tag from the Access application's overview.
+    pub audience: String,
+    /// A valid Access token also signs the browser in, so the app password is not asked for.
+    pub skip_password: bool,
+}
+
+/// The host name of a pasted team domain: trimmed, lowercase, without `https://` or a trailing
+/// `/`. `MyTeam.cloudflareaccess.com/` gives `myteam.cloudflareaccess.com`.
+pub fn team_host(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    let host = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    host.trim_end_matches('/').to_owned()
+}
+
+/// Trims the Access fields and keeps only the host name of a pasted team URL.
+fn normalize_access(access: &mut AccessSettings) {
+    access.team_domain = team_host(&access.team_domain);
+    access.audience = access.audience.trim().to_owned();
 }
 
 impl Default for RemoteSettings {
@@ -948,6 +994,9 @@ pub struct GeneralSettings {
     pub review: ReviewSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
+    /// Reading scanned PDFs (no text layer) with a vision model or tesseract.
+    #[serde(default)]
+    pub ocr: crate::ocr::OcrSettings,
     /// Slash commands: saved prompts typed as `/name` (see `commands`).
     pub slash_commands: SlashCommandSettings,
     /// Skills the model loads on demand (see `skills`).
@@ -966,12 +1015,40 @@ pub struct GeneralSettings {
     /// Prompts that run on a schedule into a chat (Settings → Background).
     #[serde(default)]
     pub schedules: crate::schedule::ScheduleSettings,
+    /// Projects: chats grouped with shared instructions and files (see `projects`).
+    #[serde(default)]
+    pub projects: crate::projects::ProjectSettings,
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
     /// Voice input (dictation into the message box) and reading replies aloud (see `voice`).
     #[serde(default)]
     pub voice: crate::voice::VoiceSettings,
+    /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
+    #[serde(default)]
+    pub save_as: SaveAsSettings,
+}
+
+/// Which file types "Save as…" offers for replies and artifacts (Settings → General).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SaveAsSettings {
+    /// Word documents (.docx).
+    pub docx: bool,
+    /// PDF files.
+    pub pdf: bool,
+    /// Excel workbooks (.xlsx), for replies with a table and CSV or TSV artifacts.
+    pub xlsx: bool,
+}
+
+impl Default for SaveAsSettings {
+    fn default() -> Self {
+        Self {
+            docx: true,
+            pdf: true,
+            xlsx: true,
+        }
+    }
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -1002,6 +1079,7 @@ impl Default for GeneralSettings {
             instructions: InstructionSettings::default(),
             review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
+            ocr: Default::default(),
             slash_commands: SlashCommandSettings::default(),
             skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
@@ -1009,6 +1087,8 @@ impl Default for GeneralSettings {
             exec: Default::default(),
             hooks: Default::default(),
             schedules: Default::default(),
+            save_as: Default::default(),
+            projects: Default::default(),
             plan: Default::default(),
             voice: Default::default(),
         }
@@ -1332,6 +1412,9 @@ impl Settings {
         if !self.providers.iter().any(|p| p.id == c.provider_id) {
             c.provider_id.clear();
         }
+        self.general
+            .ocr
+            .normalize(|id| self.providers.iter().any(|p| p.id == id));
         let rv = &mut self.general.review;
         rv.max_diff_kb = rv.max_diff_kb.clamp(16, 4096);
         rv.base_branch = rv.base_branch.trim().to_owned();
@@ -1391,6 +1474,15 @@ impl Settings {
             .min(crate::exec::MAX_MCP_WAIT_SECS);
         crate::hooks::normalize(&mut self.general.hooks);
         self.general.schedules.normalize();
+        self.general.projects.normalize();
+        if !self
+            .providers
+            .iter()
+            .any(|p| Some(&p.id) == self.general.projects.default_provider.as_ref())
+        {
+            self.general.projects.default_provider = None;
+        }
+        normalize_access(&mut self.general.remote.tunnel.access);
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -2033,11 +2125,77 @@ mod tests {
     }
 
     #[test]
+    fn access_settings_load_from_older_files_and_normalize() {
+        let old: Settings = serde_json::from_str(
+            r#"{"general": {"remote": {"tunnel": {"enabled": true, "mode": "named"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.general.remote.tunnel.access, AccessSettings::default());
+
+        let mut s = Settings::default();
+        s.general.remote.tunnel.access = AccessSettings {
+            enabled: true,
+            team_domain: "  https://MyTeam.cloudflareaccess.com/ ".into(),
+            audience: " abc123 ".into(),
+            skip_password: true,
+        };
+        s.normalize();
+        let access = &s.general.remote.tunnel.access;
+        assert_eq!(access.team_domain, "myteam.cloudflareaccess.com");
+        assert_eq!(access.audience, "abc123");
+        assert!(access.enabled && access.skip_password);
+    }
+
+    #[test]
     fn remote_port_zero_normalizes_to_default() {
         let mut s = Settings::default();
         s.general.remote.port = 0;
         s.normalize();
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn git_commit_settings_default_off_and_load_from_older_files() {
+        // Settings written before commits existed load with both switches off.
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"builtin_tools": {"workspace": true}}}"#).unwrap();
+        assert!(!s.general.builtin_tools.git_commit);
+        assert!(!s.general.builtin_tools.allow_signing);
+        assert!(s.general.builtin_tools.workspace);
+        // Off values aren't written, so an untouched file keeps its shape.
+        let json = serde_json::to_string(&BuiltinToolSettings::default()).unwrap();
+        assert!(
+            !json.contains("git_commit") && !json.contains("allow_signing"),
+            "{json}"
+        );
+        let on = BuiltinToolSettings {
+            git_commit: true,
+            allow_signing: true,
+            ..Default::default()
+        };
+        let back: BuiltinToolSettings =
+            serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert_eq!(back, on);
+    }
+
+    #[test]
+    fn project_settings_load_from_older_files_and_normalise() {
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.projects, crate::projects::ProjectSettings::default());
+        assert!(old.projects.enabled);
+        assert_eq!(old.projects.max_files_kb, 256);
+
+        let mut s = Settings::default();
+        s.general.projects.max_files_kb = 1;
+        s.general.projects.default_provider = Some("gone".into());
+        s.normalize();
+        assert_eq!(s.general.projects.max_files_kb, 16);
+        assert_eq!(s.general.projects.default_provider, None);
+
+        let id = s.providers[0].id.clone();
+        s.general.projects.default_provider = Some(id.clone());
+        s.normalize();
+        assert_eq!(s.general.projects.default_provider, Some(id));
     }
 
     #[test]

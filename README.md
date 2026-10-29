@@ -83,6 +83,9 @@ too, as an installer and a portable `.exe`.
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
   **Settings → Built-in Tools** or per chat.
+  - **Commits**: with **Commit (git_commit)** on (off by default), the model can commit the
+    folder's changes, or chosen files, to its git repository locally. Every commit asks for
+    approval, nothing is pushed, and a **Commit…** dialog does the same by hand.
   - **Project instructions**: an `AGENTS.md` or `CLAUDE.md` in the folder (names, order,
     parent folders and size limit are configurable) goes into the system prompt.
   - **Diffs and undo**: `write_file` and `edit_file` show their change as a diff on the
@@ -101,6 +104,9 @@ too, as an installer and a portable `.exe`.
   call), after one (the output is added to the result), or when a reply is done (the output is
   a notice), with a tool-name filter, a timeout and a per-chat switch. They run in the chat's
   folder, or in its Docker sandbox when that is on.
+- **Projects**: group chats in the sidebar. A project's instructions and reference files go to
+  every chat in it, and its folder, provider, model, tool switches and permission mode are what
+  a new chat starts with. Export a project with its chats to one file, and import it again.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
@@ -184,8 +190,11 @@ too, as an installer and a portable `.exe`.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
   save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
-  live in the panel (scripts on, network off by default; both switchable), and any page can
-  open in your browser.
+  live in the panel, and on Linux in a window of their own when WebKitGTK is installed (scripts
+  on, network off by default; both switchable), and any page can open in your browser.
+- **Save as files**: a reply or a Markdown, code or CSV artifact can be saved as a Word document,
+  a PDF or an Excel workbook (one sheet per table, numbers as numbers), each format switched on
+  or off in Settings → General.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to
@@ -193,8 +202,8 @@ too, as an installer and a portable `.exe`.
   - **Documents** are sent as their text: PDF (`.pdf`), Word (`.docx`, `.doc`), Excel
     (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`), PowerPoint (`.pptx`, `.ppt`, with speaker notes),
     OpenDocument (`.odt`, `.ods`, `.odp`) and RTF. Spreadsheets become one CSV block per
-    sheet and slides are numbered. Scanned PDFs without a text layer and password-protected
-    files can't be read.
+    sheet and slides are numbered. Scanned PDFs without a text layer are read by OCR when it is
+    on (a vision model, or Tesseract on your computer); password-protected files can't be read.
   - **Text files** of any kind (code, Markdown, CSV, JSON, logs…) are included inline, in
     UTF-8, UTF-16 or Windows-1252.
 
@@ -217,6 +226,7 @@ too, as an installer and a portable `.exe`.
   from anywhere through a Cloudflare Tunnel that the app runs for you (a quick
   `trycloudflare.com` address, or your own domain with a tunnel you set up in Cloudflare). API
   keys and MCP secrets stay on this computer, and the app must stay open. See
+  A named tunnel can also require Cloudflare Access sign-in before the login.
   [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html) and
   [Cloudflare Tunnel](https://d3v0ps-cloud.github.io/CleanRSTAI/using/cloudflare-tunnel.html).
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
@@ -346,12 +356,12 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
 | Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
-| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
+| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), projects (on or off, file size limit, and the defaults for new projects), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
 | Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up); command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
@@ -485,6 +495,8 @@ src/
   secrets.rs      OS keychain storage for API keys and tokens
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
+  ocr.rs          OCR for scanned PDFs: page images, a vision model or Tesseract
+  save_as.rs      Word, PDF and Excel files from replies and artifacts
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
   remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client

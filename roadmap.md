@@ -28,7 +28,8 @@ tool calls and when a reply is done, and the command-line mode (`cleanrstai exec
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
 and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
-Built-in Tools), and voice input and reading replies aloud (Settings → Voice), in **v0.9.2-dev.5**.
+Built-in Tools), and the live web page preview on Linux (in a window of its own, when WebKitGTK
+is installed) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -230,7 +231,7 @@ Later, beyond the first version:
   with a token for a named tunnel, so the server is reachable from outside the network without
   opening a port on the router; show the public address, and keep the login required. Also
   quick tunnels (`trycloudflare.com`, no account, optional email check)
-- [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
+- [x] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
 
 ## 14. Docker sandbox for tools
 
@@ -293,10 +294,10 @@ in them follows the same rule:
 
 ## 17. Projects
 
-- [ ] Group chats into projects with shared instructions, attached files and a default
+- [x] Group chats into projects with shared instructions, attached files and a default
   workspace folder, provider, model and tool switches
-- [ ] Settings: on/off (off hides projects from the sidebar), and the default for new projects
-- [ ] Move chats in and out of a project; export and import projects with the chats
+- [x] Settings: on/off (off hides projects from the sidebar), and the default for new projects
+- [x] Move chats in and out of a project; export and import projects with the chats
 
 ## 18. Memory
 
@@ -316,7 +317,10 @@ in them follows the same rule:
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
 - [x] Read-only `git_status` and `git_diff` workspace tools
-- [ ] Commit from the chat (with approval)
+- [x] Commit from the chat (with approval): a `git_commit` workspace tool (off by default, in
+  Settings and per chat) that commits the chosen paths, or every change, locally and never
+  pushes; every commit asks, in every mode but Allow all; and a **Commit…** dialog in the
+  changed files window and the command palette
 
 ## 20. Approval modes
 
@@ -359,11 +363,13 @@ in them follows the same rule:
 - [x] Live HTML preview in the artifact panel on macOS (WebKit) and Windows (WebView2): a switch
   to keep "Open in browser" only, and settings for whether scripts may run and whether the page
   may load from the network (off by default); links open in the browser
-- [ ] Live HTML preview on Linux (WebKitGTK, which the release builds don't link yet)
+- [x] Live HTML preview on Linux in a window of its own, when WebKitGTK is installed (it is
+  loaded at run time, as the release builds link neither GTK nor WebKitGTK; without it, or a
+  display, pages open in the browser)
 - [x] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
-- [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
+- [x] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
 
 ## 25. Commands, skills and hooks
 
@@ -397,7 +403,7 @@ in them follows the same rule:
 
 Smaller items from the same comparison:
 
-- [ ] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
+- [x] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
   Settings
 - [x] Share a chat as a single HTML file alongside the Markdown export
 

@@ -22,6 +22,7 @@ pub enum Command {
     ExportChatHtml,
     CompactChat,
     ReviewChanges,
+    CommitChanges,
     UndoLastEdits,
     ShowChangedFiles,
     ForkChat,
@@ -32,6 +33,8 @@ pub enum Command {
     CheckForUpdates,
     SetApprovalMode(ApprovalMode),
     RunScheduledTask(Uuid),
+    NewProject,
+    ImportProject,
 }
 
 #[derive(Clone, Debug)]

@@ -25,23 +25,25 @@ pub const EDIT_FILE: &str = "edit_file";
 pub const INFO: &str = "get_info";
 pub const GIT_STATUS: &str = "git_status";
 pub const GIT_DIFF: &str = "git_diff";
+pub const GIT_COMMIT: &str = "git_commit";
 
 /// The workspace tools in display order: (function name, label).
-pub const TOOLS: [(&str, &str); 9] = [
+pub const TOOLS: [(&str, &str); 10] = [
     (READ_FILE, "Read file"),
     (GLOB, "Find files"),
     (GREP, "Search in files"),
     (INFO, "File info"),
     (GIT_STATUS, "Git status"),
     (GIT_DIFF, "Git diff"),
+    (GIT_COMMIT, "Git commit"),
     (WRITE_FILE, "Write file"),
     (EDIT_FILE, "Edit file"),
     (SHELL, "Run command"),
 ];
 
-/// Tools that change files or run programs, and so ask for approval.
+/// Tools that change files, run programs or record a commit, and so ask for approval.
 pub fn changes_things(function: &str) -> bool {
-    matches!(function, WRITE_FILE | EDIT_FILE | SHELL)
+    matches!(function, WRITE_FILE | EDIT_FILE | SHELL | GIT_COMMIT)
 }
 
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
@@ -80,6 +82,8 @@ pub struct Workspace {
     /// A subagent's workspace: its writes and commands run without asking.
     subagent: bool,
     edits: EditOptions,
+    /// Let `git_commit` sign commits when the repository's config asks for it.
+    sign_commits: bool,
 }
 
 impl Workspace {
@@ -95,6 +99,7 @@ impl Workspace {
             sandbox: None,
             subagent: false,
             edits: EditOptions::default(),
+            sign_commits: false,
         })
     }
 
@@ -107,6 +112,13 @@ impl Workspace {
     /// The canonical folder.
     pub fn path(&self) -> &Path {
         &self.root
+    }
+
+    /// Let `git_commit` sign its commits when the repository's git config asks for signing.
+    /// Off by default: commits are then never signed, so no gpg prompt can appear.
+    pub fn with_commit_signing(mut self, on: bool) -> Self {
+        self.sign_commits = on;
+        self
     }
 
     /// Run shell commands in the Docker `sandbox`, in the container of `chat`.
@@ -124,7 +136,18 @@ impl Workspace {
             sandbox: Some(self.sandbox.as_ref()?.for_subagent()),
             subagent: true,
             edits: self.edits,
+            sign_commits: self.sign_commits,
         })
+    }
+
+    /// Whether this workspace belongs to a subagent (see [`Self::for_subagent`]).
+    pub(crate) fn is_subagent(&self) -> bool {
+        self.subagent
+    }
+
+    /// Whether `git_commit` may sign its commits (see [`Self::with_commit_signing`]).
+    pub(crate) fn signs_commits(&self) -> bool {
+        self.sign_commits
     }
 
     /// Whether shell commands run in a sandbox with the folder mounted read-only.
@@ -258,6 +281,8 @@ impl Workspace {
             self.shell(args, timeout).await
         } else if function == GIT_STATUS || function == GIT_DIFF {
             self.git(function, args, timeout).await
+        } else if function == GIT_COMMIT {
+            self.commit_call(args).await
         } else {
             // File-system work can take a while on big trees; keep it off the async runtime.
             let (ws, f, a) = (self.clone(), function.to_owned(), args.clone());
@@ -758,7 +783,7 @@ impl Workspace {
 
     /// `rel` as a path relative to the workspace, for `git diff`. A deleted file has no file on
     /// disk but still has a diff, so the nearest existing ancestor must be inside the workspace.
-    fn diff_path(&self, rel: &str) -> Result<String> {
+    pub(crate) fn diff_path(&self, rel: &str) -> Result<String> {
         let joined = self.join(rel)?;
         let mut probe = joined.as_path();
         while !probe.exists() {
@@ -1054,6 +1079,25 @@ fn base_spec(name: &str) -> ToolSpec {
                     "path": {"type": "string", "description": "Only this file or folder, relative to the workspace."},
                     "base": {"type": "string", "description": "Compare with this branch, tag or commit, e.g. \"main\", instead of the default comparison."}
                 }
+            }),
+        ),
+        GIT_COMMIT => (
+            "Commit changes in the workspace's git repository as one local commit. The user \
+             approves each commit. paths lists the files to commit, relative to the workspace; \
+             leave it out to commit every change in the workspace. Untracked files are added. \
+             Nothing is pushed, and git hooks don't run. Returns the commit's short hash, its \
+             subject and a summary of the changes.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "The commit message (its first line is the subject)."},
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Files or folders to commit, relative to the workspace (default: every change)."
+                    }
+                },
+                "required": ["message"]
             }),
         ),
         INFO => (

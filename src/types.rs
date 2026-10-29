@@ -249,6 +249,16 @@ pub struct Conversation {
         skip_serializing_if = "crate::approval::ChatPermissions::is_default"
     )]
     pub permissions: crate::approval::ChatPermissions,
+    /// The project this chat belongs to (see `projects`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<Uuid>,
+    /// The provider profile (by id) this chat uses instead of the active one; set from its
+    /// project, or picked for the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The model this chat uses instead of its provider's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Conversation {
@@ -265,6 +275,9 @@ impl Conversation {
             workspace: None,
             model_options: Default::default(),
             permissions: Default::default(),
+            project: None,
+            provider: None,
+            model: None,
         }
     }
 
@@ -349,6 +362,35 @@ mod tests {
         let c = Conversation::with_permission_mode(ApprovalMode::AutoWorkspace);
         assert_eq!(c.permissions.mode, ApprovalMode::AutoWorkspace);
         assert!(!c.permissions.no_sandbox);
+    }
+
+    #[test]
+    fn a_chat_without_project_fields_loads_and_saves_without_them() {
+        let id = Uuid::new_v4();
+        let old = format!(
+            r#"{{"id":"{id}","title":"Old","created_at":"2026-01-01T00:00:00Z",
+                "updated_at":"2026-01-01T00:00:00Z","messages":[]}}"#
+        );
+        let c: Conversation = serde_json::from_str(&old).unwrap();
+        assert_eq!(
+            (c.project, c.provider.clone(), c.model.clone()),
+            (None, None, None)
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("project") && !json.contains("\"provider\""),
+            "{json}"
+        );
+
+        let mut c = c;
+        let project = Uuid::new_v4();
+        c.project = Some(project);
+        c.provider = Some("p1".into());
+        c.model = Some("m".into());
+        let back: Conversation = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.project, Some(project));
+        assert_eq!(back.provider.as_deref(), Some("p1"));
+        assert_eq!(back.model.as_deref(), Some("m"));
     }
 
     #[test]
