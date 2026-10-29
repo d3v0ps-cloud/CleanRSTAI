@@ -462,6 +462,56 @@ impl Default for CompactionSettings {
     }
 }
 
+/// Which changes "Review changes" sends to the model.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewScope {
+    /// Staged, unstaged and new files, against the last commit.
+    #[default]
+    Uncommitted,
+    /// Everything on the current branch since it forked from its base.
+    Branch,
+}
+
+pub const DEFAULT_REVIEW_PROMPT: &str = "Review the changes in the attached diff. Look for \
+bugs, security problems, unclear code and missing tests. List each finding by severity (high, \
+medium or low) with its file and line, and say why it matters and how to fix it. Leave out \
+praise and a restatement of what the change does. If you find nothing worth reporting, say so \
+plainly.";
+
+/// "Review changes": the working folder's git diff, sent to a model with a review prompt.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ReviewSettings {
+    /// Show "Review changes" in the tools menu and the command palette.
+    pub enabled: bool,
+    /// Instructions for the model that reviews the diff.
+    pub prompt: String,
+    pub scope: ReviewScope,
+    /// Branch the "branch" scope diffs against; empty picks `origin/HEAD`, `main` or `master`.
+    pub base_branch: String,
+    /// Provider profile that writes the review; empty means the chat's provider.
+    pub provider_id: String,
+    /// Model override for the review; empty means the provider's selected model.
+    pub model: String,
+    /// Largest diff sent, in KB (16–4096); a longer one is cut.
+    pub max_diff_kb: u32,
+}
+
+impl Default for ReviewSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            prompt: DEFAULT_REVIEW_PROMPT.into(),
+            scope: ReviewScope::default(),
+            base_branch: String::new(),
+            provider_id: String::new(),
+            model: String::new(),
+            max_diff_kb: 200,
+        }
+    }
+}
+
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`, …) read from a chat's workspace folder.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -722,6 +772,8 @@ pub struct GeneralSettings {
     pub compaction: CompactionSettings,
     /// `AGENTS.md` and similar files from the workspace.
     pub instructions: InstructionSettings,
+    /// "Review changes": the workspace's git diff sent to a model.
+    pub review: ReviewSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
     /// Browser remote access (see `remote`).
@@ -753,6 +805,7 @@ impl Default for GeneralSettings {
             builtin_tools: BuiltinToolSettings::default(),
             compaction: CompactionSettings::default(),
             instructions: InstructionSettings::default(),
+            review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
             remote: RemoteSettings::default(),
         }
@@ -1073,6 +1126,15 @@ impl Settings {
         if !self.providers.iter().any(|p| p.id == c.provider_id) {
             c.provider_id.clear();
         }
+        let rv = &mut self.general.review;
+        rv.max_diff_kb = rv.max_diff_kb.clamp(16, 4096);
+        rv.base_branch = rv.base_branch.trim().to_owned();
+        if rv.prompt.trim().is_empty() {
+            rv.prompt = DEFAULT_REVIEW_PROMPT.into();
+        }
+        if !self.providers.iter().any(|p| p.id == rv.provider_id) {
+            rv.provider_id.clear();
+        }
         let ins = &mut self.general.instructions;
         ins.max_kb = ins.max_kb.clamp(1, 1024);
         ins.file_names = ins
@@ -1125,6 +1187,21 @@ impl Settings {
             .clone();
         if !c.model.trim().is_empty() {
             p.model = c.model.trim().to_owned();
+        }
+        p
+    }
+
+    /// The provider profile that writes a code review for a chat on `chat`.
+    pub fn review_provider(&self, chat: &ProviderConfig) -> ProviderConfig {
+        let r = &self.general.review;
+        let mut p = self
+            .providers
+            .iter()
+            .find(|p| p.id == r.provider_id)
+            .unwrap_or(chat)
+            .clone();
+        if !r.model.trim().is_empty() {
+            p.model = r.model.trim().to_owned();
         }
         p
     }
@@ -1588,6 +1665,44 @@ mod tests {
         assert_eq!(s.compaction_provider(&chat).model, "big");
         s.general.compaction.model = " small ".into();
         assert_eq!(s.compaction_provider(&chat).model, "small");
+    }
+
+    #[test]
+    fn review_provider_and_limits_normalize() {
+        let mut s = Settings::default();
+        let chat = s.providers[0].clone();
+        assert_eq!(s.review_provider(&chat).model, chat.model);
+        s.providers.push(ProviderConfig {
+            id: "p2".into(),
+            model: "big".into(),
+            ..Default::default()
+        });
+        s.general.review.provider_id = "p2".into();
+        assert_eq!(s.review_provider(&chat).model, "big");
+        s.general.review.model = " reviewer ".into();
+        assert_eq!(s.review_provider(&chat).model, "reviewer");
+
+        s.general.review.max_diff_kb = 1;
+        s.general.review.base_branch = " dev ".into();
+        s.general.review.prompt = " ".into();
+        s.normalize();
+        assert_eq!(s.general.review.max_diff_kb, 16);
+        assert_eq!(s.general.review.base_branch, "dev");
+        assert_eq!(s.general.review.prompt, DEFAULT_REVIEW_PROMPT);
+        assert_eq!(s.general.review.provider_id, "p2");
+
+        s.general.review.provider_id = "gone".into();
+        s.general.review.max_diff_kb = 1_000_000;
+        s.normalize();
+        assert_eq!(s.general.review.provider_id, "");
+        assert_eq!(s.general.review.max_diff_kb, 4096);
+    }
+
+    #[test]
+    fn review_settings_default_when_missing_from_file() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.review, ReviewSettings::default());
+        assert_eq!(s.review.scope, ReviewScope::Uncommitted);
     }
 
     #[test]

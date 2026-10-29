@@ -18,6 +18,7 @@ mod mcp;
 mod model_options;
 mod native;
 mod remote;
+mod review;
 mod sandbox;
 mod secrets;
 mod servers;

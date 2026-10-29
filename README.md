@@ -92,6 +92,9 @@ too, as an installer and a portable `.exe`.
   older tool results can be shortened instead. Threshold, kept messages, context size and the
   summary instructions are in **Settings → Context & files**; every one of these features can
   be switched per chat under **Chat features** in the tools menu.
+- **Code review**: **Review changes** sends the working folder's git diff (uncommitted changes,
+  or a branch against its base) to a model with a review prompt, as a normal chat reply. The
+  review model, prompt and size limit are in **Settings → Context & files**.
 - **Docker sandbox** (off by default): run the workspace shell commands in a Docker container
   with only the chat's folder mounted, no network by default (or only the hosts, ports and
   protocols you allow), and CPU, memory and process limits. Use a published image or a custom

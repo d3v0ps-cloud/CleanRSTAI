@@ -68,6 +68,15 @@ an undone edit says **Undone**. **Undo the last turn's file edits** in the comma
 the same for the latest turn. Both can be turned off in
 [Context & files](../settings/context.html#workspace-file-edits).
 
+### Reviewing changes
+
+**Review changes** (the sliders button next to the message box, or the command palette) sends
+the working folder's git diff to a model with a review prompt. The diff is attached as
+`changes.diff`, and the model's findings come back as a normal reply in the chat, so you can
+follow up on them there. It reads the uncommitted changes by default, or the branch against its
+base. The review model, the prompt and the diff size limit are set under
+[Context & files](../settings/context.html#code-review).
+
 ## Docker sandbox
 
 With the [Docker sandbox](../settings/docker.html) on, **Run command** (`exec_shell_command`)

@@ -622,6 +622,7 @@ impl ChatApp {
         let mut changes: Vec<(String, bool, bool)> = Vec::new();
         let mut reset = false;
         let mut compact = false;
+        let mut review = false;
         let loaded = self
             .current
             .and_then(|id| self.instructions.get(&id))
@@ -753,6 +754,27 @@ impl ChatApp {
                             {
                                 compact = true;
                             }
+                            if self.settings.general.review.enabled {
+                                let idle =
+                                    self.current.is_some_and(|id| !self.runs.contains_key(&id));
+                                if ui
+                                    .add_enabled(
+                                        idle && has_workspace,
+                                        egui::Button::new(format!(
+                                            "{}  Review changes",
+                                            icon::CODE
+                                        ))
+                                        .small(),
+                                    )
+                                    .on_hover_text(
+                                        "Send the working folder's git diff to the model with the \
+                                         review instructions in Settings → Context & files",
+                                    )
+                                    .clicked()
+                                {
+                                    review = true;
+                                }
+                            }
                             for (id, name) in &servers {
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -835,6 +857,12 @@ impl ChatApp {
         {
             self.notice = Some(e);
         }
+        if review
+            && let Some(id) = self.current
+            && let Err(e) = self.start_review(id, &ui.ctx().clone())
+        {
+            self.notice = Some(e);
+        }
     }
 
     fn delete_chat(&mut self, id: Uuid) {
@@ -883,6 +911,19 @@ impl ChatApp {
         attachments: Vec<Attachment>,
         ctx: &egui::Context,
     ) -> Result<(), String> {
+        self.send_message_with(id, text, attachments, ctx, false)
+    }
+
+    /// `send_message`; with `review` the reply comes from the review provider (Settings →
+    /// Context & files) instead of the chat's.
+    fn send_message_with(
+        &mut self,
+        id: Uuid,
+        text: String,
+        attachments: Vec<Attachment>,
+        ctx: &egui::Context,
+        review: bool,
+    ) -> Result<(), String> {
         if self.runs.contains_key(&id) {
             return Err("A reply is still running in this chat".into());
         }
@@ -893,16 +934,59 @@ impl ChatApp {
         conv.auto_title();
         conv.updated_at = chrono::Utc::now();
         conv.save();
-        self.start_run(id, ctx);
+        self.start_run_with(id, ctx, false, review);
         Ok(())
     }
 
     fn start_run(&mut self, id: Uuid, ctx: &egui::Context) {
-        self.start_run_with(id, ctx, false);
+        self.start_run_with(id, ctx, false, false);
+    }
+
+    /// Reads the working folder's diff in the background; `ReviewReady` then sends it.
+    fn start_review(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
+        if !self.settings.general.review.enabled {
+            return Err("Code review is off (Settings → Context & files)".into());
+        }
+        if self.runs.contains_key(&id) {
+            return Err("A reply is still running in this chat".into());
+        }
+        let conv = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("Chat not found")?;
+        let dir = conv
+            .workspace
+            .clone()
+            .ok_or("This chat has no working folder")?;
+        let settings = self.settings.general.review.clone();
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = crate::review::collect(&dir, &settings).await;
+            let _ = tx.send(AppEvent::ReviewReady {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        Ok(())
+    }
+
+    /// Sends a diff read by `start_review` as a message in its chat.
+    fn finish_review(
+        &mut self,
+        id: Uuid,
+        result: Result<crate::review::ReviewDiff, String>,
+    ) -> Result<(), String> {
+        let diff = result?;
+        let text = crate::review::message_text(&self.settings.general.review.prompt, &diff);
+        let ctx = self.repaint_ctx.clone();
+        self.send_message_with(id, text, vec![crate::review::attachment(&diff)], &ctx, true)
     }
 
     /// Starts a reply in a chat, or with `compact_only` only summarises its older messages.
-    fn start_run_with(&mut self, id: Uuid, ctx: &egui::Context, compact_only: bool) {
+    /// With `review` the reply uses the review provider.
+    fn start_run_with(&mut self, id: Uuid, ctx: &egui::Context, compact_only: bool, review: bool) {
         let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
             return;
         };
@@ -914,7 +998,12 @@ impl ChatApp {
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
         let from = marker.map_or(0, |i| i + 1);
-        let provider = self.settings.provider().clone();
+        let chat_provider = self.settings.provider().clone();
+        let provider = if review {
+            self.settings.review_provider(&chat_provider)
+        } else {
+            chat_provider
+        };
         let compaction = (compact_only || selection.feature_on(tools::COMPACTION)).then(|| {
             crate::compaction::Compaction {
                 settings: self.settings.general.compaction.clone(),
@@ -984,7 +1073,7 @@ impl ChatApp {
                 self.settings.general.compaction.keep_recent
             ));
         }
-        self.start_run_with(id, ctx, true);
+        self.start_run_with(id, ctx, true, false);
         Ok(())
     }
 
@@ -1172,6 +1261,11 @@ impl ChatApp {
                             }
                             Err(e) => ui.models_error = Some(e),
                         }
+                    }
+                }
+                AppEvent::ReviewReady { conv_id, result } => {
+                    if let Err(e) = self.finish_review(conv_id, result) {
+                        self.notice = Some(e);
                     }
                 }
                 AppEvent::FileAttached { result } => {
@@ -1992,6 +2086,14 @@ impl ChatApp {
                 Command::UseModel(m.clone()),
             ));
         }
+        if self.settings.general.review.enabled {
+            e.push(Entry::new(
+                icon::CODE,
+                "Review changes in the working folder",
+                "Chat",
+                Command::ReviewChanges,
+            ));
+        }
         for c in &self.conversations {
             e.push(Entry::new(
                 icon::CHAT,
@@ -2067,6 +2169,13 @@ impl ChatApp {
                         },
                         None => "This chat has no messages.".into(),
                     });
+                }
+            }
+            Command::ReviewChanges => {
+                if let Some(id) = self.current
+                    && let Err(e) = self.start_review(id, ctx)
+                {
+                    self.notice = Some(e);
                 }
             }
             Command::UndoLastEdits => {

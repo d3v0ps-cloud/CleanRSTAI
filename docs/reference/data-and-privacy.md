@@ -44,6 +44,9 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   have them summarised.
 - **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
   chat's workspace folder, go to the provider with the system prompt.
+- **Code review** sends the working folder's git diff (up to the size you set, and the names of
+  new files) to the provider and model chosen in
+  [Context & files](../settings/context.html#code-review), when you choose Review changes.
 - **Update checks** ask the [update source](../using/updates.html#update-source) for its latest
   release, at startup if enabled and when you check by hand.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.

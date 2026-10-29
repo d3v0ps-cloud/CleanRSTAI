@@ -378,10 +378,11 @@ in them follows the same rule:
 
 ## 27. Code review
 
-- [ ] **Review changes**: send the workspace's uncommitted diff, or a branch against its base,
+- [x] **Review changes**: send the workspace's uncommitted diff, or a branch against its base,
   to the model with a review prompt and show findings as a list
 - [ ] Settings: on/off, review prompt, model (the chat's or a provider profile) and how strict
-  to be
+  to be. Done: on/off, prompt, model and provider, base branch and diff size. Not yet: how
+  strict to be (no strictness setting)
 
 Smaller items from the same comparison:
 
