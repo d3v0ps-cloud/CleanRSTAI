@@ -25,7 +25,9 @@ files list and read-only git tools in **v0.9.2-dev.2**, and skills and backgroun
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
 settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
-settings on the Background tab) in **v0.9.2-dev.4**.
+settings on the Background tab) in **v0.9.2-dev.4**, and projects (chats grouped with shared
+instructions and files, defaults for new chats, and export and import of a project with its
+chats) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -290,10 +292,10 @@ in them follows the same rule:
 
 ## 17. Projects
 
-- [ ] Group chats into projects with shared instructions, attached files and a default
+- [x] Group chats into projects with shared instructions, attached files and a default
   workspace folder, provider, model and tool switches
-- [ ] Settings: on/off (off hides projects from the sidebar), and the default for new projects
-- [ ] Move chats in and out of a project; export and import projects with the chats
+- [x] Settings: on/off (off hides projects from the sidebar), and the default for new projects
+- [x] Move chats in and out of a project; export and import projects with the chats
 
 ## 18. Memory
 

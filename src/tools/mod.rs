@@ -107,9 +107,10 @@ pub const INSTRUCTIONS: &str = "instructions";
 pub const CHECKPOINTS: &str = "checkpoints";
 pub const NOTIFY: &str = "notify";
 pub const HOOKS: &str = "hooks";
+pub const PROJECT: &str = "project";
 
 /// Chat features with a per-chat switch, in display order: (key, label, description).
-pub const FEATURES: [(&str, &str, &str); 5] = [
+pub const FEATURES: [(&str, &str, &str); 6] = [
     (
         COMPACTION,
         "Context compaction",
@@ -136,6 +137,12 @@ pub const FEATURES: [(&str, &str, &str); 5] = [
         "Run the commands set under Skills & hooks around tool calls and when a reply is done. \
          Hooks run commands on your computer (or in the sandbox, when it's on)",
     ),
+    (
+        PROJECT,
+        "Project context",
+        "Add the project's instructions and files to this chat's system prompt (chats in a \
+         project only)",
+    ),
 ];
 
 /// What one chat may use: Settings defaults plus that chat's overrides.
@@ -147,7 +154,7 @@ pub struct ToolSelection {
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
-    features: [bool; 5],
+    features: [bool; 6],
     /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
     skills_available: bool,
 }
@@ -170,6 +177,7 @@ impl ToolSelection {
                 g.file_edits.checkpoints,
                 g.background.notify,
                 g.hooks.enabled,
+                g.projects.enabled,
             ],
             skills_available: false,
         }

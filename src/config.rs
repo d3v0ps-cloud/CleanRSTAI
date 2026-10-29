@@ -929,6 +929,9 @@ pub struct GeneralSettings {
     /// Prompts that run on a schedule into a chat (Settings → Background).
     #[serde(default)]
     pub schedules: crate::schedule::ScheduleSettings,
+    /// Projects: chats grouped with shared instructions and files (see `projects`).
+    #[serde(default)]
+    pub projects: crate::projects::ProjectSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -966,6 +969,7 @@ impl Default for GeneralSettings {
             exec: Default::default(),
             hooks: Default::default(),
             schedules: Default::default(),
+            projects: Default::default(),
         }
     }
 }
@@ -1342,6 +1346,14 @@ impl Settings {
             .min(crate::exec::MAX_MCP_WAIT_SECS);
         crate::hooks::normalize(&mut self.general.hooks);
         self.general.schedules.normalize();
+        self.general.projects.normalize();
+        if !self
+            .providers
+            .iter()
+            .any(|p| Some(&p.id) == self.general.projects.default_provider.as_ref())
+        {
+            self.general.projects.default_provider = None;
+        }
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -1973,6 +1985,26 @@ mod tests {
         s.general.remote.port = 0;
         s.normalize();
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn project_settings_load_from_older_files_and_normalise() {
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.projects, crate::projects::ProjectSettings::default());
+        assert!(old.projects.enabled);
+        assert_eq!(old.projects.max_files_kb, 256);
+
+        let mut s = Settings::default();
+        s.general.projects.max_files_kb = 1;
+        s.general.projects.default_provider = Some("gone".into());
+        s.normalize();
+        assert_eq!(s.general.projects.max_files_kb, 16);
+        assert_eq!(s.general.projects.default_provider, None);
+
+        let id = s.providers[0].id.clone();
+        s.general.projects.default_provider = Some(id.clone());
+        s.normalize();
+        assert_eq!(s.general.projects.default_provider, Some(id));
     }
 
     #[test]
