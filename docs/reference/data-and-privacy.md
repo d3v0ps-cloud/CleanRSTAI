@@ -15,7 +15,7 @@ nav_order: 2
 | Data | Where |
 |---|---|
 | Settings | `settings.json` (see [Where settings are stored](../settings/#where-settings-are-stored)) |
-| Conversations | one JSON file per chat in the `conversations` folder |
+| Conversations | one JSON file per chat in the `conversations` folder (command-line runs only with `--save` or the Save setting) |
 | API keys (including the web search key), header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 | Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
@@ -42,6 +42,11 @@ when the server restarts ([Remote access](../using/remote-access.html)).
 - **Context compaction** sends the older messages of a long chat (shortened where they are
   long) to the provider and model chosen in [Context & files](../settings/context.html), to
   have them summarised.
+- **Command line** (`cleanrstai exec`): a run sends its prompt, the piped text read from stdin and
+  its tools' results to the provider, as a chat does, with no one asked before a call runs.
+  Nothing is saved unless you pass `--save` or turn on **Save each run's chat**
+  ([Background](../settings/background.html#command-line)). Its tools act on the `--workspace`
+  folder with the mode you chose.
 - **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
   chat's workspace folder, go to the provider with the system prompt.
 - **Skills**: the names and descriptions of the skills (from your skills folder and the chat's

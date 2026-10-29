@@ -920,6 +920,9 @@ pub struct GeneralSettings {
     /// Replies running in the background: notifications, parallel limit and time limit.
     #[serde(default)]
     pub background: BackgroundSettings,
+    /// `cleanrstai exec`: one request from the command line (Settings → Background).
+    #[serde(default)]
+    pub exec: crate::exec::ExecSettings,
     /// Commands run around tool calls and when a reply is done (see `hooks`).
     #[serde(default)]
     pub hooks: crate::hooks::HookSettings,
@@ -960,6 +963,7 @@ impl Default for GeneralSettings {
             skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
             background: BackgroundSettings::default(),
+            exec: Default::default(),
             hooks: Default::default(),
             schedules: Default::default(),
         }
@@ -1331,6 +1335,11 @@ impl Settings {
         let bg = &mut self.general.background;
         bg.max_parallel = bg.max_parallel.clamp(1, MAX_PARALLEL_RUNS);
         bg.time_limit_mins = bg.time_limit_mins.min(MAX_TIME_LIMIT_MINS);
+        self.general.exec.mcp_wait_secs = self
+            .general
+            .exec
+            .mcp_wait_secs
+            .min(crate::exec::MAX_MCP_WAIT_SECS);
         crate::hooks::normalize(&mut self.general.hooks);
         self.general.schedules.normalize();
         self.sandbox = self.sandbox.normalized();

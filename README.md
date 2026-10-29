@@ -132,6 +132,10 @@ too, as an installer and a portable `.exe`.
   weekly) into a new chat or a chat you pick, while the app is open. Each task sets its approval
   mode (read only by default), folder, provider and whether a missed run catches up. Settings →
   Background lists them, and the command palette runs one at once.
+- **Command line**: `cleanrstai exec "question"` runs one request with your saved settings and
+  prints the reply, for scripts and pipes (`git diff | cleanrstai exec --mode read-only "review this" -`).
+  Calls the approval mode doesn't allow are denied rather than asked. `--json` gives
+  one object with the reply, the tool calls and the stats. Turned on in **Settings → Background**.
 - **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools,
   the workspace tools when the chat has a folder, and every MCP server and tool, each with a
   switch for the current chat. Settings keeps the defaults for new chats.
@@ -342,7 +346,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 | Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
 | Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
-| Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up) |
+| Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up); command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose

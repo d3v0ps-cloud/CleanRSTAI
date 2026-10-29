@@ -15,6 +15,8 @@ How to work with CleanRSTAI day to day.
 - [Subagents](subagents.html): letting the model delegate tasks to parallel agents.
 - [Docker sandbox](../settings/docker.html): running the model's shell commands in a container,
   with network rules.
+- [Command line](command-line.html): running one request from a terminal or a script with
+  `cleanrstai exec`.
 - [Updates](updates.html): checking for and installing new versions.
 - [Remote access](remote-access.html): using your chats from a browser on a phone or another
   computer, and its security.

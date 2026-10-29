@@ -22,7 +22,6 @@ use crate::remote::{
     RemoteEvent, RemoteStatus, StateView, ToolCallView,
 };
 use crate::schedule::{self, ScheduleSettings, ScheduledTask, Target};
-use crate::subagent::Delegation;
 use crate::tools::{self, ToolOverrides, ToolSelection};
 use crate::tray;
 use crate::types::{ChatMessage, Conversation, Role, fork_messages};
@@ -1171,48 +1170,14 @@ impl ChatApp {
             return;
         };
         self.errors.remove(&id);
-        let permissions = conv.permissions.clone();
-        let selection =
-            ToolSelection::new(&self.settings, &conv.tool_overrides).with_mode(permissions.mode);
-        // After a compaction only its summary and the messages since are sent.
-        let marker = crate::types::last_compaction(&conv.messages);
-        let summary = marker.map(|i| conv.messages[i].content.clone());
-        let from = marker.map_or(0, |i| i + 1);
-        let chat_provider = provider_id
-            .as_deref()
-            .and_then(|pid| self.settings.providers.iter().find(|p| p.id == pid))
-            .unwrap_or_else(|| self.settings.provider())
-            .clone();
-        let provider = if review {
-            self.settings.review_provider(&chat_provider)
-        } else {
-            chat_provider
-        };
-        let compaction = (compact_only || selection.feature_on(tools::COMPACTION)).then(|| {
-            crate::compaction::Compaction {
-                settings: self.settings.general.compaction.clone(),
-                provider: self.settings.compaction_provider(&provider),
-                auto: selection.feature_on(tools::COMPACTION),
-            }
-        });
-        let req = AgentRequest {
-            conv_id: id,
-            provider: provider.with_chat_options(&conv.model_options),
-            general: self.settings.general.clone(),
-            history: conv.messages[from..]
-                .iter()
-                .filter(|m| !m.cancelled && m.compaction.is_none())
-                .cloned()
-                .collect(),
-            delegation: Delegation::new(&self.settings, &selection),
-            selection,
-            workspace: conv.workspace.clone(),
-            sandbox: self.sandbox.clone().filter(|_| !permissions.no_sandbox),
-            summary,
-            compaction,
+        let req = AgentRequest::for_chat(
+            &self.settings,
+            conv,
+            self.sandbox.as_ref(),
+            review,
             compact_only,
-            approval_mode: permissions.mode,
-        };
+            provider_id.as_deref(),
+        );
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
             self.mcp.clone(),

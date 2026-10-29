@@ -88,3 +88,16 @@ desktop notification service on Linux (D-Bus). The text is the chat's title and 
 the reply. On macOS and Windows the notification may be shown on your other devices if you have the
 system set up to mirror notifications. A notification the system refuses, or a Linux desktop with no
 notification service, is logged and skipped; the app keeps working.
+
+## Command line
+
+Settings for [`cleanrstai exec`](../using/command-line.html), which runs one request from a terminal
+or a script. The `--mode`, `--no-mcp` and `--save` flags override the matching settings for one run.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Allow `cleanrstai exec` to run requests from a terminal or script** | on | When off, the command prints "cleanrstai exec is off (Settings → Background)" and exits with status 2. |
+| **Approvals** | Read only | The approval mode of a command-line request: Read only, Default permissions, Auto in workspace or Allow all. A call the mode doesn't allow is denied, not asked. |
+| **Start MCP servers for each request** | on | Starts the servers from [MCP servers](mcp-servers.html) for the request. |
+| **Wait for them** | 10 s | How long a request waits for servers to connect before it starts (0–120). Servers still connecting after that are used by later rounds of tool calls once they connect. |
+| **Save each run's chat** | off | Keep every command-line chat in the chat list, as if `--save` were given. |

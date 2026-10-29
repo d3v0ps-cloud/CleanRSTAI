@@ -23,8 +23,8 @@ commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's
 strictness, a context size per provider, a default permission mode, Kagi search, the changed
 files list and read-only git tools in **v0.9.2-dev.2**, and skills and background replies (a
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
-settings, and keeping running in the menu bar or system tray), scheduled tasks, and hooks around
-tool calls and when a reply is done in **v0.9.2**.
+settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
+tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its settings on the Background tab) in **v0.9.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -373,7 +373,7 @@ in them follows the same rule:
 
 ## 26. Headless and background work
 
-- [ ] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
+- [x] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
   settings and prints the reply, for scripts and CI; turned on in Settings, with its own
   approval mode (read only by default)
 - [x] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and a
@@ -382,8 +382,7 @@ in them follows the same rule:
   it finishes, fails or needs approval
 - [x] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
 - [x] Settings and limits for background replies: notifications on or off, how many run at once
-  (the rest queue) and a time limit. Settings for the command-line mode and scheduled tasks
-  are still to come.
+  (the rest queue) and a time limit.
 
 ## 27. Code review
 
