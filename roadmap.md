@@ -19,7 +19,9 @@ containers) in **v0.9.0**, and context compaction, project instructions, diffs a
 file edits, web search, the live web page preview (macOS and Windows), sharing a chat as HTML,
 reasoning and sampling options per provider, model and chat, the Anthropic Messages and OpenAI
 Responses APIs, and per-chat permission modes in **v0.9.1**, and forking a chat, slash
-commands and reviewing changes in **v0.9.2-dev.1**.
+commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's stats, review
+strictness, a context size per provider, a default permission mode, Kagi search, the changed
+files list and read-only git tools in **v0.9.2-dev.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
