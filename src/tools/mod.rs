@@ -29,6 +29,8 @@ pub const FETCH: &str = "builtin__fetch";
 pub const WEB_SEARCH: &str = "builtin__web_search";
 pub const DELEGATE: &str = "builtin__delegate";
 pub const LOAD_SKILL: &str = "builtin__load_skill";
+/// The memory tool; its per-chat switch is the `memory` feature ([`MEMORY`]).
+pub const MEMORY_TOOL: &str = "builtin__memory";
 
 /// Built-in tools in display order, with the key used for per-chat switches.
 pub const BUILTINS: [(&str, &str, &str); 7] = [
@@ -42,12 +44,16 @@ pub const BUILTINS: [(&str, &str, &str); 7] = [
 ];
 
 pub fn is_builtin(function: &str) -> bool {
-    BUILTINS.iter().any(|(name, ..)| *name == function)
+    function == MEMORY_TOOL
+        || BUILTINS.iter().any(|(name, ..)| *name == function)
         || workspace::TOOLS.iter().any(|(name, _)| *name == function)
 }
 
 /// Label for a tool call card: built-ins by name, MCP tools as `server › tool`.
 pub fn display_name(function: &str) -> String {
+    if function == MEMORY_TOOL {
+        return "Memory".to_owned();
+    }
     if let Some((.., label)) = BUILTINS.iter().find(|(name, ..)| *name == function) {
         return (*label).to_owned();
     }
@@ -108,9 +114,10 @@ pub const CHECKPOINTS: &str = "checkpoints";
 pub const NOTIFY: &str = "notify";
 pub const HOOKS: &str = "hooks";
 pub const PROJECT: &str = "project";
+pub const MEMORY: &str = "memory";
 
 /// Chat features with a per-chat switch, in display order: (key, label, description).
-pub const FEATURES: [(&str, &str, &str); 6] = [
+pub const FEATURES: [(&str, &str, &str); 7] = [
     (
         COMPACTION,
         "Context compaction",
@@ -143,6 +150,12 @@ pub const FEATURES: [(&str, &str, &str); 6] = [
         "Add the project's instructions and files to this chat's system prompt (chats in a \
          project only)",
     ),
+    (
+        MEMORY,
+        "Memory",
+        "Remember facts across chats: the memories are added to this chat's system prompt and \
+         the model can save and delete them. Off, the chat is incognito",
+    ),
 ];
 
 /// What one chat may use: Settings defaults plus that chat's overrides.
@@ -154,7 +167,7 @@ pub struct ToolSelection {
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
-    features: [bool; 6],
+    features: [bool; 7],
     /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
     skills_available: bool,
     /// The provider's own web search replaces the built-in `web_search` tool this request.
@@ -180,6 +193,7 @@ impl ToolSelection {
                 g.background.notify,
                 g.hooks.enabled,
                 g.projects.enabled,
+                g.memory.enabled,
             ],
             skills_available: false,
             native_search: false,
@@ -292,6 +306,8 @@ pub struct Toolbox {
     /// The skills `load_skill` reads, and the most text one load returns.
     skills: Arc<Vec<Skill>>,
     skills_max_bytes: usize,
+    /// The memory tool's run (see `memory`): set only for a chat with memory on.
+    memory: Option<crate::memory::MemoryRun>,
 }
 
 impl Toolbox {
@@ -329,6 +345,7 @@ impl Toolbox {
             search: selection.builtins.search.clone(),
             skills: Arc::default(),
             skills_max_bytes: 0,
+            memory: None,
         }
     }
 
@@ -337,6 +354,20 @@ impl Toolbox {
     pub fn with_skills(mut self, skills: Arc<Vec<Skill>>, max_kb: u32) -> Self {
         self.skills = skills;
         self.skills_max_bytes = max_kb as usize * 1024;
+        self
+    }
+
+    /// Offer the memory tool, saving and listing in `run`'s scope.
+    pub fn with_memory(mut self, run: crate::memory::MemoryRun) -> Self {
+        if !self.has(MEMORY_TOOL) {
+            let at = self
+                .specs
+                .iter()
+                .take_while(|s| is_builtin(&s.name))
+                .count();
+            self.specs.insert(at, crate::memory::spec());
+        }
+        self.memory = Some(run);
         self
     }
 
@@ -381,6 +412,7 @@ impl Toolbox {
     pub fn needs_approval(function: &str) -> bool {
         !is_builtin(function)
             || function == DELEGATE
+            || function == MEMORY_TOOL
             || function == FETCH
             || function == WEB_SEARCH
             || workspace::changes_things(function)
@@ -393,6 +425,15 @@ impl Toolbox {
             return self.search.ask;
         }
         Self::needs_approval(function)
+    }
+
+    /// Whether this particular call asks first: [`Self::asks`], except that the memory tool asks
+    /// only to save or delete, and only when Settings → Memory asks before saving.
+    pub fn asks_call(&self, function: &str, arguments: &str) -> bool {
+        if function == MEMORY_TOOL {
+            return self.memory.as_ref().is_some_and(|m| m.asks(arguments));
+        }
+        self.asks(function)
     }
 
     /// Run a built-in (except `delegate`, which the agent handles) or an MCP tool.
@@ -408,6 +449,19 @@ impl Toolbox {
             return match parse_args(arguments) {
                 Ok(args) => ws.call(function, &args, timeout).await,
                 Err(e) => error_output(format!("Error: {e:#}")),
+            };
+        }
+        if function == MEMORY_TOOL {
+            let Some(memory) = &self.memory else {
+                return error_output("Error: memory isn't available in this chat.");
+            };
+            let result = match parse_args(arguments) {
+                Ok(args) => memory.call(&args),
+                Err(e) => Err(format!("{e:#}")),
+            };
+            return match result {
+                Ok(text) => text_output(text),
+                Err(e) => error_output(format!("Error: {e}")),
             };
         }
         if function == LOAD_SKILL {
@@ -942,6 +996,139 @@ mod tests {
         assert!(!sel.feature_on(HOOKS));
         assert!(!sel.feature_default(CHECKPOINTS));
         assert!(!sel.feature_on("unknown"));
+    }
+
+    #[test]
+    fn memory_is_a_chat_feature_that_follows_settings() {
+        let mut settings = Settings::default();
+        assert!(!ToolSelection::new(&settings, &ToolOverrides::default()).feature_on(MEMORY));
+        settings.general.memory.enabled = true;
+        assert!(ToolSelection::new(&settings, &ToolOverrides::default()).feature_on(MEMORY));
+        let mut ov = ToolOverrides::default();
+        ov.set(ToolOverrides::feature_key(MEMORY), false, true);
+        assert!(!ToolSelection::new(&settings, &ov).feature_on(MEMORY));
+        // The tool is offered only once a run's memory is given to the toolbox.
+        let sel = ToolSelection::new(&settings, &ToolOverrides::default());
+        assert!(!Toolbox::new(ToolRouter::default(), &sel, None).has(MEMORY_TOOL));
+        assert_eq!(display_name(MEMORY_TOOL), "Memory");
+        assert!(is_builtin(MEMORY_TOOL));
+    }
+
+    #[tokio::test]
+    async fn memory_tool_saves_lists_and_deletes_within_the_chat_scope() {
+        use crate::memory::{
+            Added, MemoryRun, MemoryScope, MemorySettings, MemoryStore, Scope, Visibility,
+        };
+        let dir =
+            std::env::temp_dir().join(format!("cleanrstai-tools-memory-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(MemoryStore::at(&dir.join("memory.json")));
+        let project = uuid::Uuid::new_v4();
+        let chat = uuid::Uuid::new_v4();
+        let mut settings = Settings::default();
+        settings.general.memory = MemorySettings {
+            enabled: true,
+            scope: MemoryScope::PerProject,
+            ..Default::default()
+        };
+        let run = |project: Option<uuid::Uuid>, ask: bool| MemoryRun {
+            store: store.clone(),
+            visibility: Visibility::for_chat(&settings.general.memory, project),
+            ask_before_saving: ask,
+            max_bytes: 4096,
+            chat,
+        };
+        let sel = ToolSelection::new(&settings, &ToolOverrides::default());
+        let inside =
+            Toolbox::new(ToolRouter::default(), &sel, None).with_memory(run(Some(project), true));
+        let outside = Toolbox::new(ToolRouter::default(), &sel, None).with_memory(run(None, true));
+        let t = Duration::from_secs(5);
+
+        let save = r#"{"action": "save", "text": "  Prefers   tea over coffee "}"#;
+        let out = inside.call(MEMORY_TOOL, save, t).await;
+        assert!(!out.is_error, "{}", out.text);
+        let all = store.all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].text, "Prefers tea over coffee");
+        assert_eq!(all[0].scope, Scope::Project(project));
+        assert_eq!(all[0].source_chat, Some(chat));
+
+        // The same text again, in another case, is refused politely (not an error).
+        let again = inside
+            .call(
+                MEMORY_TOOL,
+                r#"{"action": "save", "text": "prefers TEA over coffee"}"#,
+                t,
+            )
+            .await;
+        assert!(
+            !again.is_error && again.text.contains("already remembered"),
+            "{}",
+            again.text
+        );
+        assert_eq!(store.all().len(), 1);
+
+        // A global memory is seen everywhere; the project's only inside its project.
+        assert!(matches!(
+            store.add("Lives in Oslo", Scope::Global, None).unwrap(),
+            Added::Saved { .. }
+        ));
+        let listed = inside.call(MEMORY_TOOL, r#"{"action": "list"}"#, t).await;
+        assert!(listed.text.contains("Prefers tea") && listed.text.contains("Lives in Oslo"));
+        let listed = outside.call(MEMORY_TOOL, r#"{"action": "list"}"#, t).await;
+        assert!(!listed.text.contains("Prefers tea") && listed.text.contains("Lives in Oslo"));
+
+        // A chat outside the project may not delete the project's memory, but its own is fine.
+        let project_id = store.all()[0].id;
+        let refused = outside
+            .call(
+                MEMORY_TOOL,
+                &format!(r#"{{"action": "delete", "id": "{project_id}"}}"#),
+                t,
+            )
+            .await;
+        assert!(refused.is_error, "{}", refused.text);
+        assert_eq!(store.all().len(), 2);
+        let gone = inside
+            .call(
+                MEMORY_TOOL,
+                &format!(r#"{{"action": "delete", "id": "{project_id}"}}"#),
+                t,
+            )
+            .await;
+        assert!(!gone.is_error, "{}", gone.text);
+        assert_eq!(store.all().len(), 1);
+
+        // Bad calls are errors the model can read.
+        assert!(
+            inside
+                .call(MEMORY_TOOL, r#"{"action": "edit"}"#, t)
+                .await
+                .is_error
+        );
+        assert!(
+            inside
+                .call(MEMORY_TOOL, r#"{"action": "save", "text": "  "}"#, t)
+                .await
+                .is_error
+        );
+        assert!(
+            inside
+                .call(MEMORY_TOOL, r#"{"action": "delete"}"#, t)
+                .await
+                .is_error
+        );
+
+        // Approval: saves and deletes ask, listing never does.
+        assert!(inside.asks_call(MEMORY_TOOL, save));
+        assert!(!inside.asks_call(MEMORY_TOOL, r#"{"action": "list"}"#));
+        let quiet =
+            Toolbox::new(ToolRouter::default(), &sel, None).with_memory(run(Some(project), false));
+        assert!(!quiet.asks_call(MEMORY_TOOL, save));
+        // A toolbox without memory has no such tool.
+        let none = Toolbox::new(ToolRouter::default(), &sel, None);
+        assert!(none.call(MEMORY_TOOL, save, t).await.is_error);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

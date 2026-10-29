@@ -72,6 +72,7 @@ Options:
                       (default: the mode in Settings → Background)
   --json              print one JSON object at the end instead of streaming
   --no-mcp            don't start MCP servers
+  --no-memory         incognito: the model gets no memories and can't save any
   --save              save the chat so it shows in the app's chat list
   -h, --help          show this help
 
@@ -96,6 +97,8 @@ pub struct ExecArgs {
     pub read_stdin: bool,
     /// The project the chat starts in, by name or id (see `projects`).
     pub project: Option<String>,
+    /// Incognito: no memories are used or saved (see `memory`).
+    pub no_memory: bool,
 }
 
 /// Parses the arguments after `exec`. Flags may come before or after the prompt; `--` ends
@@ -129,13 +132,14 @@ pub fn parse_args(args: &[String]) -> Result<ExecArgs, String> {
             None => (arg, None),
         };
         match name {
-            "--json" | "--no-mcp" | "--save" => {
+            "--json" | "--no-mcp" | "--save" | "--no-memory" => {
                 if inline.is_some() {
                     return Err(format!("{name} takes no value"));
                 }
                 match name {
                     "--json" => out.json = true,
                     "--no-mcp" => out.no_mcp = true,
+                    "--no-memory" => out.no_memory = true,
                     _ => out.save = true,
                 }
             }
@@ -496,6 +500,13 @@ pub fn run(args: &[String]) -> i32 {
     }
     // Flags win over the project's folder, provider and model.
     conv.permissions.mode = mode;
+    if parsed.no_memory {
+        conv.tool_overrides.set(
+            crate::tools::ToolOverrides::feature_key(crate::tools::MEMORY),
+            false,
+            settings.general.memory.enabled,
+        );
+    }
     if workspace.is_some() {
         conv.workspace = workspace;
     }
@@ -547,6 +558,12 @@ pub fn run(args: &[String]) -> i32 {
             false,
             None,
         ));
+        req.memory = crate::memory::for_request(
+            &crate::memory::MemoryStore::open(),
+            &req.selection,
+            &settings.general.memory,
+            &conv,
+        );
         if let Some(project) = &project {
             req.project = crate::projects::context_for(project, &settings.general.projects);
         }
@@ -864,6 +881,17 @@ mod tests {
         // The conversation keeps the prompt and the answer, ready to save.
         assert_eq!(conv.messages.len(), 2);
         assert_eq!(conv.messages[1].content, "Hello from the mock.");
+    }
+
+    #[test]
+    fn the_no_memory_flag_is_incognito() {
+        assert!(!parse_args(&words(&["hi"])).unwrap().no_memory);
+        assert!(
+            parse_args(&words(&["--no-memory", "hi"]))
+                .unwrap()
+                .no_memory
+        );
+        assert!(parse_args(&words(&["--no-memory=yes", "hi"])).is_err());
     }
 
     #[test]

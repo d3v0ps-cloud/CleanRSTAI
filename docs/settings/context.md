@@ -67,6 +67,21 @@ context to requests; a chat can also leave the project context out from the tool
 | **New projects: provider** | Settings' active provider | The provider a new project's chats start with. |
 | **New projects: instructions** | Empty | The instructions a new project starts with. |
 
+## Memory
+
+**Memory** (default off) lets the model keep facts about you across chats. The saved memories are
+listed on this tab, where you can edit, delete and add them. See [Memory](../using/memory.html).
+
+| Setting | Default | Description |
+|---|---|---|
+| **New chats use memory** | Off | Chats have memory on unless switched off for one chat (incognito). |
+| **Ask before saving or deleting a memory** | On | A save or delete waits for your approval. Listing never asks. |
+| **Size limit** | 8 KB | The text of the memories sent with each request, newest first (1–64 KB). |
+| **Scope** | Global | Global: one set of memories for every chat. Per project: a project's chats also see and save that project's memories. |
+
+A memory is one line of at most 500 characters. The list shows each memory's scope and the date it
+was saved, and **Delete all memories** asks first.
+
 ## Workspace file edits
 
 | Setting | Default | Description |

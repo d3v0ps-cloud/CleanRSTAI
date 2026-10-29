@@ -38,6 +38,7 @@ prompt, after the words.
 | `--project NAME` | Start the run in a [project](projects.html) (by name, or its id): its folder, provider, model, tool switches, permission mode and instructions. The flags above replace the project's. |
 | `--json` | Print nothing until the end, then one JSON object. |
 | `--no-mcp` | Don't start the MCP servers for this request. |
+| `--no-memory` | Incognito: the model gets no [memories](memory.html) and can't save any, whatever the Memory setting says. |
 | `--save` | Save the chat, so it shows in the app's chat list. |
 | `-h`, `--help` | Show the usage. |
 

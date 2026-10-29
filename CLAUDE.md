@@ -133,6 +133,15 @@ public addresses (its own client with a filtering DNS resolver and redirect poli
   holds the diff, the previous content and the SHA-256 of what was written. Undo restores a
   turn newest first and skips files whose hash changed; `prune` drops old checkpoints.
 
+**Memory** (`memory.rs`): facts the model saves across chats, in `memory.json` in the data dir
+(`MemoryStore`, behind an `Arc`, every change written to the file before it is kept; the store is
+shared by the agent and the Settings window). The chat switch `feature:memory` decides it
+(`memory::for_request` gives the request a `MemoryRun`, or `None` when incognito); `agent::run`
+adds the visible memories to the system prompt when a reply starts and offers `builtin__memory`
+through `Toolbox::with_memory`, and `Toolbox::asks_call` asks for saves and deletes only when
+Settings asks before saving. Subagents never get a `MemoryRun`. Visibility follows the setting's
+scope (global, or a project's memories in its own chats); the model deletes only what its chat sees.
+
 **Skills** (`skills.rs`): a skill is a folder with `SKILL.md` (optional `name:`/`description:`
 front matter, parsed by hand) from `<config dir>/skills/` and, with `skills.workspace_skills`,
 `<workspace>/.cleanrstai/skills/` (a workspace skill replaces a user one of the same name).

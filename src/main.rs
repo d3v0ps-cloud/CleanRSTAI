@@ -20,6 +20,7 @@ mod hooks;
 mod instructions;
 mod llm;
 mod mcp;
+mod memory;
 mod model_options;
 mod native;
 mod ocr;

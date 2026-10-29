@@ -20,6 +20,7 @@ nav_order: 2
 | Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
 | Projects: name, instructions, file paths, folder, provider, model, tool switches and mode | one JSON file per project in the `projects` folder. The files' text is not stored, only their paths. Project export files (`.cleanrstai-project.json`) hold the project and its chats, unencrypted, wherever you save them |
+| Memories: the facts the model saved or you wrote in Settings, with their scope, dates and the chat they came from | `memory.json` in the data folder (plain text, not encrypted). Deleting a memory removes it from the file |
 
 On macOS and Linux, settings, export files and the remote access key are created readable only
 by you. If the keychain is off or unavailable, secrets are kept in `settings.json` instead
@@ -60,6 +61,10 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   instructions and the text of its files (read again for each request, up to the files size
   limit) go to the provider with every request in that chat, as part of the system prompt.
   Switch the project context off for one chat, or for all of them in Settings.
+- **Memory**: with memory on, the memories a chat can see (see [Memory](../using/memory.html))
+  go to the provider with every request of that chat, as part of the system prompt. The memory
+  tool's calls and results go to the provider too, as with any tool. An incognito chat sends none
+  of them.
 - **Skills**: the names and descriptions of the skills (from your skills folder and the chat's
   `.cleanrstai/skills` folder) go to the provider with every message while skills are on and
   some exist. A skill's text, and any other file of the skill that the model asks for, go to

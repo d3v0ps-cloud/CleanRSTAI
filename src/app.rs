@@ -190,6 +190,8 @@ pub struct ChatApp {
     remote_sent: HashMap<Uuid, Instant>,
     /// When scheduled tasks were last checked (see `run_schedules`).
     schedule_checked: Option<Instant>,
+    /// The memories (see `memory`), shared with the replies that use them.
+    memory: Arc<crate::memory::MemoryStore>,
     /// The projects, by name (see `projects`).
     projects: Vec<Project>,
     /// Projects whose chats are folded away in the sidebar (remembered until the app quits).
@@ -471,6 +473,7 @@ impl ChatApp {
             remote_list_seen: 0,
             remote_sent: HashMap::new(),
             schedule_checked: None,
+            memory: crate::memory::MemoryStore::open(),
             projects: Project::load_all(),
             collapsed_projects: HashSet::new(),
             project_editor: None,
@@ -507,6 +510,41 @@ impl ChatApp {
     fn new_chat(&mut self) {
         self.current = Some(self.create_chat());
         self.input.clear();
+    }
+
+    /// A new chat with memory switched off (incognito), as `new_chat` otherwise makes it.
+    fn new_incognito_chat(&mut self) {
+        let id = self.create_chat();
+        let default = self.settings.general.memory.enabled;
+        if let Some(conv) = self.conv_mut(id) {
+            conv.tool_overrides
+                .set(ToolOverrides::feature_key(tools::MEMORY), false, default);
+        }
+        self.current = Some(id);
+        self.input.clear();
+    }
+
+    /// Whether the chat being written in has memory switched off (incognito).
+    fn incognito_now(&self) -> bool {
+        !ToolSelection::new(&self.settings, self.tool_overrides()).feature_on(tools::MEMORY)
+    }
+
+    /// Applies a change to the memories made in Settings; a failure is shown as a notice.
+    fn apply_memory_change(&mut self, change: crate::ui::settings::MemoryChange) {
+        use crate::ui::settings::MemoryChange;
+        let result = match change {
+            MemoryChange::Add { text, scope } => match self.memory.add(&text, scope, None) {
+                Ok(crate::memory::Added::Known(_)) => Err("That is already remembered.".into()),
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            },
+            MemoryChange::Edit { id, text } => self.memory.edit(id, &text),
+            MemoryChange::Delete(id) => self.memory.remove(id, |_| true).map(|_| ()),
+            MemoryChange::DeleteAll => self.memory.remove_all(|_| true).map(|_| ()),
+        };
+        if let Err(e) = result {
+            self.notice = Some(e);
+        }
     }
 
     /// A chat to write in, without selecting it: the first empty one, or a new one. The draft
@@ -795,6 +833,16 @@ impl ChatApp {
                             .small()
                             .weak(),
                     );
+                    if !sel.feature_on(crate::tools::MEMORY) {
+                        ui.label(
+                            RichText::new(format!(
+                                "{}  Incognito: no memories for this chat",
+                                icon::EYE
+                            ))
+                            .small()
+                            .color(theme::accent(ui.visuals().dark_mode)),
+                        );
+                    }
                     ui.separator();
                     crate::ui::widgets::permissions_picker(
                         ui,
@@ -875,6 +923,7 @@ impl ChatApp {
                                     crate::tools::INSTRUCTIONS => icon::FILE,
                                     crate::tools::HOOKS => icon::TERMINAL,
                                     crate::tools::PROJECT => icon::FOLDER,
+                                    crate::tools::MEMORY => icon::EDIT,
                                     _ => icon::UNDO,
                                 };
                                 let mut hover = desc.to_owned();
@@ -1258,13 +1307,19 @@ impl ChatApp {
             return;
         };
         self.errors.remove(&id);
-        let req = AgentRequest::for_chat(
+        let mut req = AgentRequest::for_chat(
             &self.settings,
             conv,
             self.sandbox.as_ref(),
             review,
             compact_only,
             provider_id.as_deref(),
+        );
+        req.memory = crate::memory::for_request(
+            &self.memory,
+            &req.selection,
+            &self.settings.general.memory,
+            conv,
         );
         // A chat in a project reads the project's files on the runtime, not on this thread.
         let project = (self.settings.general.projects.enabled
@@ -2558,6 +2613,12 @@ impl ChatApp {
     fn palette_entries(&self) -> Vec<Entry> {
         let mut e = vec![
             Entry::new(icon::PLUS, "New chat", "Chat", Command::NewChat),
+            Entry::new(
+                icon::EYE,
+                "New incognito chat (no memory)",
+                "Chat",
+                Command::NewIncognitoChat,
+            ),
             Entry::new(icon::PAPERCLIP, "Attach files…", "Chat", Command::Attach),
             Entry::new(
                 icon::DOWNLOAD,
@@ -2752,6 +2813,10 @@ impl ChatApp {
                 self.settings_ui = None;
                 self.new_chat();
             }
+            Command::NewIncognitoChat => {
+                self.settings_ui = None;
+                self.new_incognito_chat();
+            }
             Command::OpenChat(id) => {
                 self.settings_ui = None;
                 self.current = Some(id);
@@ -2907,6 +2972,17 @@ impl ChatApp {
                 }
                 if icon_button(ui, icon::COMMAND, "Command palette (⌘K)").clicked() {
                     self.palette.toggle();
+                }
+                if self.current.is_some() && self.incognito_now() {
+                    ui.label(
+                        RichText::new(format!("{}  Incognito", icon::EYE))
+                            .small()
+                            .color(p.signal),
+                    )
+                    .on_hover_text(
+                        "This chat uses no memories, and the model can't save any. Turn Memory \
+                         on in the tools menu to change it.",
+                    );
                 }
                 if self.settings_ui.is_none()
                     && let Some(conv) = self.current
@@ -5224,6 +5300,12 @@ impl eframe::App for ChatApp {
                 .iter()
                 .map(|c| (c.id, c.title.clone()))
                 .collect();
+            let memories = self.memory.all();
+            let projects: Vec<(Uuid, String)> = self
+                .projects
+                .iter()
+                .map(|p| (p.id, p.name.clone()))
+                .collect();
             let mut keep = true;
             let mut actions = sui.take_queued();
             actions.extend(
@@ -5238,6 +5320,8 @@ impl eframe::App for ChatApp {
                             &tunnel,
                             access_error.as_deref(),
                             &chats,
+                            &memories,
+                            &projects,
                         )
                     })
                     .inner,
@@ -5254,6 +5338,7 @@ impl eframe::App for ChatApp {
                     SettingsAction::RunScheduledTask(task) => {
                         self.run_now(*task, &ctx, Some(&mut sui.draft.general.schedules));
                     }
+                    SettingsAction::Memory(change) => self.apply_memory_change(change),
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,
                     SettingsAction::CheckSandbox(cfg) => {

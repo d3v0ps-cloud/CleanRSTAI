@@ -11,6 +11,7 @@ use crate::config::Theme;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewChat,
+    NewIncognitoChat,
     OpenChat(Uuid),
     ToggleSidebar,
     OpenSettings(Tab),

@@ -104,6 +104,9 @@ too, as an installer and a portable `.exe`.
 - **Projects**: group chats in the sidebar. A project's instructions and reference files go to
   every chat in it, and its folder, provider, model, tool switches and permission mode are what
   a new chat starts with. Export a project with its chats to one file, and import it again.
+- **Memory** (off by default): the model can save facts about you (with your approval, if you
+  like) and delete them, and the saved facts go into the system prompt of new replies. Global or
+  per project, with a size limit, and an incognito chat with no memory at all.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
@@ -352,7 +355,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
 | Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
-| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), projects (on or off, file size limit, and the defaults for new projects), diffs and undo for file edits |
+| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), projects (on or off, file size limit, and the defaults for new projects), memory (on or off, asking before saving, size limit, scope, and the saved memories), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
 | Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up); command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
