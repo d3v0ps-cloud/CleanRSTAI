@@ -23,7 +23,8 @@ commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's
 strictness, a context size per provider, a default permission mode, Kagi search, the changed
 files list and read-only git tools in **v0.9.2-dev.2**, and skills and background replies (a
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
-settings, and keeping running in the menu bar or system tray) and scheduled tasks in **v0.9.2**, and the command-line mode (`cleanrstai exec`, with its settings on the Background tab) in **v0.9.2**.
+settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
+tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its settings on the Background tab) in **v0.9.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -366,9 +367,9 @@ in them follows the same rule:
   Settings and optionally in the workspace (`.cleanrstai/commands/`)
 - [x] Skills: folders of instructions and files the model loads when a task matches, each
   with its own on/off switch
-- [ ] Hooks: run a command before or after a tool call, or when a reply finishes (for example
+- [x] Hooks: run a command before or after a tool call, or when a reply finishes (for example
   a formatter after `edit_file`), each with its own switch, in the sandbox when it is on
-- [ ] Settings: each of the three on/off, and the list of commands, skills and hooks
+- [x] Settings: each of the three on/off, and the list of commands, skills and hooks
 
 ## 26. Headless and background work
 

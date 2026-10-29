@@ -2,6 +2,7 @@
 //! the results back, and repeat until the model answers without tools.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -11,6 +12,7 @@ use crate::compaction::{self, Compaction};
 use crate::config::{GeneralSettings, ProviderConfig};
 use crate::llm::{self, Delta};
 use crate::mcp::manager::McpManager;
+use crate::sandbox::Place;
 use crate::subagent::{Delegation, SubagentReport};
 use crate::tools::workspace::{EditOptions, Workspace};
 use crate::tools::{self, ToolSelection, Toolbox};
@@ -45,6 +47,8 @@ pub enum ChatEvent {
     },
     /// The project instruction files added to the system prompt.
     Instructions(Vec<String>),
+    /// What a reply-done hook printed (see `hooks`), for the app to show.
+    HookNotice(String),
     ToolRunning(String),
     /// Live progress of the subagents started by a `delegate` call.
     SubagentProgress {
@@ -218,7 +222,12 @@ pub async fn run(
     repaint: impl Fn() + Send + Sync,
 ) {
     let conv_id = req.conv_id;
+    // Set when the reply reports an error: reply-done hooks don't run then.
+    let errored = AtomicBool::new(false);
     let emit = |event: ChatEvent| {
+        if matches!(event, ChatEvent::Error(_)) {
+            errored.store(true, Ordering::Relaxed);
+        }
         let _ = tx.send(AppEvent::Chat { conv_id, event });
         repaint();
     };
@@ -353,6 +362,22 @@ pub async fn run(
         emit(ChatEvent::Done);
         return;
     }
+
+    // Hooks from Settings, run around tool calls and when the reply is done. They never run in
+    // compact-only runs (returned above) or for subagents. Commands run in the chat's sandbox
+    // container when the workspace's do, which needs a workspace.
+    let hook_place = req
+        .sandbox
+        .clone()
+        .filter(|_| workspace.is_some())
+        .map(|sandbox| Place::Chat(sandbox, conv_id));
+    let hooks = crate::hooks::Runner::new(
+        &req.general.hooks,
+        selection.feature_on(tools::HOOKS),
+        conv_id,
+        workspace.as_ref().map(|ws| ws.path().to_path_buf()),
+        hook_place,
+    );
 
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
@@ -518,40 +543,64 @@ pub async fn run(
             };
             let result = if approved {
                 emit(ChatEvent::ToolRunning(call.id.clone()));
-                match (
-                    &delegation,
-                    call.name == tools::DELEGATE && toolbox.has(&call.name),
-                ) {
-                    (Some(delegation), true) => {
-                        let progress = |reports: &[SubagentReport]| {
-                            emit(ChatEvent::SubagentProgress {
-                                call_id: call.id.clone(),
-                                reports: reports.to_vec(),
-                            })
-                        };
-                        let (out, reports) = delegation
-                            .run(&http, &mcp, &call.arguments, &progress)
+                // A before-tool hook can block a call the toolbox offers; after-tool hooks add
+                // their output to its result.
+                let known = toolbox.has(&call.name);
+                let blocked = if known {
+                    hooks.before_tool(&call.name, &call.arguments).await
+                } else {
+                    None
+                };
+                if let Some(reason) = blocked {
+                    ChatMessage::tool_result(call, reason, true)
+                } else {
+                    let mut msg = match (
+                        &delegation,
+                        call.name == tools::DELEGATE && toolbox.has(&call.name),
+                    ) {
+                        (Some(delegation), true) => {
+                            let progress = |reports: &[SubagentReport]| {
+                                emit(ChatEvent::SubagentProgress {
+                                    call_id: call.id.clone(),
+                                    reports: reports.to_vec(),
+                                })
+                            };
+                            let (out, reports) = delegation
+                                .run(&http, &mcp, &call.arguments, &progress)
+                                .await;
+                            let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
+                            msg.subagents = reports;
+                            msg
+                        }
+                        _ => {
+                            let out = toolbox
+                                .call(&call.name, &call.arguments, tool_timeout)
+                                .await;
+                            let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
+                            msg.attachments = out.images;
+                            msg.sandbox = out.sandbox;
+                            msg.edit = out.edit;
+                            msg
+                        }
+                    };
+                    if known {
+                        let extra = hooks
+                            .after_tool(&call.name, &call.arguments, &msg.content)
                             .await;
-                        let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
-                        msg.subagents = reports;
-                        msg
+                        msg.content.push_str(&extra);
                     }
-                    _ => {
-                        let out = toolbox
-                            .call(&call.name, &call.arguments, tool_timeout)
-                            .await;
-                        let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
-                        msg.attachments = out.images;
-                        msg.sandbox = out.sandbox;
-                        msg.edit = out.edit;
-                        msg
-                    }
+                    msg
                 }
             } else {
                 ChatMessage::tool_result(call, "The user declined to run this tool.", true)
             };
             history.push(result.clone());
             emit(ChatEvent::ToolResult(Box::new(result)));
+        }
+    }
+    if !errored.load(Ordering::Relaxed) {
+        for notice in hooks.reply_done().await {
+            emit(ChatEvent::HookNotice(notice));
         }
     }
     emit(ChatEvent::Done);
@@ -830,6 +879,104 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("out/hello.txt")).unwrap(),
             "hi"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs one chat turn in `dir` with `hooks` on, where the mock model calls `tool`.
+    async fn run_with_hooks(
+        dir: &std::path::Path,
+        tool: &'static str,
+        args: &'static str,
+        hooks: Vec<crate::hooks::Hook>,
+    ) -> (usize, ChatMessage, Vec<serde_json::Value>) {
+        let mut settings = crate::config::Settings::default();
+        settings.general.hooks = crate::hooks::HookSettings {
+            enabled: true,
+            hooks,
+        };
+        let (base, log) = tool_calling_llm(tool, args).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.to_path_buf());
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+        let mut approvals = 0;
+        let mut result = None;
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            match event {
+                ChatEvent::ToolApproval { respond, .. } => {
+                    approvals += 1;
+                    respond.send(true).unwrap();
+                }
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                ChatEvent::Done => break,
+                _ => {}
+            }
+        }
+        agent.await.unwrap();
+        let bodies = log.lock().unwrap().iter().map(Request::json).collect();
+        (approvals, result.unwrap(), bodies)
+    }
+
+    #[tokio::test]
+    async fn a_before_tool_hook_blocks_a_workspace_write() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-hook-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = crate::hooks::Hook {
+            name: "guard".into(),
+            tools: "write_file".into(),
+            command: "exit 1".into(),
+            ..Default::default()
+        };
+        let (approvals, result, _) = run_with_hooks(
+            &dir,
+            tools::workspace::WRITE_FILE,
+            r#"{"path": "out.txt", "content": "hi"}"#,
+            vec![guard],
+        )
+        .await;
+        // The user is still asked first; the hook then refuses the call.
+        assert_eq!(approvals, 1);
+        assert!(result.is_error);
+        assert_eq!(result.content, "Blocked by hook \"guard\": exit code 1");
+        assert!(!dir.join("out.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_after_tool_hook_adds_to_the_result_the_model_sees() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-hook-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), "remember the milk\n").unwrap();
+        let log = crate::hooks::Hook {
+            name: "log".into(),
+            event: crate::hooks::HookEvent::AfterTool,
+            command: "echo logged".into(),
+            ..Default::default()
+        };
+        let (approvals, result, bodies) = run_with_hooks(
+            &dir,
+            tools::workspace::READ_FILE,
+            r#"{"path": "notes.txt"}"#,
+            vec![log],
+        )
+        .await;
+        assert_eq!(approvals, 0);
+        assert!(!result.is_error);
+        assert!(
+            result.content.ends_with("\n\n[hook log]\nlogged"),
+            "{}",
+            result.content
+        );
+        // The second request carries that result to the model.
+        let sent = bodies[1]["messages"].as_array().unwrap();
+        assert!(
+            sent.iter().any(|m| m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("[hook log]"))),
+            "{sent:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

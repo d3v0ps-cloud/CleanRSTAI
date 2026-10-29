@@ -53,6 +53,12 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   `.cleanrstai/skills` folder) go to the provider with every message while skills are on and
   some exist. A skill's text, and any other file of the skill that the model asks for, go to
   the provider when the model loads it. Nothing else is read from a skill folder.
+- **Hooks** are commands you set in [Skills & hooks](../settings/skills-and-hooks.html#hooks).
+  They run on this computer (or in the Docker sandbox, when it is on), with the chat's working
+  folder as their directory. Each one gets the tool's name, the call's arguments as JSON and,
+  for an after-tool hook, the tool's result, in environment variables. What a hook prints is
+  kept in the chat, and an after-tool hook's output goes to the provider with the result. A
+  command can do anything you could do in a terminal, so only set hooks you have read.
 - **Code review** sends the working folder's git diff (up to the size you set, and the names of
   new files) to the provider and model chosen in
   [Context & files](../settings/context.html#code-review), when you choose Review changes.

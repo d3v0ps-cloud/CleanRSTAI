@@ -923,6 +923,9 @@ pub struct GeneralSettings {
     /// `cleanrstai exec`: one request from the command line (Settings → Background).
     #[serde(default)]
     pub exec: crate::exec::ExecSettings,
+    /// Commands run around tool calls and when a reply is done (see `hooks`).
+    #[serde(default)]
+    pub hooks: crate::hooks::HookSettings,
     /// Prompts that run on a schedule into a chat (Settings → Background).
     #[serde(default)]
     pub schedules: crate::schedule::ScheduleSettings,
@@ -961,6 +964,7 @@ impl Default for GeneralSettings {
             remote: RemoteSettings::default(),
             background: BackgroundSettings::default(),
             exec: Default::default(),
+            hooks: Default::default(),
             schedules: Default::default(),
         }
     }
@@ -1336,6 +1340,7 @@ impl Settings {
             .exec
             .mcp_wait_secs
             .min(crate::exec::MAX_MCP_WAIT_SECS);
+        crate::hooks::normalize(&mut self.general.hooks);
         self.general.schedules.normalize();
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
@@ -1518,6 +1523,20 @@ pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_settings_normalise_with_the_rest_of_the_settings() {
+        let mut s = Settings::default();
+        assert!(!s.general.hooks.enabled);
+        s.general.hooks.hooks.push(crate::hooks::Hook {
+            command: "cargo fmt".into(),
+            timeout_secs: 0,
+            ..Default::default()
+        });
+        s.normalize();
+        assert_eq!(s.general.hooks.hooks[0].timeout_secs, 1);
+        assert_eq!(s.general.hooks.hooks[0].name, "hook 1");
+    }
+
     #[test]
     fn skill_settings_load_from_older_files_and_are_kept_tidy() {
         let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();

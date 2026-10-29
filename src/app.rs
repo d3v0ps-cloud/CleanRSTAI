@@ -800,6 +800,7 @@ impl ChatApp {
                                 let ic = match key {
                                     crate::tools::COMPACTION => icon::STACK,
                                     crate::tools::INSTRUCTIONS => icon::FILE,
+                                    crate::tools::HOOKS => icon::TERMINAL,
                                     _ => icon::UNDO,
                                 };
                                 let mut hover = desc.to_owned();
@@ -1565,6 +1566,10 @@ impl ChatApp {
             }
             ChatEvent::Instructions(files) => {
                 self.instructions.insert(id, files);
+                return;
+            }
+            ChatEvent::HookNotice(text) => {
+                self.notice = Some(text);
                 return;
             }
             _ => {}

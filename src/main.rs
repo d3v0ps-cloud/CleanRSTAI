@@ -16,6 +16,7 @@ mod env_path;
 mod exec;
 mod export;
 mod git;
+mod hooks;
 mod instructions;
 mod llm;
 mod mcp;
