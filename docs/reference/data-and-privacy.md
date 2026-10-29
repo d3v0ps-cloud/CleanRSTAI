@@ -39,6 +39,12 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   web search sends the model's query to the search service chosen in
   [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
   Tavily and Kagi also get your API key). They ask for approval unless you turned that off.
+  With **Search with** set to the provider's own search, the query goes to the chat's provider
+  instead, which searches on its side; the search service isn't contacted and nothing is asked.
+- **OCR for scanned PDFs**, when on: each page image of a PDF with no text layer goes to the
+  vision model's provider (chosen in [Context & files](../settings/context.html#ocr-for-scanned-pdfs)),
+  one request per page, with the prompt to transcribe it. With **Tesseract** the pages are read
+  by the `tesseract` program on this computer and nothing leaves it.
 - **Context compaction** sends the older messages of a long chat (shortened where they are
   long) to the provider and model chosen in [Context & files](../settings/context.html), to
   have them summarised.
@@ -89,6 +95,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   everything a browser exchanges with the app through the tunnel passes through Cloudflare's
   network, which ends the HTTPS connection and so can read it
   ([Cloudflare Tunnel](../using/cloudflare-tunnel.html#privacy)).
+  With Cloudflare Access on, the app also fetches the team's public signing keys from
+  `https://<team>/cdn-cgi/access/certs`; that request carries no chat data.
 - **Replies and artifacts saved as Word, PDF or Excel files** are written to the place you pick in
   the save dialog. Building the file happens on this computer; nothing is sent anywhere.
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the

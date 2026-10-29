@@ -78,6 +78,12 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
     **Show** toggle. It is kept in the keychain like your API keys.
   - **Public hostname** (named tunnel): optional, the hostname of the tunnel's route, such as
     `chat.example.com`. The app also learns it from `cloudflared` once the tunnel connects.
+  - **Cloudflare Access** (named tunnel only): tick *Require Cloudflare Access in front of the
+    tunnel's hostname* to require an Access login before the app's login page. Enter the **Team
+    domain** (`name.cloudflareaccess.com`) and the **Audience (AUD) tag** of the Access application.
+    *Sign in with Access* also signs the browser in, so the app password is not asked. The status
+    line shows the last Access error or a missing team domain or tag. See
+    [Cloudflare Access](../using/cloudflare-tunnel.html#cloudflare-access-sign-in-before-the-login).
   - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
     with **Browse…**.
   - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy
@@ -158,6 +164,22 @@ With all three off, no reply or artifact offers **Save as…**.
 **New chats start in** (default **Default permissions**) picks the [permission mode](../using/tools.html#permissions)
 a new chat starts in: Default permissions, Auto in workspace, Allow all or Read only. Each chat
 can change its own mode in the tools menu or with ⌘K; chats that already exist keep theirs.
+
+## Plan mode
+
+**Offer Plan in the permission menus** (default on) lists Plan in the permission menus, for a chat or
+a new one; off, Plan is hidden and a chat set to it is read only. A Plan chat uses the
+[Plan permission](../using/tools.html#permissions): the model reads, searches and proposes a numbered
+plan, and changes nothing until you press **Approve plan** under the reply.
+
+**Mode after approval** (default **Default permissions**) is the mode the chat switches to when you
+approve a plan. Plan and Read only are not offered, since the plan is meant to run.
+
+**Approval message** (default "The plan is approved. Carry it out.") is the message sent to the model
+on approval. An empty message restores the default.
+
+**Plan instructions** is the system prompt section a Plan chat gets, in place of the default text;
+an empty field restores it, and **Reset** does the same.
 
 ## Max tool rounds
 

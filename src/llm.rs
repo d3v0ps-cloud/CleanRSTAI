@@ -31,6 +31,10 @@ pub struct AssistantTurn {
     pub stats: RequestStats,
     /// Items a native API needs back with the next request.
     pub native: Option<crate::types::NativeItems>,
+    /// Pages the provider's own search cited.
+    pub sources: Vec<crate::types::Source>,
+    /// The provider's own search ran for this reply.
+    pub searched: bool,
 }
 
 pub fn build_http_client() -> reqwest::Client {
@@ -818,6 +822,13 @@ pub async fn chat_completion(
     if p.kind == ProviderKind::OpenRouter {
         body["usage"] = json!({"include": true});
     }
+    // OpenRouter's web plugin searches for the model and cites the pages it used.
+    let web_plugin = p.native_search.filter(|_| {
+        crate::native::native_search_support(p) == Some(crate::native::NativeKind::OpenRouter)
+    });
+    if let Some(max_results) = web_plugin {
+        body["plugins"] = json!([{"id": "web", "max_results": max_results}]);
+    }
     if p.stream && p.kind == ProviderKind::LlamaCpp {
         body["return_progress"] = json!(true);
         // Its own prefill/decode speeds in every chunk, for the live readout.
@@ -853,7 +864,10 @@ pub async fn chat_completion(
     });
     stats.proxy = litellm_details(resp.headers());
 
-    let mut turn = AssistantTurn::default();
+    let mut turn = AssistantTurn {
+        searched: web_plugin.is_some(),
+        ..Default::default()
+    };
     let mut builder = ToolCallBuilder::default();
     // Live stats are pushed at most a few times a second, not on every chunk.
     let mut last_live = std::time::Instant::now();
@@ -887,6 +901,9 @@ pub async fn chat_completion(
         if let Some(c) = msg.get("content").and_then(|c| c.as_str()) {
             on_delta(Delta::Content(c));
             turn.content.push_str(c);
+        }
+        if let Some(a) = msg.get("annotations") {
+            crate::native::add_annotations(&mut turn.sources, a);
         }
         builder.apply(&msg);
         turn.finish_reason = choice
@@ -948,6 +965,9 @@ pub async fn chat_completion(
                 if let Some(r) = reasoning_of(delta).filter(|r| !r.is_empty()) {
                     on_delta(Delta::Reasoning(r));
                     turn.reasoning.push_str(r);
+                }
+                if let Some(a) = delta.get("annotations") {
+                    crate::native::add_annotations(&mut turn.sources, a);
                 }
                 if let Some(c) = delta
                     .get("content")

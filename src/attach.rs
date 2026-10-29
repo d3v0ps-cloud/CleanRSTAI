@@ -41,8 +41,38 @@ pub(crate) fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// The note a scanned PDF attaches with when OCR is off.
+pub const NO_TEXT_LAYER_NOTE: &str =
+    "No text layer; turn on OCR in Settings → Context & files to read the scanned pages.";
+
+/// A file read from disk or a drop: an attachment, or a scanned PDF that OCR still has to read.
+#[derive(Debug)]
+pub enum Reading {
+    Done(Attachment),
+    Scanned(ScannedPdf),
+}
+
+/// A PDF whose text layer is empty: its name and bytes, for OCR.
+#[derive(Debug)]
+pub struct ScannedPdf {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+impl Reading {
+    /// The attachment, with a scanned PDF attached as a note that OCR is off.
+    pub fn without_ocr(self) -> Attachment {
+        match self {
+            Self::Done(a) => a,
+            Self::Scanned(s) => {
+                Attachment::text(s.name, "application/pdf", NO_TEXT_LAYER_NOTE.into())
+            }
+        }
+    }
+}
+
 impl Attachment {
-    pub fn from_path(path: &Path) -> Result<Self> {
+    pub fn read_path(path: &Path) -> Result<Reading> {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -51,15 +81,19 @@ impl Attachment {
             bail!("{name} is larger than 50 MB");
         }
         let bytes = std::fs::read(path)?;
-        Self::from_bytes(name, bytes)
+        Self::read_bytes(name, bytes)
     }
 
     pub fn from_bytes(name: String, bytes: Vec<u8>) -> Result<Self> {
+        Ok(Self::read_bytes(name, bytes)?.without_ocr())
+    }
+
+    pub fn read_bytes(name: String, bytes: Vec<u8>) -> Result<Reading> {
         if let Some(mime) = image_mime(&bytes) {
             if bytes.len() > MAX_IMAGE_BYTES {
                 bail!("{name} is larger than 20 MB");
             }
-            return Ok(Self::image(name, mime.into(), &bytes));
+            return Ok(Reading::Done(Self::image(name, mime.into(), &bytes)));
         }
         if bytes.len() > MAX_FILE_BYTES {
             bail!("{name} is larger than 50 MB");
@@ -67,17 +101,29 @@ impl Attachment {
         let detected = crate::documents::detect(&bytes)
             .map_err(|e| anyhow::anyhow!("{name} couldn't be read: {e:#}"))?;
         if let Some(format) = detected {
-            let text = crate::documents::extract(format, &bytes)
+            let extracted = crate::documents::extract_or_scanned(format, &bytes)
                 .map_err(|e| anyhow::anyhow!("{name} couldn't be read: {e:#}"))?;
-            return Ok(Self::text(name, format.mime(), text));
+            return Ok(match extracted {
+                crate::documents::Extracted::Text(text) => {
+                    Reading::Done(Self::text(name, format.mime(), text))
+                }
+                crate::documents::Extracted::Scanned { .. } => {
+                    Reading::Scanned(ScannedPdf { name, bytes })
+                }
+            });
         }
         match decode_text(&bytes) {
-            Some(text) => Ok(Self::text(name, "text/plain", text)),
+            Some(text) => Ok(Reading::Done(Self::text(name, "text/plain", text))),
             None => bail!(
                 "{name} isn't a supported file: attach text, images (PNG, JPEG, GIF, WebP), \
                  PDFs, Office or OpenDocument files, or RTF"
             ),
         }
+    }
+
+    /// Text read from a scanned PDF by OCR.
+    pub fn ocr_text(name: String, text: String) -> Self {
+        Self::text(name, "application/pdf", text)
     }
 
     fn text(name: String, mime: &str, text: String) -> Self {
@@ -246,7 +292,9 @@ mod tests {
             "{}/tests/fixtures/documents/report.docx",
             env!("CARGO_MANIFEST_DIR")
         );
-        let a = Attachment::from_path(std::path::Path::new(&path)).unwrap();
+        let a = Attachment::read_path(std::path::Path::new(&path))
+            .unwrap()
+            .without_ocr();
         assert_eq!(a.name, "report.docx");
         assert!(a.mime.ends_with("wordprocessingml.document"));
         assert!(a.text.as_deref().unwrap().contains("ZEBRA-7"));

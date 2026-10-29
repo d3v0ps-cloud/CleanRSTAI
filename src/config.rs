@@ -174,6 +174,10 @@ pub struct ProviderConfig {
     /// compaction and the context-use figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u32>,
+    /// For one request only (set per chat by `AgentRequest::for_chat`, never saved): the
+    /// provider's own web search, with this many searches allowed per reply.
+    #[serde(skip)]
+    pub native_search: Option<u32>,
 }
 
 impl Default for ProviderConfig {
@@ -195,6 +199,7 @@ impl Default for ProviderConfig {
             kind: ProviderKind::Generic,
             request_usage: true,
             context_tokens: None,
+            native_search: None,
         }
     }
 }
@@ -396,6 +401,32 @@ impl SearchBackend {
 /// Most results one web search returns.
 pub const MAX_SEARCH_RESULTS: u32 = 20;
 
+/// Most searches the provider's own search may run for one reply.
+pub const MAX_NATIVE_SEARCH_USES: u32 = 20;
+
+/// Which search a chat uses when its web search is on.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSearch {
+    /// CleanRSTAI's own search service (the built-in `web_search` tool).
+    #[default]
+    Off,
+    /// The provider's own search, when its API has one (Anthropic, OpenAI Responses and
+    /// OpenRouter). Other providers keep the built-in tool.
+    PreferProvider,
+}
+
+impl NativeSearch {
+    pub const ALL: [NativeSearch; 2] = [Self::Off, Self::PreferProvider];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "CleanRSTAI's search service",
+            Self::PreferProvider => "the provider's own search when it has one",
+        }
+    }
+}
+
 /// The web search tool's service and options.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -413,6 +444,10 @@ pub struct WebSearchSettings {
     pub ask: bool,
     /// Subagents may search too (when they may use the built-in tools).
     pub subagents: bool,
+    /// Search with this service, or with the provider's own search when it has one.
+    pub native: NativeSearch,
+    /// Searches the provider's own search may run for one reply, 1–20.
+    pub native_max_uses: u32,
 }
 
 impl Default for WebSearchSettings {
@@ -425,6 +460,8 @@ impl Default for WebSearchSettings {
             safe_search: true,
             ask: true,
             subagents: true,
+            native: NativeSearch::Off,
+            native_max_uses: 5,
         }
     }
 }
@@ -852,6 +889,41 @@ pub struct TunnelSettings {
     pub hostname: String,
     /// Path to `cloudflared`; empty finds it on `PATH`.
     pub cloudflared: String,
+    /// Cloudflare Access in front of a named tunnel's hostname (see `remote::access`).
+    pub access: AccessSettings,
+}
+
+/// Cloudflare Access (Zero Trust) in front of a named tunnel's hostname. Access signs each
+/// request it lets through; the app checks that signature, so a request that skips Access is
+/// refused. Only named tunnels: a quick tunnel's address can't be put behind an application.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AccessSettings {
+    /// Require a valid Access token for requests that arrive through the tunnel's hostname.
+    pub enabled: bool,
+    /// The team domain, e.g. `myteam.cloudflareaccess.com`. A pasted `https://` is dropped.
+    pub team_domain: String,
+    /// The application's audience (AUD) tag from the Access application's overview.
+    pub audience: String,
+    /// A valid Access token also signs the browser in, so the app password is not asked for.
+    pub skip_password: bool,
+}
+
+/// The host name of a pasted team domain: trimmed, lowercase, without `https://` or a trailing
+/// `/`. `MyTeam.cloudflareaccess.com/` gives `myteam.cloudflareaccess.com`.
+pub fn team_host(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    let host = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    host.trim_end_matches('/').to_owned()
+}
+
+/// Trims the Access fields and keeps only the host name of a pasted team URL.
+fn normalize_access(access: &mut AccessSettings) {
+    access.team_domain = team_host(&access.team_domain);
+    access.audience = access.audience.trim().to_owned();
 }
 
 impl Default for RemoteSettings {
@@ -911,6 +983,9 @@ pub struct GeneralSettings {
     pub review: ReviewSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
+    /// Reading scanned PDFs (no text layer) with a vision model or tesseract.
+    #[serde(default)]
+    pub ocr: crate::ocr::OcrSettings,
     /// Slash commands: saved prompts typed as `/name` (see `commands`).
     pub slash_commands: SlashCommandSettings,
     /// Skills the model loads on demand (see `skills`).
@@ -929,6 +1004,9 @@ pub struct GeneralSettings {
     /// Prompts that run on a schedule into a chat (Settings → Background).
     #[serde(default)]
     pub schedules: crate::schedule::ScheduleSettings,
+    /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
+    #[serde(default)]
+    pub plan: crate::plan::PlanSettings,
     /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
     #[serde(default)]
     pub save_as: SaveAsSettings,
@@ -984,6 +1062,7 @@ impl Default for GeneralSettings {
             instructions: InstructionSettings::default(),
             review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
+            ocr: Default::default(),
             slash_commands: SlashCommandSettings::default(),
             skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
@@ -992,6 +1071,7 @@ impl Default for GeneralSettings {
             hooks: Default::default(),
             schedules: Default::default(),
             save_as: Default::default(),
+            plan: Default::default(),
         }
     }
 }
@@ -1300,6 +1380,7 @@ impl Settings {
         } else {
             url.to_owned()
         };
+        self.general.plan.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -1310,6 +1391,9 @@ impl Settings {
         if !self.providers.iter().any(|p| p.id == c.provider_id) {
             c.provider_id.clear();
         }
+        self.general
+            .ocr
+            .normalize(|id| self.providers.iter().any(|p| p.id == id));
         let rv = &mut self.general.review;
         rv.max_diff_kb = rv.max_diff_kb.clamp(16, 4096);
         rv.base_branch = rv.base_branch.trim().to_owned();
@@ -1352,6 +1436,7 @@ impl Settings {
         skills.disabled = disabled;
         let search = &mut self.general.builtin_tools.search;
         search.max_results = search.max_results.clamp(1, MAX_SEARCH_RESULTS);
+        search.native_max_uses = search.native_max_uses.clamp(1, MAX_NATIVE_SEARCH_USES);
         search.searxng_url = search.searxng_url.trim().trim_end_matches('/').to_owned();
         let sa = &mut self.subagents;
         sa.max_parallel = sa.max_parallel.clamp(1, 16);
@@ -1368,6 +1453,7 @@ impl Settings {
             .min(crate::exec::MAX_MCP_WAIT_SECS);
         crate::hooks::normalize(&mut self.general.hooks);
         self.general.schedules.normalize();
+        normalize_access(&mut self.general.remote.tunnel.access);
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -1987,10 +2073,48 @@ mod tests {
     }
 
     #[test]
+    fn plan_settings_load_from_older_files_and_normalize() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.plan, crate::plan::PlanSettings::default());
+        assert!(s.plan.enabled);
+        let mut settings = Settings::default();
+        settings.general.plan.after_approval = crate::approval::ApprovalMode::Plan;
+        settings.general.plan.prompt = "  ".into();
+        settings.normalize();
+        assert_eq!(
+            settings.general.plan.after_approval,
+            crate::approval::ApprovalMode::Default
+        );
+        assert_eq!(settings.general.plan.prompt, crate::plan::PLAN_PROMPT);
+    }
+
+    #[test]
     fn review_settings_default_when_missing_from_file() {
         let s: GeneralSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.review, ReviewSettings::default());
         assert_eq!(s.review.scope, ReviewScope::Uncommitted);
+    }
+
+    #[test]
+    fn access_settings_load_from_older_files_and_normalize() {
+        let old: Settings = serde_json::from_str(
+            r#"{"general": {"remote": {"tunnel": {"enabled": true, "mode": "named"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.general.remote.tunnel.access, AccessSettings::default());
+
+        let mut s = Settings::default();
+        s.general.remote.tunnel.access = AccessSettings {
+            enabled: true,
+            team_domain: "  https://MyTeam.cloudflareaccess.com/ ".into(),
+            audience: " abc123 ".into(),
+            skip_password: true,
+        };
+        s.normalize();
+        let access = &s.general.remote.tunnel.access;
+        assert_eq!(access.team_domain, "myteam.cloudflareaccess.com");
+        assert_eq!(access.audience, "abc123");
+        assert!(access.enabled && access.skip_password);
     }
 
     #[test]
@@ -2067,5 +2191,34 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn native_search_settings_default_off_load_older_files_and_clamp() {
+        assert_eq!(
+            serde_json::to_value(NativeSearch::PreferProvider).unwrap(),
+            "prefer_provider"
+        );
+        let s: Settings = serde_json::from_str(
+            r#"{"general": {"builtin_tools": {"search": {"backend": "searxng"}}}}"#,
+        )
+        .unwrap();
+        let search = &s.general.builtin_tools.search;
+        assert_eq!(search.native, NativeSearch::Off);
+        assert_eq!(search.native_max_uses, 5);
+        let mut s = s;
+        s.general.builtin_tools.search.native_max_uses = 0;
+        s.normalize();
+        assert_eq!(s.general.builtin_tools.search.native_max_uses, 1);
+        s.general.builtin_tools.search.native_max_uses = 99;
+        s.normalize();
+        assert_eq!(s.general.builtin_tools.search.native_max_uses, 20);
+        // A provider's per-request search is never saved.
+        let p = ProviderConfig {
+            native_search: Some(3),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v.get("native_search").is_none());
     }
 }

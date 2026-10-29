@@ -1250,6 +1250,14 @@ fn xml_escape(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The text documents.rs reads back from a file this module wrote.
+    fn extracted(format: crate::documents::Format, bytes: &[u8]) -> String {
+        match crate::documents::extract_or_scanned(format, bytes).unwrap() {
+            crate::documents::Extracted::Text(text) => text,
+            crate::documents::Extracted::Scanned { .. } => panic!("read as a scanned PDF"),
+        }
+    }
+
     fn run(text: &str) -> Run {
         Run {
             text: text.to_owned(),
@@ -1503,7 +1511,7 @@ mod tests {
     }
 
     fn docx_text(bytes: &[u8]) -> String {
-        crate::documents::extract(crate::documents::Format::Docx, bytes).unwrap()
+        extracted(crate::documents::Format::Docx, bytes)
     }
 
     #[test]
@@ -1600,7 +1608,7 @@ mod tests {
         );
         let bytes = to_pdf(&md).unwrap();
         assert!(bytes.starts_with(b"%PDF"));
-        let text = crate::documents::extract(crate::documents::Format::Pdf, &bytes).unwrap();
+        let text = extracted(crate::documents::Format::Pdf, &bytes);
         for want in [
             "Long report",
             "ZEBRA-7",

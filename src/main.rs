@@ -22,6 +22,8 @@ mod llm;
 mod mcp;
 mod model_options;
 mod native;
+mod ocr;
+mod plan;
 mod remote;
 mod review;
 mod sandbox;
