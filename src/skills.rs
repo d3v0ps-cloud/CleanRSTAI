@@ -554,6 +554,8 @@ mod tests {
             assert!(load(&skill, Some(bad), 1024).is_err(), "{bad} was allowed");
         }
         assert!(load(&skill, Some("missing.md"), 1024).is_err());
+        std::fs::write(dir.join("inside.txt"), "in").unwrap();
+        assert_eq!(load(&skill, Some("inside.txt"), 1024).unwrap(), "in");
 
         #[cfg(unix)]
         {
@@ -561,7 +563,6 @@ mod tests {
             let err = load(&skill, Some("link.txt"), 1024).unwrap_err();
             assert!(err.contains("outside"), "{err}");
             // A link that stays inside the folder is fine.
-            std::fs::write(dir.join("inside.txt"), "in").unwrap();
             std::os::unix::fs::symlink(dir.join("inside.txt"), dir.join("alias.txt")).unwrap();
             assert_eq!(load(&skill, Some("alias.txt"), 1024).unwrap(), "in");
         }
