@@ -25,7 +25,10 @@ files list and read-only git tools in **v0.9.2-dev.2**, and skills and backgroun
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
 settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
-settings on the Background tab) in **v0.9.2-dev.4**, and Cloudflare Access in front of a named tunnel in **v0.9.2-dev.5**.
+settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
+**Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
+and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
+Built-in Tools) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -319,7 +322,7 @@ in them follows the same rule:
 
 - [x] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
   workspace** (writes and sandboxed commands run freely, the rest asks) and **Full access**
-- [ ] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
+- [x] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
   before it changes anything
 - [x] Settings: the default mode for new chats; per chat: pick the mode in the tools menu and
   with ⌘K
@@ -329,7 +332,7 @@ in them follows the same rule:
 - [x] A built-in `web_search` tool with a choice of backend (DuckDuckGo without a key, SearXNG,
   Brave, Tavily), with the API key in the keychain
 - [x] Kagi Search API backend
-- [ ] The provider's own search when it has one
+- [x] The provider's own search when it has one
 - [x] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
   subagents may use it
 - [x] Per chat: on/off in the tools menu, like the other built-in tools
@@ -394,7 +397,7 @@ in them follows the same rule:
 
 Smaller items from the same comparison:
 
-- [ ] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
+- [x] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
   Settings
 - [x] Share a chat as a single HTML file alongside the Markdown export
 

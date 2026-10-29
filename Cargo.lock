@@ -1064,6 +1064,7 @@ dependencies = [
  "keyring",
  "libc",
  "log",
+ "lopdf",
  "mermaid-rs-renderer",
  "notify-rust",
  "open",

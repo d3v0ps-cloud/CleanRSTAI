@@ -152,6 +152,22 @@ Links in a previewed page open in your browser, never in the panel.
 a new chat starts in: Default permissions, Auto in workspace, Allow all or Read only. Each chat
 can change its own mode in the tools menu or with ⌘K; chats that already exist keep theirs.
 
+## Plan mode
+
+**Offer Plan in the permission menus** (default on) lists Plan in the permission menus, for a chat or
+a new one; off, Plan is hidden and a chat set to it is read only. A Plan chat uses the
+[Plan permission](../using/tools.html#permissions): the model reads, searches and proposes a numbered
+plan, and changes nothing until you press **Approve plan** under the reply.
+
+**Mode after approval** (default **Default permissions**) is the mode the chat switches to when you
+approve a plan. Plan and Read only are not offered, since the plan is meant to run.
+
+**Approval message** (default "The plan is approved. Carry it out.") is the message sent to the model
+on approval. An empty message restores the default.
+
+**Plan instructions** is the system prompt section a Plan chat gets, in place of the default text;
+an empty field restores it, and **Reset** does the same.
+
 ## Max tool rounds
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.

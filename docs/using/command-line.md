@@ -34,7 +34,7 @@ prompt, after the words.
 | `--provider NAME` | The provider profile to use, by name (without regard to case) or by id. Default: the active provider. |
 | `--model MODEL` | The model to use instead of the provider's. |
 | `--workspace DIR` | The working folder for the file, search, git and shell tools, as a chat's folder. Without it, no workspace tools are offered. |
-| `--mode MODE` | The approval mode: `read-only`, `default`, `auto` or `allow-all`. Default: the mode set in Settings. |
+| `--mode MODE` | The approval mode: `read-only`, `plan`, `default`, `auto` or `allow-all`. Default: the mode set in Settings. |
 | `--json` | Print nothing until the end, then one JSON object. |
 | `--no-mcp` | Don't start the MCP servers for this request. |
 | `--save` | Save the chat, so it shows in the app's chat list. |
@@ -49,6 +49,7 @@ The mode decides which tool calls run. It is the same set as a chat's tools menu
 | `--mode` | In the app | What runs without asking |
 |---|---|---|
 | `read-only` | Read only | Read-only tools: reading, searching and git status and diff in the workspace, the time and calculator. File writes, edits and shell commands are not offered to the model at all. |
+| `plan` | Plan | The same as `read-only`: the model proposes a plan, which the command line does not approve, so the run ends with the plan. Off in Settings, it is read only. |
 | `default` | Default permissions | The same as a chat that asks: only the tools that never ask. |
 | `auto` | Auto in workspace | Also file writes and edits in the workspace, and shell commands when the Docker sandbox is on. |
 | `allow-all` | Allow all | Every tool call. |
