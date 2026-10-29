@@ -233,6 +233,13 @@ plain-text fallback when the keychain is off or unavailable.
 drops all raw HTML except the app's own `<details>` wrapper, and allow-lists link (http/https/mailto)
 and image (raster `data:`) destinations, so the shared file loads nothing.
 
+**Save as files** (`save_as.rs`): "Save as…" on a reply or a Markdown, code or CSV artifact
+(`ui/chat_view.rs`, `save_as_menu`) reads the Markdown into a block model (`blocks`) that the
+Word, PDF and Excel writers share. Word and Excel are hand-written OOXML over the `zip` crate;
+PDF is `genpdf` with the static Instrument Sans and IBM Plex Mono in `assets/fonts`. The dialog
+runs on the UI thread, the rendering on a blocking task (`AppEvent::SavedAs`). Formats come from
+`GeneralSettings.save_as`; Excel only where there is a table or CSV.
+
 **Providers**: `ProviderKind` (generic OpenAI-compatible, llama.cpp, LiteLLM, Ollama,
 LM Studio, vLLM, OpenRouter) is detected by `llm::detect_kind` and decides which stats are
 read (`stats.rs`: server timings vs. measured prefill/decode, cost, served model, context

@@ -51,6 +51,9 @@ rcgen = "0.13"
 # `z` selects the pure Rust D-Bus client (zbus) on Linux, so no libdbus is linked; macOS and
 # Windows use their own notification APIs.
 notify-rust = { version = "4.18", default-features = false, features = ["z"] }
+# Save as PDF (Save replies or artifacts as files, src/save_as.rs): pure Rust layout and
+# embedding of the static Instrument Sans and IBM Plex Mono fonts in assets/fonts.
+genpdf = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

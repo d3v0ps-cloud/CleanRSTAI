@@ -25,7 +25,8 @@ files list and read-only git tools in **v0.9.2-dev.2**, and skills and backgroun
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
 settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
-settings on the Background tab) in **v0.9.2-dev.4**.
+settings on the Background tab) in **v0.9.2-dev.4**, and saving replies and artifacts as Word,
+PDF and Excel files (Settings → General) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -360,7 +361,7 @@ in them follows the same rule:
 - [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
-- [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
+- [x] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
 
 ## 25. Commands, skills and hooks
 

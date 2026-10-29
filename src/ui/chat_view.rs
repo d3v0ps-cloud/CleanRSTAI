@@ -13,7 +13,8 @@ use super::widgets::{code_block, diff_block, diff_stat, quiet_icons};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::artifacts::Artifact;
-use crate::config::ReasoningDisplay;
+use crate::config::{ReasoningDisplay, SaveAsSettings};
+use crate::save_as::Content;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall, results_after};
@@ -61,6 +62,8 @@ pub struct View<'a> {
     /// Every artifact in the chat, and the one open in the panel.
     pub artifacts: &'a [Artifact],
     pub open_artifact: Option<(usize, usize)>,
+    /// The file types "Save as…" offers (Settings → General).
+    pub save_as: SaveAsSettings,
 }
 
 pub fn show(
@@ -163,6 +166,7 @@ pub fn show(
                                     open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                     undo: undo_at.get(&i).copied(),
+                                    save_as: v.save_as,
                                 },
                                 msg,
                                 &mut actions,
@@ -295,6 +299,7 @@ struct AssistantCtx<'a> {
     last: bool,
     /// The last reply of a turn whose file edits can be undone: how many.
     undo: Option<usize>,
+    save_as: SaveAsSettings,
 }
 
 fn assistant_message(
@@ -404,6 +409,16 @@ fn assistant_body(
                 Some("Fork from here") => actions.push(Action::ForkFrom(cx.conv, cx.idx)),
                 _ => {}
             }
+            if !msg.content.is_empty() {
+                save_as_menu(
+                    ui,
+                    cx.conv,
+                    None,
+                    Content::Markdown(msg.content.clone()),
+                    cx.save_as,
+                    actions,
+                );
+            }
             if let Some(n) = cx.undo {
                 let label = if n == 1 {
                     "Undo file edit".to_owned()
@@ -430,6 +445,41 @@ fn assistant_body(
             }
         });
     }
+}
+
+/// The "Save as…" menu: the formats enabled in Settings that `content` supports, each saving
+/// through `Action::SaveAs`. `title` names the file (the chat's when `None`).
+pub fn save_as_menu(
+    ui: &mut egui::Ui,
+    conv: Uuid,
+    title: Option<String>,
+    content: Content,
+    settings: SaveAsSettings,
+    actions: &mut Vec<Action>,
+) {
+    let formats = content.formats(&settings);
+    if formats.is_empty() {
+        return;
+    }
+    let pencil = theme::palette(ui.visuals().dark_mode).pencil;
+    ui.menu_button(
+        RichText::new(icon::DOWNLOAD).size(15.0).color(pencil),
+        |ui| {
+            for format in formats {
+                if ui.button(format.label()).clicked() {
+                    actions.push(Action::SaveAs {
+                        conv,
+                        title: title.clone(),
+                        content: content.clone(),
+                        format,
+                    });
+                    ui.close();
+                }
+            }
+        },
+    )
+    .response
+    .on_hover_text("Save as…");
 }
 
 /// Whether a reasoning section starts open, per the user's setting.

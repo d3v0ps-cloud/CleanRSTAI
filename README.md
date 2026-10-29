@@ -176,7 +176,10 @@ too, as an installer and a portable `.exe`.
   show as links unless you turn on **Load web images in replies** in Settings → General.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
-  save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
+  save; the reply keeps a link that expands them inline.
+- **Save as files**: a reply or a Markdown, code or CSV artifact can be saved as a Word document,
+  a PDF or an Excel workbook (one sheet per table, numbers as numbers), each format switched on
+  or off in Settings → General. On macOS and Windows web pages run
   live in the panel (scripts on, network off by default; both switchable), and any page can
   open in your browser.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
@@ -476,6 +479,7 @@ src/
   secrets.rs      OS keychain storage for API keys and tokens
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
+  save_as.rs      Word, PDF and Excel files from replies and artifacts
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
   remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client

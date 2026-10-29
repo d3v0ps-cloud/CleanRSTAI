@@ -89,6 +89,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   everything a browser exchanges with the app through the tunnel passes through Cloudflare's
   network, which ends the HTTPS connection and so can read it
   ([Cloudflare Tunnel](../using/cloudflare-tunnel.html#privacy)).
+- **Replies and artifacts saved as Word, PDF or Excel files** are written to the place you pick in
+  the save dialog. Building the file happens on this computer; nothing is sent anywhere.
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
   system's temporary folder and run in the browser, where a page can load anything it links to.
   The app only does this when you click **Open in browser**.

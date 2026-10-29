@@ -69,6 +69,14 @@ pub(crate) enum Action {
     OpenArtifactInBrowser(crate::artifacts::Artifact),
     /// Undo the file edits of the turn holding this message.
     UndoTurn(Uuid, usize),
+    /// Save a reply or artifact as a Word, PDF or Excel file: the chat, the file's title (the
+    /// chat's when `None`), what to save and the format.
+    SaveAs {
+        conv: Uuid,
+        title: Option<String>,
+        content: crate::save_as::Content,
+        format: crate::save_as::Format,
+    },
 }
 
 pub struct ChatApp {
@@ -1502,8 +1510,51 @@ impl ChatApp {
                     }
                 }
                 AppEvent::Chat { conv_id, event } => self.handle_chat_event(conv_id, event),
+                AppEvent::SavedAs(result) => {
+                    self.notice = Some(match result {
+                        Ok(msg) | Err(msg) => msg,
+                    });
+                }
             }
         }
+    }
+
+    /// "Save as…" for a reply or artifact: the file dialog here (as the other saves do, since
+    /// macOS wants it on the main thread), then the file is built and written off the UI
+    /// thread and its outcome comes back as `AppEvent::SavedAs`.
+    fn save_as(
+        &mut self,
+        conv: Uuid,
+        title: Option<String>,
+        content: crate::save_as::Content,
+        format: crate::save_as::Format,
+    ) {
+        let title = title.unwrap_or_else(|| {
+            self.conversations
+                .iter()
+                .find(|c| c.id == conv)
+                .map(|c| c.title.clone())
+                .unwrap_or_default()
+        });
+        let stem = crate::save_as::file_stem(&title);
+        let name = export::safe_file_name(stem, format.extension());
+        let Some(path) = export::pick_save_path_as(&name, format.label(), format.extension())
+        else {
+            return;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let result = content
+                .render(format)
+                .map_err(|e| format!("Couldn't save {}: {e:#}", path.display()))
+                .and_then(|bytes| {
+                    crate::config::write_private(&path, &bytes)
+                        .map_err(|e| format!("Couldn't save {}: {e:#}", path.display()))
+                })
+                .map(|()| format!("Saved {}", path.display()));
+            let _ = tx.send(AppEvent::SavedAs(result));
+            ctx.request_repaint();
+        });
     }
 
     fn handle_chat_event(&mut self, id: Uuid, event: ChatEvent) {
@@ -3745,6 +3796,7 @@ impl ChatApp {
                     .as_ref()
                     .filter(|v| v.conv == conv.id)
                     .map(|v| (v.message, v.index)),
+                save_as: self.settings.general.save_as,
             },
         )
     }
@@ -3795,6 +3847,12 @@ impl ChatApp {
                         Ok(msg) | Err(msg) => msg,
                     });
                 }
+                Action::SaveAs {
+                    conv,
+                    title,
+                    content,
+                    format,
+                } => self.save_as(conv, title, content, format),
                 Action::OpenArtifactInBrowser(a) => {
                     if let Err(e) = crate::artifacts::open_in_browser(&a) {
                         self.notice = Some(format!("Couldn't open it in the browser: {e}"));
@@ -4497,6 +4555,7 @@ impl eframe::App for ChatApp {
                             &self.artifacts.list,
                             remote_images,
                             live_html,
+                            self.settings.general.save_as,
                             &mut actions,
                         )
                     });
