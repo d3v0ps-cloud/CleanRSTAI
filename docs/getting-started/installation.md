@@ -68,7 +68,10 @@ runs on any distribution with glibc 2.28 or newer.
 
 At runtime you need a desktop with X11 or Wayland (`libxkbcommon-x11` and a GL or Vulkan
 driver, which standard desktops already have). The keychain uses the Secret Service (GNOME
-Keyring or KWallet), and save dialogs use the desktop portal (`xdg-desktop-portal`).
+Keyring or KWallet), and save dialogs use the desktop portal (`xdg-desktop-portal`). The live
+web page preview also uses WebKitGTK when it is installed (`libwebkit2gtk-4.1-0` on Debian and
+Ubuntu, `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch); without it, web pages open in your
+browser.
 
 ## Windows
 

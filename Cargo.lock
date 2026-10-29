@@ -1063,6 +1063,7 @@ dependencies = [
  "image",
  "keyring",
  "libc",
+ "libloading 0.8.9",
  "log",
  "mermaid-rs-renderer",
  "notify-rust",

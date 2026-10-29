@@ -181,8 +181,8 @@ too, as an installer and a portable `.exe`.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
   save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
-  live in the panel (scripts on, network off by default; both switchable), and any page can
-  open in your browser.
+  live in the panel, and on Linux in a window of their own when WebKitGTK is installed (scripts
+  on, network off by default; both switchable), and any page can open in your browser.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to

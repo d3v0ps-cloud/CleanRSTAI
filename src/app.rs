@@ -67,6 +67,8 @@ pub(crate) enum Action {
     CloseArtifact,
     SaveArtifact(crate::artifacts::Artifact),
     OpenArtifactInBrowser(crate::artifacts::Artifact),
+    /// Show a web page in its own live preview window (Linux, see `ui::linux_preview`).
+    OpenLivePreview(crate::artifacts::Artifact),
     /// Undo the file edits of the turn holding this message.
     UndoTurn(Uuid, usize),
     /// Approve the plan a Plan chat's latest reply proposed (see `plan`).
@@ -3777,6 +3779,31 @@ impl ChatApp {
         )
     }
 
+    /// "Open live preview" (Linux): the page in a window of its own. Without WebKitGTK, or a
+    /// display, the browser opens it instead, with a notice the first time.
+    fn open_live_preview(&mut self, a: &crate::artifacts::Artifact) {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::ui::linux_preview;
+            match linux_preview::show(&a.title, &a.source, &self.settings.general.html_preview) {
+                Ok(()) => return,
+                Err(why) if linux_preview::take_fallback_notice() => {
+                    self.notice = Some(if linux_preview::probe().is_err() {
+                        "Live preview needs WebKitGTK (libwebkit2gtk-4.1); opened in the browser \
+                         instead"
+                            .to_owned()
+                    } else {
+                        format!("Live preview couldn't open ({why}); opened in the browser instead")
+                    });
+                }
+                Err(_) => {}
+            }
+        }
+        if let Err(e) = crate::artifacts::open_in_browser(a) {
+            self.notice = Some(format!("Couldn't open it in the browser: {e}"));
+        }
+    }
+
     fn apply_actions(&mut self, actions: Vec<Action>, ctx: &egui::Context) {
         for a in actions {
             match a {
@@ -3832,6 +3859,7 @@ impl ChatApp {
                         self.notice = Some(format!("Couldn't open it in the browser: {e}"));
                     }
                 }
+                Action::OpenLivePreview(a) => self.open_live_preview(&a),
                 Action::ForkFrom(conv, idx) => {
                     self.notice = Some(match self.fork_chat(conv, idx) {
                         Ok(_) => "Forked into a new chat".into(),
@@ -4495,10 +4523,20 @@ impl eframe::App for ChatApp {
 
         if !settings_open {
             let remote_images = self.settings.general.load_remote_images;
-            let live_html = if !crate::ui::webview::SUPPORTED {
-                Err("Web pages open in your browser: this build has no web view.")
-            } else if !self.settings.general.html_preview.enabled {
+            let preview = &self.settings.general.html_preview;
+            // Linux: the page opens in its own window, from the panel's button.
+            #[cfg(target_os = "linux")]
+            let own_window = preview.enabled.then(crate::ui::linux_preview::is_open);
+            #[cfg(not(target_os = "linux"))]
+            let own_window = None;
+            let live_html = if !preview.enabled {
                 Err("Live preview is off (Settings → General); web pages open in your browser.")
+            } else if crate::ui::webview::OWN_WINDOW {
+                Err(
+                    "Web pages open in their own window (needs WebKitGTK); otherwise in your browser.",
+                )
+            } else if !crate::ui::webview::SUPPORTED {
+                Err("Web pages open in your browser: this build has no web view.")
             } else if self.html_preview.error.is_some() {
                 Err("The web view couldn't start, so web pages open in your browser.")
             } else {
@@ -4529,10 +4567,25 @@ impl eframe::App for ChatApp {
                             &self.artifacts.list,
                             remote_images,
                             live_html,
+                            own_window,
                             &mut actions,
                         )
                     });
                 web_area = web_area.or(panel.inner);
+                // The window follows the page the panel shows.
+                #[cfg(target_os = "linux")]
+                if let Some(a) = self
+                    .artifacts
+                    .list
+                    .iter()
+                    .find(|a| (a.message, a.index) == (view.message, view.index))
+                    .filter(|a| a.kind == crate::artifacts::Kind::Html)
+                {
+                    crate::ui::linux_preview::follow(
+                        &a.source,
+                        &self.settings.general.html_preview,
+                    );
+                }
                 self.apply_actions(actions, &ctx);
             }
             // A fresh chat shows the composer under the greeting instead.

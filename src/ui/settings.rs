@@ -2901,7 +2901,9 @@ impl SettingsUi {
                         ui.label("Web page preview");
                         let hp = &mut g.html_preview;
                         ui.vertical(|ui| {
-                            ui.add_enabled_ui(crate::ui::webview::SUPPORTED, |ui| {
+                            ui.add_enabled_ui(
+                                crate::ui::webview::SUPPORTED || crate::ui::webview::OWN_WINDOW,
+                                |ui| {
                                 ui.checkbox(&mut hp.enabled, "Show web pages live in the panel")
                                     .on_hover_text(
                                         "Off: the panel shows the code and \"Open in browser\" \
@@ -2920,6 +2922,9 @@ impl SettingsUi {
                                     );
                                 });
                             });
+                            #[cfg(target_os = "linux")]
+                            weak_note(ui, &crate::ui::linux_preview::status());
+                            #[cfg(not(target_os = "linux"))]
                             if !crate::ui::webview::SUPPORTED {
                                 weak_note(
                                     ui,

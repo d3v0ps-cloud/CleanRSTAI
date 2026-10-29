@@ -1,7 +1,8 @@
 //! The live preview of web page artifacts: a native web view (WKWebView on macOS, WebView2 on
 //! Windows) laid over the artifact panel's preview area. The page gets a Content-Security-Policy
 //! from Settings (scripts and network on or off); links open in the browser, never in the view.
-//! Linux builds have no web view, so web pages open in the browser there.
+//! On Linux the page opens in a WebKitGTK window of its own instead (`linux_preview`), and the
+//! policy here is shared with it.
 //!
 //! The view is a native child window drawn above egui, so the app hides it whenever something
 //! else (settings, the palette, a menu) could sit on top of it.
@@ -10,11 +11,13 @@ use eframe::egui;
 
 use crate::config::HtmlPreviewSettings;
 
-/// Whether this build can show web pages in the app.
+/// Whether this build can show web pages in a web view laid over the panel.
 pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
 
+/// Whether live previews open in a window of their own (Linux, when WebKitGTK is installed).
+pub const OWN_WINDOW: bool = cfg!(target_os = "linux");
+
 /// The Content-Security-Policy for a preview, or `None` when it may do anything.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn policy(s: &HtmlPreviewSettings) -> Option<String> {
     match (s.scripts, s.network) {
         (true, true) => None,
@@ -34,7 +37,6 @@ pub fn policy(s: &HtmlPreviewSettings) -> Option<String> {
 
 /// `html` as the preview loads it: with the policy's `<meta>` first (after a doctype, so the
 /// page keeps standards mode).
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn page(html: &str, s: &HtmlPreviewSettings) -> String {
     let Some(policy) = policy(s) else {
         return html.to_owned();
