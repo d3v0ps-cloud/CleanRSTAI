@@ -66,7 +66,9 @@ Options:
   --provider NAME     provider profile to use (default: the active one)
   --model MODEL       model to use instead of the provider's
   --workspace DIR     working folder for the file, search and shell tools
-  --mode MODE         read-only, default, auto or allow-all
+  --project NAME      start the chat in this project (its folder, provider, model, tool
+                      switches, permission mode and instructions); a name or an id
+  --mode MODE         read-only, default, auto, allow-all or plan
                       (default: the mode in Settings → Background)
   --json              print one JSON object at the end instead of streaming
   --no-mcp            don't start MCP servers
@@ -92,6 +94,8 @@ pub struct ExecArgs {
     pub text: String,
     /// A `-` among the arguments: stdin is added to the prompt.
     pub read_stdin: bool,
+    /// The project the chat starts in, by name or id (see `projects`).
+    pub project: Option<String>,
 }
 
 /// Parses the arguments after `exec`. Flags may come before or after the prompt; `--` ends
@@ -135,7 +139,7 @@ pub fn parse_args(args: &[String]) -> Result<ExecArgs, String> {
                     _ => out.save = true,
                 }
             }
-            "--provider" | "--model" | "--workspace" | "--mode" => {
+            "--provider" | "--model" | "--workspace" | "--mode" | "--project" => {
                 let value = match inline {
                     Some(value) => value,
                     None => {
@@ -154,6 +158,7 @@ pub fn parse_args(args: &[String]) -> Result<ExecArgs, String> {
                     "--provider" => out.provider = Some(value),
                     "--model" => out.model = Some(value),
                     "--workspace" => out.workspace = Some(PathBuf::from(value)),
+                    "--project" => out.project = Some(value),
                     _ => out.mode = Some(parse_mode(&value)?),
                 }
             }
@@ -174,8 +179,9 @@ pub fn parse_mode(value: &str) -> Result<ApprovalMode, String> {
         "default" => Ok(ApprovalMode::Default),
         "auto" => Ok(ApprovalMode::AutoWorkspace),
         "allow-all" => Ok(ApprovalMode::AllowAll),
+        "plan" => Ok(ApprovalMode::Plan),
         other => Err(format!(
-            "unknown mode '{other}': use read-only, default, auto or allow-all"
+            "unknown mode '{other}': use read-only, default, auto, allow-all or plan"
         )),
     }
 }
@@ -467,10 +473,38 @@ pub fn run(args: &[String]) -> i32 {
         },
     };
 
-    let mode = parsed.mode.unwrap_or(settings.general.exec.approval_mode);
+    let project = match &parsed.project {
+        None => None,
+        Some(key) => match crate::projects::find(&crate::projects::Project::load_all(), key) {
+            Some(project) => Some(project.clone()),
+            None => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "cleanrstai exec: there is no project called {key}"
+                );
+                return 2;
+            }
+        },
+    };
+    let mode = parsed
+        .mode
+        .or(project.as_ref().and_then(|p| p.approval_mode))
+        .unwrap_or(settings.general.exec.approval_mode);
     let mut conv = Conversation::new();
+    if let Some(project) = &project {
+        crate::projects::apply_to(project, &mut conv, mode);
+    }
+    // Flags win over the project's folder, provider and model.
     conv.permissions.mode = mode;
-    conv.workspace = workspace;
+    if workspace.is_some() {
+        conv.workspace = workspace;
+    }
+    if parsed.provider.is_some() {
+        conv.provider = None;
+    }
+    if parsed.model.is_some() {
+        conv.model = None;
+    }
     conv.messages.push(ChatMessage::new(Role::User, prompt));
     conv.auto_title();
     conv.updated_at = chrono::Utc::now();
@@ -505,7 +539,7 @@ pub fn run(args: &[String]) -> i32 {
             .sandbox
             .enabled
             .then(|| Sandbox::new(settings.sandbox.clone()));
-        let req = headless(AgentRequest::for_chat(
+        let mut req = headless(AgentRequest::for_chat(
             &settings,
             &conv,
             sandbox.as_ref(),
@@ -513,6 +547,9 @@ pub fn run(args: &[String]) -> i32 {
             false,
             None,
         ));
+        if let Some(project) = &project {
+            req.project = crate::projects::context_for(project, &settings.general.projects);
+        }
         drive(req, http, mcp, &mut conv, &mut sink).await
     });
     runtime.shutdown_timeout(Duration::from_millis(500));
@@ -636,7 +673,9 @@ mod tests {
         assert_eq!(parse_mode("default"), Ok(ApprovalMode::Default));
         assert_eq!(parse_mode("auto"), Ok(ApprovalMode::AutoWorkspace));
         assert_eq!(parse_mode("allow-all"), Ok(ApprovalMode::AllowAll));
+        assert_eq!(parse_mode("plan"), Ok(ApprovalMode::Plan));
         assert!(parse_mode("Read Only").is_err());
+        assert!(parse_mode("Plan").is_err());
     }
 
     #[test]
@@ -828,6 +867,15 @@ mod tests {
     }
 
     #[test]
+    fn the_project_flag_takes_a_name_or_an_id() {
+        let p = parse_args(&words(&["--project", "Site", "hi"])).unwrap();
+        assert_eq!(p.project.as_deref(), Some("Site"));
+        let p = parse_args(&words(&["--project=Site", "hi"])).unwrap();
+        assert_eq!(p.project.as_deref(), Some("Site"));
+        assert!(parse_args(&words(&["--project"])).is_err());
+    }
+
+    #[test]
     fn headless_runs_ignore_auto_approve() {
         let mut settings = crate::config::Settings::default();
         settings.general.auto_approve_tools = true;
@@ -836,6 +884,24 @@ mod tests {
             &settings, &conv, None, false, false, None,
         ));
         assert!(!req.general.auto_approve_tools);
+    }
+
+    #[test]
+    fn plan_mode_request_offers_no_writes() {
+        let dir = temp_folder();
+        let (req, _) = request_for(
+            "http://127.0.0.1:9",
+            parse_mode("plan").unwrap(),
+            Some(dir.clone()),
+        );
+        assert_eq!(req.approval_mode, ApprovalMode::Plan);
+        assert!(
+            !req.selection
+                .builtin_on(crate::tools::workspace::WRITE_FILE)
+        );
+        assert!(!req.selection.builtin_on(crate::tools::workspace::SHELL));
+        assert!(req.selection.builtin_on(crate::tools::workspace::READ_FILE));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

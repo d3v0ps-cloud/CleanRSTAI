@@ -40,15 +40,40 @@ pub enum ApprovalMode {
     AllowAll,
     /// No workspace writes or commands; other tools ask as by default.
     ReadOnly,
+    /// Read only, and the model proposes a plan that runs once the user approves it (see
+    /// `plan`). With plan mode off in Settings, a chat in this mode is read only.
+    Plan,
 }
 
 impl ApprovalMode {
-    pub const ALL: [ApprovalMode; 4] = [
+    pub const ALL: [ApprovalMode; 5] = [
         Self::Default,
         Self::AutoWorkspace,
         Self::AllowAll,
         Self::ReadOnly,
+        Self::Plan,
     ];
+
+    /// The modes the pickers list: Plan only while plan mode is on in Settings.
+    pub fn offered(plan_enabled: bool) -> Vec<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|m| plan_enabled || *m != Self::Plan)
+            .collect()
+    }
+
+    /// The mode a chat runs in: a Plan chat is read only while plan mode is off.
+    pub fn effective(self, plan_enabled: bool) -> Self {
+        match self {
+            Self::Plan if !plan_enabled => Self::ReadOnly,
+            m => m,
+        }
+    }
+
+    /// Modes that switch the workspace's writes and commands off (see `ToolSelection::with_mode`).
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::Plan)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -56,6 +81,7 @@ impl ApprovalMode {
             Self::AutoWorkspace => "Auto in workspace",
             Self::AllowAll => "Allow all",
             Self::ReadOnly => "Read only",
+            Self::Plan => "Plan",
         }
     }
 
@@ -65,6 +91,7 @@ impl ApprovalMode {
             Self::AutoWorkspace => "Edits files and runs sandboxed commands without asking",
             Self::AllowAll => "Runs tool calls without asking",
             Self::ReadOnly => "No file changes or commands; other tools ask",
+            Self::Plan => "Reads and proposes a plan; changes nothing until you approve it",
         }
     }
 
@@ -78,7 +105,7 @@ impl ApprovalMode {
         match self {
             Self::AllowAll => true,
             Self::AutoWorkspace => changes_things(function) && (function != SHELL || sandboxed),
-            Self::Default | Self::ReadOnly => false,
+            Self::Default | Self::ReadOnly | Self::Plan => false,
         }
     }
 }
@@ -301,5 +328,27 @@ mod mode_tests {
         let p: ChatPermissions = serde_json::from_str("{}").unwrap();
         assert!(p.is_default());
         assert_eq!(serde_json::to_string(&p).unwrap(), "{}");
+    }
+
+    #[test]
+    fn plan_asks_like_read_only_and_is_offered_only_when_enabled() {
+        use ApprovalMode::*;
+        assert!(!Plan.runs_unasked("builtin__fetch", true));
+        assert!(!Plan.runs_unasked("write_file", true));
+        assert!(!Plan.runs_unasked("exec_shell_command", true));
+        assert!(!ApprovalMode::offered(false).contains(&Plan));
+        assert!(ApprovalMode::offered(true).contains(&Plan));
+        assert_eq!(ApprovalMode::offered(false).len(), 4);
+        assert_eq!(Plan.effective(true), Plan);
+        assert_eq!(Plan.effective(false), ReadOnly);
+        assert_eq!(Default.effective(false), Default);
+        assert!(Plan.is_read_only() && ReadOnly.is_read_only());
+        assert!(!Default.is_read_only());
+        assert_eq!(serde_json::to_string(&Plan).unwrap(), "\"plan\"");
+        assert_eq!(
+            serde_json::from_str::<ApprovalMode>("\"plan\"").unwrap(),
+            Plan
+        );
+        assert_eq!(Plan.label(), "Plan");
     }
 }

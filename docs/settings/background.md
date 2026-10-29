@@ -44,7 +44,7 @@ open. **Run scheduled tasks** is the master switch; each task has its own **On**
 | **Prompt** | empty | The message the task sends. A task with no prompt never runs. |
 | **Repeats** | Every day | **Every so many minutes** (5–10080, the minutes between runs), **Every day** or **Every week** (on a weekday), at a time of day in local time. |
 | **Runs in** | A new chat each time | **A new chat each time**, or a chat you picked from the list. A new chat takes the task's folder and provider; a picked chat keeps its own folder and provider, and its approval mode is set to the task's on each run. |
-| **Approvals** | Read only | The approval mode of the run's chat: read only, default, auto in workspace, or allow all. Read only is the default so a task cannot change files or run commands unless you choose it. Other tools still ask, so a run can wait for your answer; the notification says so. |
+| **Approvals** | Read only | The approval mode of the run's chat: read only, plan, default, auto in workspace, or allow all. Read only is the default so a task cannot change files or run commands unless you choose it. Other tools still ask, so a run can wait for your answer; the notification says so. |
 | **Folder** | None | The working folder of a new chat (see [Built-in tools and workspace](../using/tools.html#workspace)). |
 | **Provider** | The active provider | The provider the run uses, for example a local model for a frequent task. |
 | **Catch up after the app was closed** | off | A run that was due while the app was closed runs once when the app starts. When off, it is skipped to the next time. |
@@ -97,7 +97,7 @@ or a script. The `--mode`, `--no-mcp` and `--save` flags override the matching s
 | Setting | Default | Description |
 |---|---|---|
 | **Allow `cleanrstai exec` to run requests from a terminal or script** | on | When off, the command prints "cleanrstai exec is off (Settings → Background)" and exits with status 2. |
-| **Approvals** | Read only | The approval mode of a command-line request: Read only, Default permissions, Auto in workspace or Allow all. A call the mode doesn't allow is denied, not asked. |
+| **Approvals** | Read only | The approval mode of a command-line request: Read only, Plan, Default permissions, Auto in workspace or Allow all. A call the mode doesn't allow is denied, not asked. |
 | **Start MCP servers for each request** | on | Starts the servers from [MCP servers](mcp-servers.html) for the request. |
 | **Wait for them** | 10 s | How long a request waits for servers to connect before it starts (0–120). Servers still connecting after that are used by later rounds of tool calls once they connect. |
 | **Save each run's chat** | off | Keep every command-line chat in the chat list, as if `--save` were given. |

@@ -249,7 +249,7 @@ attached; text beyond a million characters is cut, with a note saying so.
 | Kind | Sent as |
 |---|---|
 | Images (PNG, JPEG, GIF, WebP) | images for vision models; click one to enlarge it |
-| PDF (`.pdf`) | its text; scanned PDFs without a text layer can't be read |
+| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Context & files](../settings/context.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
 | Word (`.docx`, `.doc`) | its text |
 | Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`) | one CSV block per sheet |
 | PowerPoint (`.pptx`, `.ppt`) | numbered slides, with speaker notes |

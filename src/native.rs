@@ -6,15 +6,93 @@ use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use serde_json::{Map, Value, json};
 
-use crate::config::{ProviderApi, ProviderConfig};
+use crate::config::{
+    MAX_NATIVE_SEARCH_USES, NativeSearch, ProviderApi, ProviderConfig, ProviderKind,
+    WebSearchSettings,
+};
 use crate::llm::{AssistantTurn, Delta, ToolSpec, authorize, endpoint, error_from_response};
 use crate::model_options::{ModelOptions, ReasoningEffort};
 use crate::sse::SseParser;
 use crate::stats::{Collector, RequestStats};
-use crate::types::{NativeItems, ToolCall};
+use crate::types::{NativeItems, Source, ToolCall};
 
 /// The key `to_api_messages` stores an assistant message's native items under.
 pub const NATIVE_KEY: &str = "native";
+
+/// The provider's own web search, by the API that offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeKind {
+    /// The `web_search_20250305` server tool of the Messages API.
+    Anthropic,
+    /// The `web_search` tool of the Responses API.
+    Responses,
+    /// OpenRouter's `web` plugin, on Chat Completions.
+    OpenRouter,
+}
+
+/// Which provider's own search a provider has, if any: Anthropic's Messages API, OpenAI's
+/// Responses API and OpenRouter. Other Chat Completions servers have none.
+pub fn native_search_support(p: &ProviderConfig) -> Option<NativeKind> {
+    match p.api {
+        ProviderApi::Anthropic => Some(NativeKind::Anthropic),
+        ProviderApi::Responses => Some(NativeKind::Responses),
+        ProviderApi::ChatCompletions if p.kind == ProviderKind::OpenRouter => {
+            Some(NativeKind::OpenRouter)
+        }
+        ProviderApi::ChatCompletions => None,
+    }
+}
+
+/// The searches the provider's own search may run for one request, when it replaces the
+/// built-in `web_search` tool: the setting prefers the provider, the chat's web search is on,
+/// and the provider has a search of its own. `None` keeps the built-in tool.
+pub fn native_search_request(
+    s: &WebSearchSettings,
+    web_search_on: bool,
+    p: &ProviderConfig,
+) -> Option<u32> {
+    (s.native == NativeSearch::PreferProvider
+        && web_search_on
+        && native_search_support(p).is_some())
+    .then_some(s.native_max_uses.clamp(1, MAX_NATIVE_SEARCH_USES))
+}
+
+/// The provider's own search for this request, when it is on for `p` and `p`'s support is
+/// `kind`.
+fn native_for(p: &ProviderConfig, kind: NativeKind) -> Option<u32> {
+    p.native_search
+        .filter(|_| native_search_support(p) == Some(kind))
+}
+
+/// Add a cited page to `out` once, by its address. Takes an Anthropic citation, a Responses
+/// `url_citation` annotation or an OpenRouter one (which nests the link under `url_citation`).
+pub(crate) fn add_citation(out: &mut Vec<Source>, cite: &Value) {
+    let link = cite.get("url_citation").unwrap_or(cite);
+    let url = link["url"].as_str().unwrap_or_default().trim();
+    if !is_web_url(url) || out.iter().any(|s| s.url == url) {
+        return;
+    }
+    let title = link["title"].as_str().unwrap_or_default().trim();
+    out.push(Source {
+        title: if title.is_empty() { url } else { title }.to_owned(),
+        url: url.to_owned(),
+    });
+}
+
+/// Only web addresses are kept: the links open in the browser, and the provider chooses them.
+fn is_web_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
+}
+
+/// Every `url_citation` in an annotations array.
+pub(crate) fn add_annotations(out: &mut Vec<Source>, annotations: &Value) {
+    for a in annotations.as_array().into_iter().flatten() {
+        if a["type"] == "url_citation" {
+            add_citation(out, a);
+        }
+    }
+}
 
 /// Max tokens for the Anthropic API, which requires one, when none is set.
 const ANTHROPIC_MAX_TOKENS: u32 = 8192;
@@ -315,6 +393,10 @@ pub(crate) fn anthropic_body(
             |t| json!({"name": t.name, "description": t.description, "input_schema": t.parameters}),
         )
         .collect();
+    if let Some(max_uses) = native_for(p, NativeKind::Anthropic) {
+        tool_list.push(json!({"type": "web_search_20250305", "name": "web_search",
+                              "max_uses": max_uses}));
+    }
     if p.prompt_caching {
         cache_last(&mut system);
         cache_last(&mut tool_list);
@@ -361,7 +443,13 @@ enum Block {
         thinking: String,
         signature: String,
     },
-    Redacted(Value),
+    /// Kept as the API sent it, for the next request: redacted thinking and search results.
+    Verbatim(Value),
+    /// A server tool call (the provider's own search), whose input streams in as JSON.
+    Server {
+        value: Value,
+        json: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -386,6 +474,9 @@ impl AnthropicReader {
         let block = match b["type"].as_str() {
             Some("text") => {
                 sink.content(b["text"].as_str().unwrap_or_default());
+                for c in b["citations"].as_array().into_iter().flatten() {
+                    add_citation(&mut sink.turn.sources, c);
+                }
                 Block::Text
             }
             Some("thinking") => {
@@ -395,7 +486,16 @@ impl AnthropicReader {
                     signature: s("signature"),
                 }
             }
-            Some("redacted_thinking") => Block::Redacted(b.clone()),
+            Some("redacted_thinking" | "web_search_tool_result") => Block::Verbatim(b.clone()),
+            Some("server_tool_use") => {
+                if b["name"] == "web_search" {
+                    sink.turn.searched = true;
+                }
+                Block::Server {
+                    value: b.clone(),
+                    json: String::new(),
+                }
+            }
             Some("tool_use") => {
                 sink.produced();
                 Block::ToolUse {
@@ -483,9 +583,15 @@ impl Reader for AnthropicReader {
                     (Some("signature_delta"), Some(Block::Thinking { signature, .. })) => {
                         signature.push_str(text("signature"));
                     }
-                    (Some("input_json_delta"), Some(Block::ToolUse { json, .. })) => {
+                    (
+                        Some("input_json_delta"),
+                        Some(Block::ToolUse { json, .. } | Block::Server { json, .. }),
+                    ) => {
                         json.push_str(text("partial_json"));
                         sink.produced();
+                    }
+                    (Some("citations_delta"), _) => {
+                        add_citation(&mut sink.turn.sources, &d["citation"]);
                     }
                     _ => {}
                 }
@@ -528,7 +634,15 @@ impl Reader for AnthropicReader {
                     signature,
                 } => items.push(json!({"type": "thinking", "thinking": thinking,
                                       "signature": signature})),
-                Block::Redacted(v) => items.push(v),
+                Block::Verbatim(v) => items.push(v),
+                Block::Server { mut value, json } => {
+                    value["input"] = if json.trim().is_empty() {
+                        value["input"].clone()
+                    } else {
+                        serde_json::from_str(&json).unwrap_or_else(|_| json!({}))
+                    };
+                    items.push(value);
+                }
                 Block::ToolUse {
                     id,
                     name,
@@ -659,14 +773,18 @@ pub(crate) fn responses_body(
     if !instructions.is_empty() {
         body["instructions"] = json!(instructions);
     }
-    if !tools.is_empty() {
-        body["tools"] = tools
-            .iter()
-            .map(|t| {
-                json!({"type": "function", "name": t.name, "description": t.description,
-                       "parameters": t.parameters})
-            })
-            .collect();
+    let mut tool_list: Vec<Value> = tools
+        .iter()
+        .map(|t| {
+            json!({"type": "function", "name": t.name, "description": t.description,
+                   "parameters": t.parameters})
+        })
+        .collect();
+    if native_for(p, NativeKind::Responses).is_some() {
+        tool_list.push(json!({"type": "web_search"}));
+    }
+    if !tool_list.is_empty() {
+        body["tools"] = json!(tool_list);
     }
     if let Some(t) = o.temperature {
         body["temperature"] = json!(t);
@@ -692,7 +810,8 @@ pub(crate) fn responses_body(
 struct ResponsesReader {
     /// Function calls by output index, filled in as their arguments stream.
     calls: Vec<(usize, ToolCall)>,
-    reasoning_items: Vec<Value>,
+    /// Items sent back with the next request: reasoning and web search calls.
+    kept: Vec<Value>,
     /// Final items have been read (from `output_item.done` or the whole response).
     final_items: bool,
 }
@@ -740,16 +859,25 @@ impl ResponsesReader {
                             kept.insert(k.into(), v.clone());
                         }
                     }
-                    self.reasoning_items.push(Value::Object(kept));
+                    self.kept.push(Value::Object(kept));
                 }
             }
-            Some("message") if whole => {
+            // The search runs on the provider's side. Its call isn't kept: with `store: false`
+            // the server can't look its id up on a later turn, and the reply already holds
+            // what was found.
+            Some("web_search_call") => {
+                sink.turn.searched = true;
+            }
+            Some("message") => {
                 for part in item["content"].as_array().into_iter().flatten() {
-                    let text = part["text"]
-                        .as_str()
-                        .or_else(|| part["refusal"].as_str())
-                        .unwrap_or_default();
-                    sink.content(text);
+                    add_annotations(&mut sink.turn.sources, &part["annotations"]);
+                    if whole {
+                        let text = part["text"]
+                            .as_str()
+                            .or_else(|| part["refusal"].as_str())
+                            .unwrap_or_default();
+                        sink.content(text);
+                    }
                 }
             }
             _ => {}
@@ -864,10 +992,10 @@ impl Reader for ResponsesReader {
             }
             sink.turn.tool_calls.push(call);
         }
-        if !self.reasoning_items.is_empty() {
+        if !self.kept.is_empty() {
             sink.turn.native = Some(NativeItems {
                 api: ProviderApi::Responses,
-                items: self.reasoning_items,
+                items: self.kept,
             });
         }
     }
@@ -1207,5 +1335,460 @@ mod tests {
         assert!(body["messages"][1].get(NATIVE_KEY).is_none());
         // The model's own option wins over the provider's.
         assert_eq!(body["top_p"], json!(0.9f32));
+    }
+
+    #[test]
+    fn cited_pages_must_be_web_addresses() {
+        let mut out = Vec::new();
+        for url in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "  ",
+            "HTTPS://upper.example/x",
+            "http://plain.example/y",
+        ] {
+            add_citation(&mut out, &json!({"url": url, "title": "t"}));
+        }
+        let urls: Vec<&str> = out.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["HTTPS://upper.example/x", "http://plain.example/y"]);
+    }
+
+    #[test]
+    fn native_search_is_offered_by_the_apis_that_have_one() {
+        let at = |api, kind| ProviderConfig {
+            api,
+            kind,
+            ..Default::default()
+        };
+        let chat = ProviderApi::ChatCompletions;
+        assert_eq!(
+            native_search_support(&at(ProviderApi::Anthropic, ProviderKind::Generic)),
+            Some(NativeKind::Anthropic)
+        );
+        assert_eq!(
+            native_search_support(&at(ProviderApi::Responses, ProviderKind::Generic)),
+            Some(NativeKind::Responses)
+        );
+        assert_eq!(
+            native_search_support(&at(chat, ProviderKind::OpenRouter)),
+            Some(NativeKind::OpenRouter)
+        );
+        for kind in [
+            ProviderKind::Generic,
+            ProviderKind::LlamaCpp,
+            ProviderKind::LiteLlm,
+        ] {
+            assert_eq!(native_search_support(&at(chat, kind)), None);
+        }
+    }
+
+    #[test]
+    fn native_search_follows_the_setting_the_chat_and_the_provider() {
+        let mut s = WebSearchSettings::default();
+        let anthropic = ProviderConfig {
+            api: ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        let generic = ProviderConfig::default();
+        assert_eq!(s.native, NativeSearch::Off);
+        assert_eq!(native_search_request(&s, true, &anthropic), None);
+        s.native = NativeSearch::PreferProvider;
+        assert_eq!(native_search_request(&s, true, &anthropic), Some(5));
+        // The chat's web search switch off: no search at all.
+        assert_eq!(native_search_request(&s, false, &anthropic), None);
+        // A provider without a search keeps the built-in tool.
+        assert_eq!(native_search_request(&s, true, &generic), None);
+        s.native_max_uses = 99;
+        assert_eq!(
+            native_search_request(&s, true, &anthropic),
+            Some(MAX_NATIVE_SEARCH_USES)
+        );
+    }
+
+    #[test]
+    fn native_search_is_added_to_each_api_request() {
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "hi")]);
+        let mut p = ProviderConfig {
+            model: "m".into(),
+            api: ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        let o = ModelOptions::default();
+        assert!(anthropic_body(&p, &msgs, &[], &o).get("tools").is_none());
+        p.native_search = Some(3);
+        let body = anthropic_body(&p, &msgs, &[], &o);
+        assert_eq!(body["tools"][0]["type"], "web_search_20250305");
+        assert_eq!(body["tools"][0]["name"], "web_search");
+        assert_eq!(body["tools"][0]["max_uses"], 3);
+
+        let mut r = ProviderConfig {
+            model: "m".into(),
+            api: ProviderApi::Responses,
+            ..Default::default()
+        };
+        let get = ToolSpec {
+            name: "get".into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+        };
+        let body = responses_body(&r, &msgs, std::slice::from_ref(&get), &o);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+        r.native_search = Some(3);
+        let body = responses_body(&r, &msgs, std::slice::from_ref(&get), &o);
+        assert_eq!(body["tools"][1], json!({"type": "web_search"}));
+        // Without any tools the search is still requested.
+        let body = responses_body(&r, &msgs, &[], &o);
+        assert_eq!(body["tools"], json!([{"type": "web_search"}]));
+    }
+
+    #[tokio::test]
+    async fn open_router_web_plugin_and_citations_whole_and_streamed() {
+        let (base, log) = serve(|r| {
+            if r.json()["stream"] == true {
+                return Response::sse(&[
+                    json!({"choices": [{"delta": {"content": "Rust "}}]}),
+                    json!({"choices": [{"delta": {"annotations": [
+                        {"type": "url_citation", "url_citation": {
+                            "url": "https://a.example/x", "title": "A"}},
+                    ]}}]}),
+                    json!({"choices": [{"delta": {"annotations": [
+                        {"type": "url_citation", "url_citation": {
+                            "url": "https://a.example/x", "title": "A"}},
+                        {"type": "url_citation", "url_citation": {
+                            "url": "https://b.example/y", "title": ""}},
+                    ]}, "finish_reason": "stop"}]}),
+                ]);
+            }
+            Response::json(json!({"choices": [{"message": {"role": "assistant",
+                "content": "Rust 1.95 [1].", "annotations": [
+                    {"type": "url_citation", "url_citation": {
+                        "url": "https://c.example/z", "title": "Z", "content": "x"}}]},
+                "finish_reason": "stop"}]}))
+        })
+        .await;
+        let http = build_http_client();
+        let mut p = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "m".into(),
+            kind: ProviderKind::OpenRouter,
+            native_search: Some(3),
+            ..Default::default()
+        };
+        let turn = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Rust ");
+        assert!(turn.searched);
+        assert_eq!(turn.sources.len(), 2);
+        assert_eq!(turn.sources[0].url, "https://a.example/x");
+        assert_eq!(turn.sources[1].title, "https://b.example/y");
+        assert!(
+            turn.native.is_none(),
+            "Chat Completions keeps no native items"
+        );
+
+        p.stream = false;
+        let turn = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            turn.sources,
+            [Source {
+                title: "Z".into(),
+                url: "https://c.example/z".into(),
+            }]
+        );
+        {
+            let log = log.lock().unwrap();
+            assert_eq!(log[0].path, "/v1/chat/completions");
+            assert_eq!(
+                log[0].json()["plugins"],
+                json!([{"id": "web", "max_results": 3}])
+            );
+        }
+
+        // Off: no plugin, and nothing reported as searched.
+        p.native_search = None;
+        let turn = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert!(!turn.searched);
+        assert!(log.lock().unwrap()[2].json().get("plugins").is_none());
+    }
+
+    #[tokio::test]
+    async fn anthropic_web_search_streams_and_keeps_its_items() {
+        let (base, log) = serve(|_| {
+            Response::sse(&[
+                json!({"type": "message_start", "message": {"model": "claude-x",
+                       "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+                json!({"type": "content_block_start", "index": 0,
+                       "content_block": {"type": "server_tool_use", "id": "srvtoolu_1",
+                                         "name": "web_search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "input_json_delta", "partial_json": "{\"query\":"}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "input_json_delta", "partial_json": "\"rust 1.95\"}"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1,
+                       "content_block": {"type": "web_search_tool_result",
+                                         "tool_use_id": "srvtoolu_1",
+                                         "content": [{"type": "web_search_result",
+                                                      "url": "https://a.example/1",
+                                                      "title": "One",
+                                                      "encrypted_content": "enc1"}]}}),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({"type": "content_block_start", "index": 2,
+                       "content_block": {"type": "text", "text": "", "citations": []}}),
+                json!({"type": "content_block_delta", "index": 2,
+                       "delta": {"type": "text_delta", "text": "Rust 1.95 ships."}}),
+                json!({"type": "content_block_delta", "index": 2,
+                       "delta": {"type": "citations_delta", "citation": {
+                           "type": "web_search_result_location", "url": "https://a.example/1",
+                           "title": "One", "cited_text": "…", "encrypted_index": "i1"}}}),
+                json!({"type": "content_block_delta", "index": 2,
+                       "delta": {"type": "citations_delta", "citation": {
+                           "type": "web_search_result_location", "url": "https://b.example/2",
+                           "title": "Two", "cited_text": "…", "encrypted_index": "i2"}}}),
+                json!({"type": "content_block_stop", "index": 2}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                       "usage": {"output_tokens": 20}}),
+                json!({"type": "message_stop"}),
+            ])
+        })
+        .await;
+        let p = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "claude".into(),
+            api: ProviderApi::Anthropic,
+            native_search: Some(4),
+            ..Default::default()
+        };
+        let turn = chat_completion(&build_http_client(), &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Rust 1.95 ships.");
+        assert!(
+            turn.tool_calls.is_empty(),
+            "server tools are not client calls"
+        );
+        assert!(turn.searched);
+        assert_eq!(
+            turn.sources,
+            [
+                Source {
+                    title: "One".into(),
+                    url: "https://a.example/1".into(),
+                },
+                Source {
+                    title: "Two".into(),
+                    url: "https://b.example/2".into(),
+                },
+            ]
+        );
+        assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
+        let native = turn.native.unwrap();
+        assert_eq!(native.api, ProviderApi::Anthropic);
+        assert_eq!(native.items.len(), 2);
+        assert_eq!(native.items[0]["type"], "server_tool_use");
+        assert_eq!(native.items[0]["input"]["query"], "rust 1.95");
+        assert_eq!(native.items[1]["type"], "web_search_tool_result");
+        assert_eq!(native.items[1]["content"][0]["encrypted_content"], "enc1");
+
+        let log = log.lock().unwrap();
+        let body = log[0].json();
+        assert_eq!(body["tools"][0]["type"], "web_search_20250305");
+        assert_eq!(body["tools"][0]["max_uses"], 4);
+    }
+
+    #[tokio::test]
+    async fn anthropic_whole_web_search_response_is_read_too() {
+        let (base, _) = serve(|_| {
+            Response::json(json!({
+                "content": [
+                    {"type": "server_tool_use", "id": "srvtoolu_2", "name": "web_search",
+                     "input": {"query": "q"}},
+                    {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_2",
+                     "content": [{"type": "web_search_result", "url": "https://c.example/3",
+                                  "title": "Three", "encrypted_content": "enc3"}]},
+                    {"type": "text", "text": "Answer.", "citations": [
+                        {"type": "web_search_result_location", "url": "https://c.example/3",
+                         "title": "Three", "cited_text": "x", "encrypted_index": "i"}]},
+                ],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 3, "output_tokens": 4},
+            }))
+        })
+        .await;
+        let mut p = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "claude".into(),
+            api: ProviderApi::Anthropic,
+            native_search: Some(2),
+            ..Default::default()
+        };
+        p.stream = false;
+        let turn = chat_completion(&build_http_client(), &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Answer.");
+        assert!(turn.searched);
+        assert_eq!(turn.sources.len(), 1);
+        assert_eq!(turn.sources[0].title, "Three");
+        let items = turn.native.unwrap().items;
+        assert_eq!(items[0]["input"]["query"], "q");
+        assert_eq!(items[1]["content"][0]["encrypted_content"], "enc3");
+    }
+
+    #[tokio::test]
+    async fn responses_web_search_streams_without_keeping_its_call() {
+        let (base, _) = serve(|_| {
+            Response::sse(&[
+                json!({"type": "response.created", "response": {"status": "in_progress"}}),
+                json!({"type": "response.output_item.done", "output_index": 0,
+                       "item": {"type": "web_search_call", "id": "ws_1", "status": "completed",
+                                "action": {"type": "search", "query": "q"}}}),
+                json!({"type": "response.output_text.delta", "output_index": 1,
+                       "delta": "Done."}),
+                json!({"type": "response.output_item.done", "output_index": 1,
+                       "item": {"type": "message", "role": "assistant", "content": [
+                           {"type": "output_text", "text": "Done.", "annotations": [
+                               {"type": "url_citation", "url": "https://d.example/4",
+                                "title": "Four", "start_index": 0, "end_index": 5}]}]}}),
+                json!({"type": "response.completed", "response": {
+                    "status": "completed", "model": "gpt-x",
+                    "usage": {"input_tokens": 5, "output_tokens": 2}}}),
+            ])
+        })
+        .await;
+        let p = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "gpt".into(),
+            api: ProviderApi::Responses,
+            native_search: Some(5),
+            ..Default::default()
+        };
+        let turn = chat_completion(&build_http_client(), &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Done.");
+        assert!(turn.searched);
+        assert_eq!(
+            turn.sources,
+            [Source {
+                title: "Four".into(),
+                url: "https://d.example/4".into(),
+            }]
+        );
+        // Nothing is stored server-side (`store: false`), so the call can't be sent back.
+        assert!(
+            turn.native
+                .is_none_or(|n| n.items.iter().all(|i| i["type"] != "web_search_call"))
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_whole_web_search_response_is_read_too() {
+        let (base, _) = serve(|_| {
+            Response::json(json!({
+                "status": "completed",
+                "output": [
+                    {"type": "web_search_call", "id": "ws_2", "status": "completed"},
+                    {"type": "message", "role": "assistant", "content": [
+                        {"type": "output_text", "text": "Whole.", "annotations": [
+                            {"type": "url_citation", "url": "https://e.example/5",
+                             "title": "Five"}]}]},
+                ],
+            }))
+        })
+        .await;
+        let mut p = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "gpt".into(),
+            api: ProviderApi::Responses,
+            native_search: Some(5),
+            ..Default::default()
+        };
+        p.stream = false;
+        let turn = chat_completion(&build_http_client(), &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Whole.");
+        assert!(turn.searched);
+        assert_eq!(turn.sources[0].url, "https://e.example/5");
+        assert!(
+            turn.native
+                .is_none_or(|n| n.items.iter().all(|i| i["type"] != "web_search_call"))
+        );
+    }
+
+    #[test]
+    fn native_items_go_back_only_to_the_api_that_made_them() {
+        let mut a = ChatMessage::new(Role::Assistant, "Rust 1.95 ships.");
+        a.native = Some(NativeItems {
+            api: ProviderApi::Anthropic,
+            items: vec![
+                json!({"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+                       "input": {"query": "rust"}}),
+                json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1",
+                       "content": [{"type": "web_search_result", "url": "https://a.example/1",
+                                    "encrypted_content": "enc1"}]}),
+            ],
+        });
+        let history = [ChatMessage::new(Role::User, "news?"), a];
+        let msgs = to_api_messages("", &history);
+        let p = ProviderConfig {
+            model: "m".into(),
+            api: ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        let body = anthropic_body(&p, &msgs, &[], &ModelOptions::default());
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "server_tool_use");
+        assert_eq!(blocks[0]["input"]["query"], "rust");
+        assert_eq!(blocks[1]["type"], "web_search_tool_result");
+        assert_eq!(blocks[1]["content"][0]["encrypted_content"], "enc1");
+        assert_eq!(blocks[2]["text"], "Rust 1.95 ships.");
+
+        // The same items are left out of a Responses request.
+        let body = responses_body(
+            &ProviderConfig {
+                model: "m".into(),
+                api: ProviderApi::Responses,
+                ..Default::default()
+            },
+            &msgs,
+            &[],
+            &ModelOptions::default(),
+        );
+        let types: Vec<&str> = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["type"].as_str().or(i["role"].as_str()))
+            .collect();
+        assert_eq!(types, ["user", "assistant"]);
+
+        // A Responses web search call goes back to Responses only.
+        let mut r = ChatMessage::new(Role::Assistant, "Done.");
+        r.native = Some(NativeItems {
+            api: ProviderApi::Responses,
+            items: vec![json!({"type": "web_search_call", "id": "ws_1", "status": "completed"})],
+        });
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "q"), r]);
+        let body = responses_body(
+            &ProviderConfig {
+                model: "m".into(),
+                api: ProviderApi::Responses,
+                ..Default::default()
+            },
+            &msgs,
+            &[],
+            &ModelOptions::default(),
+        );
+        assert_eq!(body["input"][1]["type"], "web_search_call");
+        let body = anthropic_body(&p, &msgs, &[], &ModelOptions::default());
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(body["messages"][1]["content"][0]["type"], "text");
     }
 }

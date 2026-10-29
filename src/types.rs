@@ -67,6 +67,21 @@ pub struct ChatMessage {
     /// request (Anthropic's signed thinking blocks, the Responses API's reasoning items).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeItems>,
+    /// For an assistant message whose reply was searched with the provider's own search: the
+    /// pages it cites, shown under the reply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Source>,
+    /// The provider's own search ran for this reply (even when it cites nothing).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub searched: bool,
+}
+
+/// A web page a provider's own search cited.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Source {
+    #[serde(default)]
+    pub title: String,
+    pub url: String,
 }
 
 /// Provider-specific output kept so it can be sent back, only to the API that made it.
@@ -191,6 +206,8 @@ impl ChatMessage {
             edit: None,
             compaction: None,
             native: None,
+            sources: Vec::new(),
+            searched: false,
         }
     }
 
@@ -232,6 +249,16 @@ pub struct Conversation {
         skip_serializing_if = "crate::approval::ChatPermissions::is_default"
     )]
     pub permissions: crate::approval::ChatPermissions,
+    /// The project this chat belongs to (see `projects`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<Uuid>,
+    /// The provider profile (by id) this chat uses instead of the active one; set from its
+    /// project, or picked for the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The model this chat uses instead of its provider's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Conversation {
@@ -248,6 +275,9 @@ impl Conversation {
             workspace: None,
             model_options: Default::default(),
             permissions: Default::default(),
+            project: None,
+            provider: None,
+            model: None,
         }
     }
 
@@ -332,6 +362,35 @@ mod tests {
         let c = Conversation::with_permission_mode(ApprovalMode::AutoWorkspace);
         assert_eq!(c.permissions.mode, ApprovalMode::AutoWorkspace);
         assert!(!c.permissions.no_sandbox);
+    }
+
+    #[test]
+    fn a_chat_without_project_fields_loads_and_saves_without_them() {
+        let id = Uuid::new_v4();
+        let old = format!(
+            r#"{{"id":"{id}","title":"Old","created_at":"2026-01-01T00:00:00Z",
+                "updated_at":"2026-01-01T00:00:00Z","messages":[]}}"#
+        );
+        let c: Conversation = serde_json::from_str(&old).unwrap();
+        assert_eq!(
+            (c.project, c.provider.clone(), c.model.clone()),
+            (None, None, None)
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("project") && !json.contains("\"provider\""),
+            "{json}"
+        );
+
+        let mut c = c;
+        let project = Uuid::new_v4();
+        c.project = Some(project);
+        c.provider = Some("p1".into());
+        c.model = Some("m".into());
+        let back: Conversation = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.project, Some(project));
+        assert_eq!(back.provider.as_deref(), Some("p1"));
+        assert_eq!(back.model.as_deref(), Some("m"));
     }
 
     #[test]
@@ -437,5 +496,25 @@ mod tests {
         assert_eq!(edit.diff, "-old\n+new\n");
         // The original is untouched.
         assert!(messages[2].edit.as_ref().unwrap().checkpoint);
+    }
+
+    #[test]
+    fn messages_without_sources_still_load() {
+        let m: ChatMessage =
+            serde_json::from_str(r#"{"role": "assistant", "content": "hi"}"#).unwrap();
+        assert!(m.sources.is_empty() && !m.searched);
+        let mut m = ChatMessage::new(Role::Assistant, "x");
+        m.searched = true;
+        m.sources = vec![Source {
+            title: "T".into(),
+            url: "https://t.example".into(),
+        }];
+        let v = serde_json::to_value(&m).unwrap();
+        let back: ChatMessage = serde_json::from_value(v).unwrap();
+        assert_eq!(back.sources, m.sources);
+        assert!(back.searched);
+        // Plain replies stay as small as before.
+        let plain = serde_json::to_value(ChatMessage::new(Role::Assistant, "y")).unwrap();
+        assert!(plain.get("sources").is_none() && plain.get("searched").is_none());
     }
 }

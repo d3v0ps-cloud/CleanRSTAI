@@ -70,6 +70,8 @@ too, as an installer and a portable `.exe`.
     model to read with web fetch. DuckDuckGo works without an account; a SearXNG instance
     (your own, even on localhost), the Brave Search API, Tavily or the Kagi Search API can be
     chosen instead, with the result count, safe search and whether to ask before each search.
+    Anthropic, OpenAI (Responses API) and OpenRouter can search with their own search instead,
+    and the reply lists the pages it cites.
 
   Time, calculator and task list run locally without asking. Web fetch and web search reach the
   internet, so they ask for approval like MCP tools do ("Always allow this tool" skips that for
@@ -102,6 +104,9 @@ too, as an installer and a portable `.exe`.
   call), after one (the output is added to the result), or when a reply is done (the output is
   a notice), with a tool-name filter, a timeout and a per-chat switch. They run in the chat's
   folder, or in its Docker sandbox when that is on.
+- **Projects**: group chats in the sidebar. A project's instructions and reference files go to
+  every chat in it, and its folder, provider, model, tool switches and permission mode are what
+  a new chat starts with. Export a project with its chats to one file, and import it again.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
@@ -163,7 +168,9 @@ too, as an installer and a portable `.exe`.
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
   for that tool or MCP server for the rest of the chat (until the app quits). **Permissions**
   in each chat's tools menu picks Default, Auto in workspace (file edits and sandboxed commands
-  run without asking), Allow all or Read only, and can switch the terminal sandbox off for it.
+  run without asking), Allow all, Read only or Plan. In Plan, the model reads and proposes a
+  numbered plan, and **Approve plan** under the reply carries it out in the chat's chosen mode.
+  It can switch the terminal sandbox off for the chat.
 - **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
   accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
   the model picker beneath; your messages sit in bubbles on the right, replies run full
@@ -189,8 +196,8 @@ too, as an installer and a portable `.exe`.
   - **Documents** are sent as their text: PDF (`.pdf`), Word (`.docx`, `.doc`), Excel
     (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`), PowerPoint (`.pptx`, `.ppt`, with speaker notes),
     OpenDocument (`.odt`, `.ods`, `.odp`) and RTF. Spreadsheets become one CSV block per
-    sheet and slides are numbered. Scanned PDFs without a text layer and password-protected
-    files can't be read.
+    sheet and slides are numbered. Scanned PDFs without a text layer are read by OCR when it is
+    on (a vision model, or Tesseract on your computer); password-protected files can't be read.
   - **Text files** of any kind (code, Markdown, CSV, JSON, logs…) are included inline, in
     UTF-8, UTF-16 or Windows-1252.
 
@@ -213,6 +220,7 @@ too, as an installer and a portable `.exe`.
   from anywhere through a Cloudflare Tunnel that the app runs for you (a quick
   `trycloudflare.com` address, or your own domain with a tunnel you set up in Cloudflare). API
   keys and MCP secrets stay on this computer, and the app must stay open. See
+  A named tunnel can also require Cloudflare Access sign-in before the login.
   [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html) and
   [Cloudflare Tunnel](https://d3v0ps-cloud.github.io/CleanRSTAI/using/cloudflare-tunnel.html).
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
@@ -342,12 +350,12 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
 | Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
-| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
+| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), projects (on or off, file size limit, and the defaults for new projects), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
 | Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up); command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
@@ -479,6 +487,7 @@ src/
   secrets.rs      OS keychain storage for API keys and tokens
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
+  ocr.rs          OCR for scanned PDFs: page images, a vision model or Tesseract
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
   remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client
