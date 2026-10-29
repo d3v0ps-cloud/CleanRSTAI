@@ -25,16 +25,12 @@ files list and read-only git tools in **v0.9.2-dev.2**, and skills and backgroun
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
 settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
-settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
-**Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
-and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
-<<<<<<< HEAD
-Built-in Tools), and memory (facts the model saves across chats, with approval, a size limit,
-global or per-project scope, and incognito chats) in **v0.9.2-dev.5**.
-=======
-Built-in Tools), and the live web page preview on Linux (in a window of its own, when WebKitGTK
-is installed) in **v0.9.2-dev.5**.
->>>>>>> origin/dev
+settings on the Background tab) in **v0.9.2-dev.4**, and projects, memory, plan mode, committing
+from the chat, the provider's own web search (Anthropic, OpenAI Responses and OpenRouter),
+saving replies and artifacts as Word, PDF and Excel files, OCR for scanned PDFs, Cloudflare
+Access in front of a named tunnel, conversation branches, voice input and reading replies
+aloud, and the live web page preview on Linux (in a window of its own, when WebKitGTK is
+installed) in **v0.9.2-dev.5**. Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -137,8 +133,9 @@ source):
 - [x] macOS signing and notarization in the release workflow (Developer ID, hardened runtime,
   stapled app and DMG)
 - [x] Windows Authenticode signing of the `.exe` and `.msi` in the release workflow
-- [ ] Add the Apple and Windows certificates as repository secrets and ship a signed release
-  (see the README for the secret names)
+- Not planned: add the Apple and Windows certificates as repository secrets and ship a signed
+  release. This project doesn't ship signed builds; the signing steps stay in the workflow,
+  unused (see the README for the secret names).
 - [x] macOS `.dmg`
 - [x] Windows `.msi` installer
 - [x] In-app update check against GitHub Releases
