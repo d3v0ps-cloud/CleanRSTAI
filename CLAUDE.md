@@ -149,9 +149,13 @@ sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` 
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by
 server id and MCP tool name (not the routed function name), so it survives renames.
 Per-chat permission modes live in `approval.rs` (`ApprovalMode`: Default, AutoWorkspace,
-AllowAll, ReadOnly; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
-`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly switches the
-write/shell workspace tools off via `ToolSelection::with_mode`.
+AllowAll, ReadOnly, Plan; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
+`ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly and Plan switch the
+write/shell workspace tools off via `ToolSelection::with_mode` (`is_read_only`). Plan mode (`plan.rs`,
+Settings → General → Plan mode) appends its prompt to the system prompt; `plan::approve` switches the
+chat to its after-approval mode and returns the approval message, and `plan::awaiting_approval` decides
+whether the buttons under a finished reply are shown. `offered` and `effective` hide Plan and map it to
+ReadOnly while plan mode is off.
 
 **Subagents** (`subagent.rs`): the `delegate` tool runs tasks in parallel, each with its own
 model/tool loop and a derived `ToolSelection` (never the task list or `delegate`;

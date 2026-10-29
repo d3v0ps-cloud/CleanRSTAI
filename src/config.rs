@@ -929,6 +929,9 @@ pub struct GeneralSettings {
     /// Prompts that run on a schedule into a chat (Settings → Background).
     #[serde(default)]
     pub schedules: crate::schedule::ScheduleSettings,
+    /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
+    #[serde(default)]
+    pub plan: crate::plan::PlanSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -966,6 +969,7 @@ impl Default for GeneralSettings {
             exec: Default::default(),
             hooks: Default::default(),
             schedules: Default::default(),
+            plan: Default::default(),
         }
     }
 }
@@ -1274,6 +1278,7 @@ impl Settings {
         } else {
             url.to_owned()
         };
+        self.general.plan.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -1958,6 +1963,22 @@ mod tests {
             back.default_approval_mode,
             crate::approval::ApprovalMode::ReadOnly
         );
+    }
+
+    #[test]
+    fn plan_settings_load_from_older_files_and_normalize() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.plan, crate::plan::PlanSettings::default());
+        assert!(s.plan.enabled);
+        let mut settings = Settings::default();
+        settings.general.plan.after_approval = crate::approval::ApprovalMode::Plan;
+        settings.general.plan.prompt = "  ".into();
+        settings.normalize();
+        assert_eq!(
+            settings.general.plan.after_approval,
+            crate::approval::ApprovalMode::Default
+        );
+        assert_eq!(settings.general.plan.prompt, crate::plan::PLAN_PROMPT);
     }
 
     #[test]
