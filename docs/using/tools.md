@@ -68,6 +68,12 @@ an undone edit says **Undone**. **Undo the last turn's file edits** in the comma
 the same for the latest turn. Both can be turned off in
 [Context & files](../settings/context.html#workspace-file-edits).
 
+**Changed files** in the tools menu (under **Chat features**), or **Show files changed in this
+chat** in the command palette, opens a read-only window listing every file the current chat's
+edits changed. Each file has a collapsible section with the number of lines added and removed,
+and each edit to it shows its diff, marked **Undone** where it was undone. It follows the chat
+you have open, and it has no undo buttons: use **Undo file edits** for that.
+
 ### Reviewing changes
 
 **Review changes** (the sliders button next to the message box, or the command palette) sends

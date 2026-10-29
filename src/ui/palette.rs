@@ -22,6 +22,7 @@ pub enum Command {
     CompactChat,
     ReviewChanges,
     UndoLastEdits,
+    ShowChangedFiles,
     ForkChat,
     ExportSettings,
     ExportConversations,

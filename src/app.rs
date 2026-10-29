@@ -104,6 +104,8 @@ pub struct ChatApp {
     mcp_views: (u64, Arc<Vec<crate::mcp::manager::ServerView>>),
     viewing: Option<(String, egui::load::Bytes, String)>,
     prompt_form: Option<PromptForm>,
+    /// The "Changed files" window is open.
+    changed_files_open: bool,
     /// For background tasks to request a repaint when their results arrive.
     repaint_ctx: egui::Context,
     palette: Palette,
@@ -343,6 +345,7 @@ impl ChatApp {
             mcp_views: (u64::MAX, Arc::default()),
             viewing: None,
             prompt_form: None,
+            changed_files_open: false,
             repaint_ctx: cc.egui_ctx.clone(),
             palette: Palette::default(),
             sidebar_open: true,
@@ -626,6 +629,11 @@ impl ChatApp {
         let mut reset = false;
         let mut compact = false;
         let mut review = false;
+        let mut show_changed = false;
+        let has_edits = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.messages.iter().any(|m| m.edit.is_some()));
         let loaded = self
             .current
             .and_then(|id| self.instructions.get(&id))
@@ -778,6 +786,19 @@ impl ChatApp {
                                     review = true;
                                 }
                             }
+                            if ui
+                                .add_enabled(
+                                    has_edits,
+                                    egui::Button::new(format!("{}  Changed files", icon::FILE))
+                                        .small(),
+                                )
+                                .on_hover_text(
+                                    "Every file this chat's edits changed, with their diffs",
+                                )
+                                .clicked()
+                            {
+                                show_changed = true;
+                            }
                             for (id, name) in &servers {
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -865,6 +886,9 @@ impl ChatApp {
             && let Err(e) = self.start_review(id, &ui.ctx().clone())
         {
             self.notice = Some(e);
+        }
+        if show_changed {
+            self.changed_files_open = true;
         }
     }
 
@@ -1737,6 +1761,75 @@ impl ChatApp {
         }
     }
 
+    /// The current chat's file edits, one collapsible section per file, with their diffs.
+    fn changed_files_window(&mut self, ctx: &egui::Context) {
+        if !self.changed_files_open {
+            return;
+        }
+        let files = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .map(|c| crate::checkpoints::changed_files(&c.messages))
+            .unwrap_or_default();
+        egui::Window::new("Changed files")
+            .open(&mut self.changed_files_open)
+            .resizable(true)
+            .default_width(600.0)
+            .show(ctx, |ui| {
+                if files.is_empty() {
+                    ui.label(RichText::new("This chat hasn't changed any files.").weak());
+                    return;
+                }
+                let stat = |edits: &[(usize, crate::types::FileEdit)]| {
+                    edits.iter().fold((0, 0), |(a, r), (_, e)| {
+                        let (x, y) = crate::ui::widgets::diff_stat(&e.diff);
+                        (a + x, r + y)
+                    })
+                };
+                let all: Vec<_> = files.iter().flat_map(|f| f.edits.clone()).collect();
+                let (added, removed) = stat(&all);
+                ui.label(format!("{} files, +{added} \u{2212}{removed}", files.len()));
+                ui.add_space(6.0);
+                for file in &files {
+                    let (a, r) = stat(&file.edits);
+                    let created = file.edits.iter().any(|(_, e)| e.created);
+                    let undone = file.edits.iter().all(|(_, e)| e.undone);
+                    let mut title = format!("{}  +{a} \u{2212}{r}", file.path);
+                    if created {
+                        title.push_str("  \u{00B7} created");
+                    }
+                    if undone {
+                        title.push_str("  \u{00B7} undone");
+                    }
+                    egui::CollapsingHeader::new(RichText::new(title).monospace())
+                        .id_salt(("changed-file", &file.path))
+                        .default_open(files.len() <= 3)
+                        .show(ui, |ui| {
+                            for (n, (_, edit)) in file.edits.iter().enumerate() {
+                                let (ea, er) = crate::ui::widgets::diff_stat(&edit.diff);
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Edit {}", n + 1)).strong());
+                                    ui.label(format!("+{ea} \u{2212}{er}"));
+                                    if edit.undone {
+                                        ui.label(RichText::new("Undone").weak());
+                                    }
+                                });
+                                if edit.diff.is_empty() {
+                                    ui.label(RichText::new("No diff recorded").weak());
+                                } else {
+                                    egui::ScrollArea::horizontal()
+                                        .id_salt(("changed-diff", &file.path, n))
+                                        .show(ui, |ui| {
+                                            crate::ui::widgets::diff_block(ui, &edit.diff);
+                                        });
+                                }
+                                ui.add_space(6.0);
+                            }
+                        });
+                }
+            });
+    }
+
     fn prompt_form_window(&mut self, ctx: &egui::Context) {
         let Some(form) = &mut self.prompt_form else {
             return;
@@ -2008,6 +2101,12 @@ impl ChatApp {
             ),
             Entry::new(icon::FLOW, "Fork this chat", "Chat", Command::ForkChat),
             Entry::new(
+                icon::FILE,
+                "Show files changed in this chat",
+                "Chat",
+                Command::ShowChangedFiles,
+            ),
+            Entry::new(
                 icon::SIDEBAR,
                 "Toggle sidebar",
                 "View",
@@ -2199,6 +2298,7 @@ impl ChatApp {
                     });
                 }
             }
+            Command::ShowChangedFiles => self.changed_files_open = true,
             Command::ReviewChanges => {
                 if let Some(id) = self.current
                     && let Err(e) = self.start_review(id, ctx)
@@ -3932,6 +4032,7 @@ impl eframe::App for ChatApp {
         }
 
         self.prompt_form_window(&ctx);
+        self.changed_files_window(&ctx);
         if let Some(image) = &self.viewing
             && !attach_ui::viewer(&ctx, image)
         {
@@ -4067,6 +4168,7 @@ impl eframe::App for ChatApp {
             || self.palette.open
             || self.viewing.is_some()
             || self.prompt_form.is_some()
+            || self.changed_files_open
             || ctx.any_popup_open()
             || ctx.input(|i| !i.raw.hovered_files.is_empty());
         match web_area.filter(|_| !covered) {
