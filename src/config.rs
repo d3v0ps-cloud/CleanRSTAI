@@ -360,11 +360,18 @@ pub enum SearchBackend {
     Brave,
     /// The Tavily search API (needs a key).
     Tavily,
+    /// The Kagi Search API (needs a key).
+    Kagi,
 }
 
 impl SearchBackend {
-    pub const ALL: [SearchBackend; 4] =
-        [Self::DuckDuckGo, Self::Searxng, Self::Brave, Self::Tavily];
+    pub const ALL: [SearchBackend; 5] = [
+        Self::DuckDuckGo,
+        Self::Searxng,
+        Self::Brave,
+        Self::Tavily,
+        Self::Kagi,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -372,11 +379,12 @@ impl SearchBackend {
             Self::Searxng => "SearXNG",
             Self::Brave => "Brave Search API",
             Self::Tavily => "Tavily",
+            Self::Kagi => "Kagi Search API",
         }
     }
 
     pub fn needs_key(self) -> bool {
-        matches!(self, Self::Brave | Self::Tavily)
+        matches!(self, Self::Brave | Self::Tavily | Self::Kagi)
     }
 }
 
@@ -390,7 +398,7 @@ pub struct WebSearchSettings {
     pub backend: SearchBackend,
     /// Base URL of the SearXNG instance, e.g. `https://searx.example.org`.
     pub searxng_url: String,
-    /// API key for Brave or Tavily. Kept in the keychain.
+    /// API key for Brave, Tavily or Kagi. Kept in the keychain.
     pub api_key: String,
     /// Results per search, 1–20.
     pub max_results: u32,

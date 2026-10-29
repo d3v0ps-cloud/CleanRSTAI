@@ -37,8 +37,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   default) lets Anthropic hold the cached prompt briefly (minutes) to reuse it.
 - **Tool calls**: MCP tools go to their servers; web fetch requests the URL the model chose;
   web search sends the model's query to the search service chosen in
-  [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave and
-  Tavily also get your API key). They ask for approval unless you turned that off.
+  [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
+  Tavily and Kagi also get your API key). They ask for approval unless you turned that off.
 - **Context compaction** sends the older messages of a long chat (shortened where they are
   long) to the provider and model chosen in [Context & files](../settings/context.html), to
   have them summarised.

@@ -543,7 +543,7 @@ fn web_search_rows(
                     );
                     ui.end_row();
                 }
-                SearchBackend::Brave | SearchBackend::Tavily => {
+                SearchBackend::Brave | SearchBackend::Tavily | SearchBackend::Kagi => {
                     ui.label("API key");
                     ui.horizontal(|ui| {
                         ui.add(
@@ -570,7 +570,7 @@ fn web_search_rows(
             ui.label("Options");
             ui.vertical(|ui| {
                 ui.add_enabled(
-                    s.backend != SearchBackend::Tavily,
+                    !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
                     egui::Checkbox::new(&mut s.safe_search, "Safe search"),
                 );
                 ui.checkbox(&mut s.ask, "Ask before each search")
@@ -2814,7 +2814,7 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (
         Tab::Tools,
         "Tools",
-        "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily)",
+        "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily, Kagi)",
     ),
     (Tab::Tools, "Tools", "Web search API key"),
     (Tab::Tools, "Tools", "Slash commands (saved prompts)"),

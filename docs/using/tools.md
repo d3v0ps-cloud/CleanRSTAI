@@ -22,7 +22,7 @@ workspace tools (when a chat has a folder) and [MCP servers](mcp.html).
 | **Calculator** | Exact arithmetic and functions: powers, roots, logarithms, trigonometry, rounding, min/max/avg. | No |
 | **Task list** | For multi-step requests the model breaks the work into tasks, shows them as a checklist in the chat and ticks them off. | No |
 | **Web fetch** | Reads an http(s) URL. Pages come back as readable text with their links, plain text and JSON as they are, images as images. Long pages are read in parts; downloads stop at 5 MB. | Yes |
-| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave or Tavily) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search) |
+| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave, Tavily or Kagi) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search) |
 
 Web fetch only reaches public internet addresses: not localhost, private networks or cloud
 metadata endpoints, also after a redirect. To reach those, turn on *Let web fetch reach this
