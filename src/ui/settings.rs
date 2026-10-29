@@ -15,6 +15,7 @@ use crate::config::{
 };
 use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
+use crate::ocr::OcrEngine;
 use crate::remote::{RemoteStatus, TunnelStatus};
 use crate::schedule::ScheduledTask;
 use uuid::Uuid;
@@ -840,7 +841,7 @@ impl SettingsUi {
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
                 Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
-                Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, and code review.",
+                Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, code review, and OCR for scanned PDFs.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
@@ -2138,6 +2139,106 @@ impl SettingsUi {
                             .desired_width(f32::INFINITY),
                     );
                 });
+
+                ui.add_space(16.0);
+
+                // ---- OCR for scanned PDFs
+                let o = &mut g.ocr;
+                ui.checkbox(
+                    &mut o.enabled,
+                    egui::RichText::new(format!("{}  Read scanned PDFs (OCR)", icon::FILE))
+                        .strong(),
+                );
+                ui.indent("ocr-help", |ui| {
+                    ui.weak(
+                        "A PDF with no text layer (a scan or a photo of pages) has its page \
+                         images read. A vision model reads each page, and the page image is sent \
+                         to the provider chosen here; Tesseract runs on this computer. Pages past \
+                         the limit are not read. Without OCR, such a PDF is attached with a note.",
+                    );
+                });
+                ui.add_enabled_ui(o.enabled, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Read with");
+                        ui.radio_value(&mut o.engine, OcrEngine::VisionModel, "A vision model");
+                        ui.radio_value(&mut o.engine, OcrEngine::Tesseract, "Tesseract");
+                    });
+                    ui.add_space(6.0);
+                    egui::Grid::new("ocr-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            if o.engine == OcrEngine::VisionModel {
+                                ui.label("Vision model by");
+                                let current = o
+                                    .provider
+                                    .as_ref()
+                                    .and_then(|id| providers.iter().find(|(pid, ..)| pid == id))
+                                    .map_or("The chat's provider".to_owned(), |(_, n, _)| {
+                                        n.clone()
+                                    });
+                                egui::ComboBox::from_id_salt("ocr-provider")
+                                    .selected_text(current)
+                                    .width(FIELD_WIDTH)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut o.provider,
+                                            None,
+                                            "The chat's provider",
+                                        );
+                                        for (id, name, _) in &providers {
+                                            ui.selectable_value(
+                                                &mut o.provider,
+                                                Some(id.clone()),
+                                                name,
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+                            } else {
+                                ui.label("Tesseract program");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.tesseract_path)
+                                        .hint_text("tesseract")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text("A name on PATH, or the full path of the program");
+                                ui.end_row();
+
+                                ui.label("Languages");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.languages)
+                                        .hint_text("eng")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text(
+                                    "Tesseract language codes joined with +, e.g. eng+deu; \
+                                     each must be installed with Tesseract",
+                                );
+                                ui.end_row();
+                            }
+
+                            ui.label("Pages per PDF");
+                            ui.add(
+                                egui::DragValue::new(&mut o.max_pages)
+                                    .range(1..=200)
+                                    .suffix(" pages"),
+                            )
+                            .on_hover_text(
+                                "Pages past this are not read, and the model is told so",
+                            );
+                            ui.end_row();
+                        });
+                    if o.engine == OcrEngine::VisionModel {
+                        ui.add_space(4.0);
+                        weak_note(
+                            ui,
+                            "The model must accept images. Pages are sent one at a time, so a \
+                             long scan takes a while.",
+                        );
+                    }
+                });
             });
     }
 
@@ -3429,6 +3530,17 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Context & files",
         "Undo file edits (checkpoints)",
     ),
+    (Tab::Context, "Context & files", "Read scanned PDFs (OCR)"),
+    (
+        Tab::Context,
+        "Context & files",
+        "OCR engine and vision model",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Tesseract program and languages",
+    ),
     (
         Tab::General,
         "General",
@@ -3535,6 +3647,8 @@ mod tests {
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
+        assert_eq!(search_settings("scanned pdf")[0].0, Tab::Context);
+        assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);

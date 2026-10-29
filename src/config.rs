@@ -948,6 +948,9 @@ pub struct GeneralSettings {
     pub review: ReviewSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
+    /// Reading scanned PDFs (no text layer) with a vision model or tesseract.
+    #[serde(default)]
+    pub ocr: crate::ocr::OcrSettings,
     /// Slash commands: saved prompts typed as `/name` (see `commands`).
     pub slash_commands: SlashCommandSettings,
     /// Skills the model loads on demand (see `skills`).
@@ -999,6 +1002,7 @@ impl Default for GeneralSettings {
             instructions: InstructionSettings::default(),
             review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
+            ocr: Default::default(),
             slash_commands: SlashCommandSettings::default(),
             skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
@@ -1326,6 +1330,9 @@ impl Settings {
         if !self.providers.iter().any(|p| p.id == c.provider_id) {
             c.provider_id.clear();
         }
+        self.general
+            .ocr
+            .normalize(|id| self.providers.iter().any(|p| p.id == id));
         let rv = &mut self.general.review;
         rv.max_diff_kb = rv.max_diff_kb.clamp(16, 4096);
         rv.base_branch = rv.base_branch.trim().to_owned();

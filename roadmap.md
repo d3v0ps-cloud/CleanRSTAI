@@ -397,7 +397,7 @@ in them follows the same rule:
 
 Smaller items from the same comparison:
 
-- [ ] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
+- [x] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
   Settings
 - [x] Share a chat as a single HTML file alongside the Markdown export
 
