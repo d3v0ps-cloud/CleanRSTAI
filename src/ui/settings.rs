@@ -111,6 +111,7 @@ pub enum Tab {
     Context,
     Docker,
     Subagents,
+    Background,
 }
 
 pub enum SettingsAction {
@@ -700,6 +701,7 @@ impl SettingsUi {
                         (Tab::Context, "Context & files"),
                         (Tab::Docker, "Docker sandbox"),
                         (Tab::Subagents, "Subagents"),
+                        (Tab::Background, "Background"),
                     ] {
                         if ui
                             .add(
@@ -771,6 +773,7 @@ impl SettingsUi {
                 Tab::Context => "Context & files",
                 Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
+                Tab::Background => "Background",
                 Tab::General => "General",
             });
             ui.weak(match self.tab {
@@ -780,6 +783,7 @@ impl SettingsUi {
                 Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, and code review.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
+                Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
                 Tab::General => "Appearance, behaviour, secrets and data.",
             });
             ui.add_space(8.0);
@@ -790,6 +794,7 @@ impl SettingsUi {
                 Tab::Context => self.context_tab(ui),
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
+                Tab::Background => self.background_tab(ui),
                 Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
             }
         });
@@ -2168,6 +2173,69 @@ impl SettingsUi {
             });
     }
 
+    fn background_tab(&mut self, ui: &mut egui::Ui) {
+        let bg = &mut self.draft.general.background;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.checkbox(
+                    &mut bg.notify,
+                    egui::RichText::new("Notify when a reply finishes, fails or needs approval")
+                        .strong(),
+                );
+                ui.indent("bg-notify", |ui| {
+                    let on = bg.notify;
+                    ui.add_enabled(
+                        on,
+                        egui::Checkbox::new(
+                            &mut bg.notify_only_unfocused,
+                            "Only while the CleanRSTAI window is in the background",
+                        ),
+                    );
+                    ui.weak(
+                        "Sent through the system's notifications. Each chat can also switch \
+                         its notifications off from the tools menu.",
+                    );
+                });
+                ui.add_space(10.0);
+                egui::Grid::new("background-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Replies at once");
+                        ui.add(
+                            egui::DragValue::new(&mut bg.max_parallel)
+                                .range(1..=crate::config::MAX_PARALLEL_RUNS),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        weak_note(
+                            ui,
+                            "Replies beyond this wait in a queue, marked Queued, and start in \
+                             the order they were sent as others finish. Stop on a queued chat \
+                             takes it out of the queue.",
+                        );
+                        ui.end_row();
+
+                        ui.label("Time limit");
+                        ui.add(
+                            egui::DragValue::new(&mut bg.time_limit_mins)
+                                .range(0..=crate::config::MAX_TIME_LIMIT_MINS)
+                                .suffix(" min"),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        weak_note(
+                            ui,
+                            "0 means no limit. A reply that runs longer is stopped and says \
+                             so. The time counts from when the reply starts, including any \
+                             wait for approval.",
+                        );
+                        ui.end_row();
+                    });
+            });
+    }
+
     fn subagents_tab(&mut self, ui: &mut egui::Ui) {
         let providers: Vec<(String, String, Vec<String>)> = self
             .draft
@@ -2936,6 +3004,18 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Parallel subagents, rounds and time limit",
     ),
     (Tab::Subagents, "Subagents", "Subagent system prompt"),
+    (
+        Tab::Background,
+        "Background",
+        "Notify when a reply finishes or needs approval",
+    ),
+    (
+        Tab::Background,
+        "Background",
+        "Only notify while the window is in the background",
+    ),
+    (Tab::Background, "Background", "Replies at once (queue)"),
+    (Tab::Background, "Background", "Reply time limit (minutes)"),
 ];
 
 fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
@@ -2970,6 +3050,9 @@ mod tests {
         assert_eq!(search_settings("saved prompts")[0].0, Tab::Tools);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
+        assert_eq!(search_settings("notify")[0].0, Tab::Background);
+        assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
+        assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
         assert!(search_settings("zzzz").is_empty());
     }
 }

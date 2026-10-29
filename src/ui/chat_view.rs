@@ -52,6 +52,8 @@ fn card<R>(ui: &mut egui::Ui, stroke: egui::Color32, add: impl FnOnce(&mut egui:
 pub struct View<'a> {
     pub conv: &'a Conversation,
     pub run: Option<&'a Run>,
+    /// The reply waits for a free slot: how many queued replies are ahead of it.
+    pub queued: Option<usize>,
     pub error: Option<&'a String>,
     pub show_stats: bool,
     pub reasoning: ReasoningDisplay,
@@ -173,6 +175,19 @@ pub fn show(
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(RichText::new("Summarising older messages…").weak());
+                    });
+                    ui.add_space(12.0);
+                }
+                if let Some(ahead) = v.queued {
+                    let p = theme::palette(ui.visuals().dark_mode);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon::CLOCK).color(p.pencil));
+                        ui.label(RichText::new("Queued").color(p.ink2));
+                        let detail = match ahead {
+                            0 => "starts when a slot frees up".to_owned(),
+                            n => format!("{n} ahead of it"),
+                        };
+                        ui.label(RichText::new(format!("· {detail}")).weak());
                     });
                     ui.add_space(12.0);
                 }
