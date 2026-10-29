@@ -862,10 +862,11 @@ impl ResponsesReader {
                     self.kept.push(Value::Object(kept));
                 }
             }
-            // The search runs on the provider's side; its call is sent back as it came.
+            // The search runs on the provider's side. Its call isn't kept: with `store: false`
+            // the server can't look its id up on a later turn, and the reply already holds
+            // what was found.
             Some("web_search_call") => {
                 sink.turn.searched = true;
-                self.kept.push(item.clone());
             }
             Some("message") => {
                 for part in item["content"].as_array().into_iter().flatten() {
@@ -1640,7 +1641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_web_search_streams_and_keeps_its_call() {
+    async fn responses_web_search_streams_without_keeping_its_call() {
         let (base, _) = serve(|_| {
             Response::sse(&[
                 json!({"type": "response.created", "response": {"status": "in_progress"}}),
@@ -1679,10 +1680,11 @@ mod tests {
                 url: "https://d.example/4".into(),
             }]
         );
-        let native = turn.native.unwrap();
-        assert_eq!(native.api, ProviderApi::Responses);
-        assert_eq!(native.items[0]["type"], "web_search_call");
-        assert_eq!(native.items[0]["id"], "ws_1");
+        // Nothing is stored server-side (`store: false`), so the call can't be sent back.
+        assert!(
+            turn.native
+                .is_none_or(|n| n.items.iter().all(|i| i["type"] != "web_search_call"))
+        );
     }
 
     #[tokio::test]
@@ -1714,7 +1716,10 @@ mod tests {
         assert_eq!(turn.content, "Whole.");
         assert!(turn.searched);
         assert_eq!(turn.sources[0].url, "https://e.example/5");
-        assert_eq!(turn.native.unwrap().items.len(), 1);
+        assert!(
+            turn.native
+                .is_none_or(|n| n.items.iter().all(|i| i["type"] != "web_search_call"))
+        );
     }
 
     #[test]
