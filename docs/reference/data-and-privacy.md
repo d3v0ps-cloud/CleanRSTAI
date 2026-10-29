@@ -39,6 +39,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   web search sends the model's query to the search service chosen in
   [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
   Tavily and Kagi also get your API key). They ask for approval unless you turned that off.
+  With **Search with** set to the provider's own search, the query goes to the chat's provider
+  instead, which searches on its side; the search service isn't contacted and nothing is asked.
 - **Context compaction** sends the older messages of a long chat (shortened where they are
   long) to the provider and model chosen in [Context & files](../settings/context.html), to
   have them summarised.

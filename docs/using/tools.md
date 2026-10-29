@@ -23,7 +23,7 @@ workspace tools (when a chat has a folder) and [MCP servers](mcp.html).
 | **Skills** | Loads a skill (a folder of instructions, see [Skills & hooks](../settings/skills-and-hooks.html#skills)) by name, or one of its other files. Offered only when skills exist. | No |
 | **Task list** | For multi-step requests the model breaks the work into tasks, shows them as a checklist in the chat and ticks them off. | No |
 | **Web fetch** | Reads an http(s) URL. Pages come back as readable text with their links, plain text and JSON as they are, images as images. Long pages are read in parts; downloads stop at 5 MB. | Yes |
-| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave, Tavily or Kagi) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search) |
+| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave, Tavily or Kagi) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. With **Search with** set to the provider's own search, Anthropic, OpenAI (Responses) or OpenRouter searches instead, and the reply lists the pages it cited under "Searched the web". | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search). The provider's own search doesn't ask |
 
 Web fetch only reaches public internet addresses: not localhost, private networks or cloud
 metadata endpoints, also after a redirect. To reach those, turn on *Let web fetch reach this
@@ -128,8 +128,8 @@ runs none.
 ## Approving tool calls
 
 Tools that reach outside the app or change things ask first: MCP tools, web fetch, web
-search (unless turned off), `delegate` (subagents) and the workspace tools that write files or
-run commands. The card shows the tool and its arguments (or, for `write_file` and `edit_file`,
+search (unless turned off; not the provider's own search, which runs on the provider's side),
+`delegate` (subagents) and the workspace tools that write files or run commands. The card shows the tool and its arguments (or, for `write_file` and `edit_file`,
 the change as a diff) and asks **Allow this tool to run?**:
 
 - **Run**: run this call.

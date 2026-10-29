@@ -247,6 +247,16 @@ OpenAI Responses APIs in `native.rs`, which convert the Chat Completions message
 reasoning effort and sampling options, layered provider → model (`ProviderConfig::resolved_options`)
 → chat (`Conversation.model_options`, applied by `with_chat_options` in `start_run_with`).
 
+Provider web search (`native.rs`): with `builtin_tools.search.native` = `PreferProvider`,
+`native_search_request` sets `ProviderConfig.native_search` (per request, never saved) for a chat
+whose `web_search` is on and whose provider has a search (`native_search_support`: Anthropic's
+`web_search_20250305` tool, Responses' `web_search` tool, OpenRouter's `web` plugin).
+`ToolSelection::with_native_search` then leaves the built-in `web_search` out of the toolbox, so
+subagents keep it. The readers keep `server_tool_use`/`web_search_tool_result` and
+`web_search_call` items in `ChatMessage.native` (sent back only to their API), collect
+citations into `ChatMessage.sources` and set `searched`; `chat_view` shows them under the reply.
+An Anthropic `pause_turn` continues the reply in the agent loop.
+
 ## UI conventions
 
 - The look follows the Claude desktop app: palette, fonts and widget styling live in
