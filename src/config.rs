@@ -1018,6 +1018,9 @@ pub struct GeneralSettings {
     /// Projects: chats grouped with shared instructions and files (see `projects`).
     #[serde(default)]
     pub projects: crate::projects::ProjectSettings,
+    /// Memory: facts the model saves across chats (see `memory`).
+    #[serde(default)]
+    pub memory: crate::memory::MemorySettings,
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
@@ -1092,6 +1095,7 @@ impl Default for GeneralSettings {
             schedules: Default::default(),
             save_as: Default::default(),
             projects: Default::default(),
+            memory: Default::default(),
             plan: Default::default(),
             voice: Default::default(),
             branching: Default::default(),
@@ -1407,6 +1411,7 @@ impl Settings {
         let providers = &self.providers;
         self.general.voice.normalize(providers);
         self.general.branching.normalized();
+        self.general.memory.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -2212,6 +2217,30 @@ mod tests {
         s.general.projects.default_provider = Some(id.clone());
         s.normalize();
         assert_eq!(s.general.projects.default_provider, Some(id));
+    }
+
+    #[test]
+    fn memory_settings_load_from_older_files_and_normalise() {
+        use crate::memory::{MemoryScope, MemorySettings};
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.memory, MemorySettings::default());
+        assert!(!old.memory.enabled);
+        assert!(old.memory.ask_before_saving);
+
+        let on: GeneralSettings =
+            serde_json::from_str(r#"{"memory": {"enabled": true, "scope": "per_project"}}"#)
+                .unwrap();
+        assert!(on.memory.enabled);
+        assert_eq!(on.memory.scope, MemoryScope::PerProject);
+        assert_eq!(on.memory.max_kb, 8);
+
+        let mut s = Settings::default();
+        s.general.memory.max_kb = 900;
+        s.normalize();
+        assert_eq!(s.general.memory.max_kb, 64);
+        s.general.memory.max_kb = 0;
+        s.normalize();
+        assert_eq!(s.general.memory.max_kb, 1);
     }
 
     #[test]

@@ -663,6 +663,33 @@ mod tests {
         assert!(del.tool_description().contains("container of their own"));
     }
 
+    #[tokio::test]
+    async fn subagents_never_get_the_memory_tool_or_memories() {
+        let (base, log) = serve(|_| reply("done")).await;
+        let mut s = settings_with(&format!("{base}/v1"));
+        s.general.memory.enabled = true;
+        // The parent chat has memory on, so the subagents' selection has the feature on too.
+        let sel = ToolSelection::new(&s, &ToolOverrides::default());
+        assert!(sel.feature_on(crate::tools::MEMORY));
+        let d = Delegation::new(&s, &sel).unwrap();
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let args = json!({"tasks": [{"task": "alpha"}]}).to_string();
+        let (out, reports) = d.run(&http, &mcp, &args, &|_| {}).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(reports.len(), 1);
+        let requests = log.lock().unwrap();
+        assert!(!requests.is_empty());
+        for request in requests.iter() {
+            let body = request.json();
+            assert!(
+                !body.to_string().contains(crate::tools::MEMORY_TOOL),
+                "{body}"
+            );
+            assert!(!body.to_string().contains("Things to remember"), "{body}");
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn subagents_run_commands_in_their_own_containers() {

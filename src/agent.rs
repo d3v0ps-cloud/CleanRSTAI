@@ -182,6 +182,9 @@ pub struct AgentRequest {
     /// `projects::load_context`) for a chat in a project. Added to the system prompt while
     /// the Projects setting and the chat's "Project context" switch are on.
     pub project: Option<crate::projects::ProjectContext>,
+    /// The chat's memory (see `memory::for_request`): the memories in its system prompt and the
+    /// memory tool. `None` for a chat with memory off (incognito), and for subagents.
+    pub memory: Option<crate::memory::MemoryRun>,
 }
 
 impl AgentRequest {
@@ -255,6 +258,7 @@ impl AgentRequest {
             compact_only,
             approval_mode: mode,
             project: None,
+            memory: None,
         }
     }
 }
@@ -367,6 +371,11 @@ pub async fn run(
     {
         system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), project.prompt());
     }
+    // A chat with memory on: the memories it sees, read when the reply starts.
+    let memory = req.memory.clone();
+    if let Some(memory) = &memory {
+        system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), memory.prompt());
+    }
     // A Plan chat is told to investigate and propose a plan, not to change anything.
     if req.approval_mode == crate::approval::ApprovalMode::Plan {
         system_prompt = format!(
@@ -460,10 +469,14 @@ pub async fn run(
                 Some(ws) => toolbox.with_workspace(ws.clone(), &selection),
                 None => toolbox,
             };
-            if skills_on {
+            let toolbox = if skills_on {
                 toolbox.with_skills(skills.clone(), req.general.skills.max_kb)
             } else {
                 toolbox
+            };
+            match &memory {
+                Some(memory) => toolbox.with_memory(memory.clone()),
+                None => toolbox,
             }
         } else {
             Toolbox::default()
@@ -585,7 +598,7 @@ pub async fn run(
         for call in &calls {
             let approved = if (req.general.auto_approve_tools
                 && !crate::approval::always_asks(&call.name))
-                || !toolbox.asks(&call.name)
+                || !toolbox.asks_call(&call.name, &call.arguments)
                 || req
                     .approval_mode
                     .runs_unasked(&call.name, req.sandbox.is_some())
@@ -813,6 +826,7 @@ mod tests {
             compact_only: false,
             approval_mode: Default::default(),
             project: None,
+            memory: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -897,6 +911,7 @@ mod tests {
             compact_only: false,
             approval_mode: Default::default(),
             project: None,
+            memory: None,
         }
     }
 
@@ -1571,6 +1586,150 @@ mod tests {
             .to_owned();
         assert!(!system.contains("Project"), "{system}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A request for a chat with memory on (or off, through `overrides`), with `store`'s
+    /// memories, and the names of the tools and the system prompt it sends first.
+    async fn memory_request(
+        store: &Arc<crate::memory::MemoryStore>,
+        settings: &crate::config::Settings,
+        overrides: &crate::tools::ToolOverrides,
+        tool: &'static str,
+        args: &'static str,
+    ) -> (Vec<ChatEvent>, String, Vec<String>) {
+        let (base, log) = tool_calling_llm(tool, args).await;
+        let conv = crate::types::Conversation {
+            tool_overrides: overrides.clone(),
+            ..crate::types::Conversation::new()
+        };
+        let mut req = request(&base, settings, overrides);
+        req.memory =
+            crate::memory::for_request(store, &req.selection, &settings.general.memory, &conv);
+        let events = drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+        let names = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        (events, system, names)
+    }
+
+    #[tokio::test]
+    async fn memories_join_the_prompt_and_the_tool_is_offered_unless_incognito() {
+        use crate::tools::{MEMORY_TOOL, ToolOverrides};
+        let dir = temp_dir("agent-memory");
+        let store = Arc::new(crate::memory::MemoryStore::at(&dir.join("memory.json")));
+        store
+            .add("Lives in Oslo", crate::memory::Scope::Global, None)
+            .unwrap();
+        let mut settings = crate::config::Settings::default();
+        settings.general.memory.enabled = true;
+
+        let (_, system, names) = memory_request(
+            &store,
+            &settings,
+            &ToolOverrides::default(),
+            tools::CALCULATE,
+            r#"{"expression": "1"}"#,
+        )
+        .await;
+        assert!(
+            system.contains("Things to remember about the user"),
+            "{system}"
+        );
+        assert!(system.contains("Lives in Oslo"), "{system}");
+        assert!(names.iter().any(|n| n == MEMORY_TOOL), "{names:?}");
+
+        // Incognito: neither the memories nor the tool reach the model.
+        let mut incognito = ToolOverrides::default();
+        incognito.set(ToolOverrides::feature_key(tools::MEMORY), false, true);
+        let (_, system, names) = memory_request(
+            &store,
+            &settings,
+            &incognito,
+            tools::CALCULATE,
+            r#"{"expression": "1"}"#,
+        )
+        .await;
+        assert!(!system.contains("Lives in Oslo"), "{system}");
+        assert!(!system.contains("Things to remember"), "{system}");
+        assert!(!names.iter().any(|n| n == MEMORY_TOOL), "{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn memory_saves_ask_before_saving_and_listing_never_does() {
+        use crate::tools::MEMORY_TOOL;
+        let dir = temp_dir("agent-memory-ask");
+        let store = Arc::new(crate::memory::MemoryStore::at(&dir.join("memory.json")));
+        let mut settings = crate::config::Settings::default();
+        settings.general.memory.enabled = true;
+        let none = Default::default();
+        let asked = |events: &[ChatEvent]| {
+            events.iter().any(
+                |e| matches!(e, ChatEvent::ToolApproval { call, .. } if call.name == MEMORY_TOOL),
+            )
+        };
+
+        // Asking is the default: a save waits for approval, and `drive` approves it.
+        let save = r#"{"action": "save", "text": "Likes tea"}"#;
+        let (events, _, _) = memory_request(&store, &settings, &none, MEMORY_TOOL, save).await;
+        assert!(asked(&events));
+        assert_eq!(store.all().len(), 1);
+        assert!(
+            events.iter().any(
+                |e| matches!(e, ChatEvent::ToolResult(m) if m.content.contains("Saved memory"))
+            )
+        );
+
+        let (events, _, _) = memory_request(
+            &store,
+            &settings,
+            &none,
+            MEMORY_TOOL,
+            r#"{"action": "list"}"#,
+        )
+        .await;
+        assert!(!asked(&events));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolResult(m) if m.content.contains("Likes tea")))
+        );
+
+        // A save that repeats a memory is refused politely, and the reply still goes on.
+        let (events, _, _) = memory_request(&store, &settings, &none, MEMORY_TOOL, save).await;
+        assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolResult(m) if !m.is_error && m.content.contains("already remembered"))));
+        assert_eq!(store.all().len(), 1);
+
+        // With the question switched off in Settings, a save runs unasked.
+        settings.general.memory.ask_before_saving = false;
+        let (events, _, _) = memory_request(
+            &store,
+            &settings,
+            &none,
+            MEMORY_TOOL,
+            r#"{"action": "save", "text": "Owns a bike"}"#,
+        )
+        .await;
+        assert!(!asked(&events));
+        assert_eq!(store.all().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_chat_with_memory_gets_no_memory_tool_or_memories_when_none_are_given() {
+        // Without a memory run (the default for every request), nothing about memory is sent.
+        let settings = crate::config::Settings::default();
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let req = request(&base, &settings, &Default::default());
+        assert!(req.memory.is_none());
+        drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        assert!(!first.to_string().contains("builtin__memory"));
     }
 
     #[test]

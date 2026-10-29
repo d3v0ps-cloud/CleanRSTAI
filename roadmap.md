@@ -28,8 +28,13 @@ tool calls and when a reply is done, and the command-line mode (`cleanrstai exec
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
 and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
+<<<<<<< HEAD
+Built-in Tools), and memory (facts the model saves across chats, with approval, a size limit,
+global or per-project scope, and incognito chats) in **v0.9.2-dev.5**.
+=======
 Built-in Tools), and the live web page preview on Linux (in a window of its own, when WebKitGTK
 is installed) in **v0.9.2-dev.5**.
+>>>>>>> origin/dev
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -301,11 +306,11 @@ in them follows the same rule:
 
 ## 18. Memory
 
-- [ ] Facts the model saves across chats (a `memory` built-in tool and a list in Settings),
+- [x] Facts the model saves across chats (a `memory` built-in tool and a list in Settings),
   added to the system prompt of new chats
-- [ ] Settings: on/off, saving with or without approval, a size limit, and global or per-project
+- [x] Settings: on/off, saving with or without approval, a size limit, and global or per-project
   scope
-- [ ] View, edit and delete memories in Settings; per chat: turn memory off (an "incognito" chat)
+- [x] View, edit and delete memories in Settings; per chat: turn memory off (an "incognito" chat)
 
 ## 19. Safe file edits
 

@@ -16,10 +16,32 @@ use crate::config::{
 };
 use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
+use crate::memory::{MAX_KB, MIN_KB, Memory, MemoryScope, MemorySettings, Scope};
 use crate::ocr::OcrEngine;
 use crate::remote::{RemoteStatus, TunnelStatus};
 use crate::schedule::ScheduledTask;
+use std::collections::HashMap;
 use uuid::Uuid;
+
+/// A change to the saved memories, made in Settings → Context & files → Memory. These take
+/// effect at once, not with Apply.
+pub enum MemoryChange {
+    Add { text: String, scope: Scope },
+    Edit { id: Uuid, text: String },
+    Delete(Uuid),
+    DeleteAll,
+}
+
+/// What the Memory section keeps between frames: the text fields.
+#[derive(Default)]
+pub struct MemoryEditor {
+    /// The text of each memory being shown, until its field loses focus.
+    drafts: HashMap<Uuid, String>,
+    new_text: String,
+    /// The project a new memory goes to, in per-project scope (`None`: global).
+    new_scope: Option<Uuid>,
+    confirm_all: bool,
+}
 
 /// The rows of a custom sandbox network: host, protocol, ports and a remove button, with
 /// each rule's error under it.
@@ -122,6 +144,7 @@ pub enum Tab {
 }
 
 pub enum SettingsAction {
+    Memory(MemoryChange),
     Apply(Box<Settings>),
     Close,
     FetchModels(ProviderConfig),
@@ -159,6 +182,7 @@ pub struct SettingsUi {
     import_text: String,
     import_error: Option<String>,
     search: String,
+    memory_ui: MemoryEditor,
     queued: Vec<SettingsAction>,
     pub fetching_models: bool,
     pub models_error: Option<String>,
@@ -803,6 +827,7 @@ impl SettingsUi {
             sandbox_status: None,
             user_skills: None,
             skills_folder_error: None,
+            memory_ui: MemoryEditor::default(),
         }
     }
 
@@ -831,6 +856,8 @@ impl SettingsUi {
         tunnel: &TunnelStatus,
         access_error: Option<&str>,
         chats: &[(Uuid, String)],
+        memories: &[Memory],
+        projects: &[(Uuid, String)],
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
@@ -950,7 +977,7 @@ impl SettingsUi {
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
                 Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
-                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
+                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), memory (facts kept across chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
@@ -963,7 +990,7 @@ impl SettingsUi {
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
                 Tab::Extensions => self.extensions_tab(ui),
-                Tab::Context => self.context_tab(ui),
+                Tab::Context => self.context_tab(ui, memories, projects, &mut actions),
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::Background => self.background_tab(ui, chats, &mut actions),
@@ -1866,7 +1893,13 @@ impl SettingsUi {
         }
     }
 
-    fn context_tab(&mut self, ui: &mut egui::Ui) {
+    fn context_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        memories: &[Memory],
+        projects: &[(Uuid, String)],
+        actions: &mut Vec<SettingsAction>,
+    ) {
         let providers: Vec<(String, String, Vec<String>)> = self
             .draft
             .providers
@@ -2195,6 +2228,17 @@ impl SettingsUi {
                         .hint_text("Nothing: a new project starts empty")
                         .desired_rows(3)
                         .desired_width(f32::INFINITY),
+                );
+                ui.add_space(16.0);
+
+                // ---- memory
+                memory_section(
+                    ui,
+                    &mut g.memory,
+                    &mut self.memory_ui,
+                    memories,
+                    projects,
+                    actions,
                 );
                 ui.add_space(16.0);
 
@@ -3645,6 +3689,178 @@ impl SettingsUi {
 }
 
 /// Slash commands: the on/off switches and the editable list of saved prompts.
+/// Settings → Context & files → Memory: the switches, then the saved memories. Their text and
+/// deletes are sent as [`MemoryChange`]s at once, not kept in the draft.
+fn memory_section(
+    ui: &mut egui::Ui,
+    m: &mut MemorySettings,
+    editor: &mut MemoryEditor,
+    memories: &[Memory],
+    projects: &[(Uuid, String)],
+    actions: &mut Vec<SettingsAction>,
+) {
+    let project_name = |id: Uuid| -> String {
+        projects
+            .iter()
+            .find(|(pid, _)| *pid == id)
+            .map_or_else(|| "Deleted project".to_owned(), |(_, name)| name.clone())
+    };
+    ui.label(egui::RichText::new(format!("{}  Memory", icon::EDIT)).strong());
+    ui.indent("memory-help", |ui| {
+        ui.weak(
+            "Facts the model saves when you ask it to remember something, or that you state about \
+             yourself. A chat with memory on gets them in its system prompt with every request, so \
+             they are sent to your provider. Off, or a chat switched to incognito, uses none of \
+             them and the model can't save any.",
+        );
+    });
+    ui.add_space(6.0);
+    ui.checkbox(&mut m.enabled, "New chats use memory")
+        .on_hover_text("Each chat can switch it off for itself (Chat features in the tools menu)");
+    ui.checkbox(
+        &mut m.ask_before_saving,
+        "Ask before saving or deleting a memory",
+    )
+    .on_hover_text("Off, the model saves and deletes memories without asking");
+    egui::Grid::new("memory-grid")
+        .num_columns(2)
+        .spacing([12.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Size limit");
+            ui.add(
+                egui::DragValue::new(&mut m.max_kb)
+                    .range(MIN_KB..=MAX_KB)
+                    .suffix(" KB"),
+            )
+            .on_hover_text(
+                "The memories sent with each request, newest first; older ones are left out \
+                 past this",
+            );
+            ui.end_row();
+
+            ui.label("Scope");
+            egui::ComboBox::from_id_salt("memory-scope")
+                .selected_text(match m.scope {
+                    MemoryScope::Global => "Global",
+                    MemoryScope::PerProject => "Per project",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut m.scope, MemoryScope::Global, "Global")
+                        .on_hover_text("One set of memories for every chat");
+                    ui.selectable_value(&mut m.scope, MemoryScope::PerProject, "Per project")
+                        .on_hover_text(
+                            "A project's chats also see and save that project's memories, \
+                             besides the global ones; other chats see only the global ones",
+                        );
+                });
+            ui.end_row();
+        });
+
+    ui.add_space(10.0);
+    editor
+        .drafts
+        .retain(|id, _| memories.iter().any(|m| m.id == *id));
+    ui.strong(format!("Saved memories ({})", memories.len()));
+    if memories.is_empty() {
+        ui.weak("None yet.");
+    }
+    for memory in memories.iter().rev() {
+        ui.horizontal(|ui| {
+            let scope = match memory.scope {
+                Scope::Global => "Global".to_owned(),
+                Scope::Project(p) => format!("Project: {}", project_name(p)),
+            };
+            let saved = memory
+                .created
+                .with_timezone(&chrono::Local)
+                .format("%-d %b %Y");
+            ui.weak(format!("{scope} · saved {saved}"));
+            if super::widgets::icon_button(ui, icon::TRASH, "Delete this memory").clicked() {
+                actions.push(SettingsAction::Memory(MemoryChange::Delete(memory.id)));
+            }
+        });
+        let draft = editor
+            .drafts
+            .entry(memory.id)
+            .or_insert_with(|| memory.text.clone());
+        let resp = ui.add(
+            egui::TextEdit::singleline(draft)
+                .desired_width(f32::INFINITY)
+                .hint_text("Empty: forget it"),
+        );
+        if resp.lost_focus() {
+            let text = draft.trim().to_owned();
+            editor.drafts.remove(&memory.id);
+            if text.is_empty() {
+                actions.push(SettingsAction::Memory(MemoryChange::Delete(memory.id)));
+            } else if text != memory.text {
+                actions.push(SettingsAction::Memory(MemoryChange::Edit {
+                    id: memory.id,
+                    text,
+                }));
+            }
+        }
+        ui.add_space(4.0);
+    }
+
+    if !memories.is_empty() {
+        ui.horizontal(|ui| {
+            if !editor.confirm_all {
+                if ui.button("Delete all memories").clicked() {
+                    editor.confirm_all = true;
+                }
+            } else {
+                ui.label(format!("Delete all {} memories?", memories.len()));
+                if ui.button("Delete all").clicked() {
+                    actions.push(SettingsAction::Memory(MemoryChange::DeleteAll));
+                    editor.confirm_all = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    editor.confirm_all = false;
+                }
+            }
+        });
+    }
+
+    ui.add_space(8.0);
+    ui.strong("Add a memory");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.new_text)
+                .hint_text("A fact to remember")
+                .desired_width(260.0),
+        );
+        let per_project = m.scope == MemoryScope::PerProject;
+        if per_project {
+            let shown = editor
+                .new_scope
+                .map_or_else(|| "Global".to_owned(), project_name);
+            egui::ComboBox::from_id_salt("memory-new-scope")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut editor.new_scope, None, "Global");
+                    for (id, name) in projects {
+                        ui.selectable_value(&mut editor.new_scope, Some(*id), name);
+                    }
+                });
+        }
+        if ui
+            .add_enabled(
+                !editor.new_text.trim().is_empty(),
+                egui::Button::new("Add memory"),
+            )
+            .clicked()
+        {
+            let scope = match editor.new_scope.filter(|_| per_project) {
+                Some(p) => Scope::Project(p),
+                None => Scope::Global,
+            };
+            let text = std::mem::take(&mut editor.new_text);
+            actions.push(SettingsAction::Memory(MemoryChange::Add { text, scope }));
+        }
+    });
+}
+
 fn slash_command_rows(ui: &mut egui::Ui, s: &mut SlashCommandSettings) {
     ui.checkbox(
         &mut s.enabled,
@@ -3969,6 +4185,20 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Project instructions (AGENTS.md, CLAUDE.md)",
     ),
     (Tab::Context, "Context & files", "Projects (on / off)"),
+    (Tab::Context, "Context & files", "Memory (on / off)"),
+    (Tab::Context, "Context & files", "Memory: ask before saving"),
+    (Tab::Context, "Context & files", "Memory: size limit"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Memory: global or per project",
+    ),
+    (Tab::Context, "Context & files", "Memory: saved memories"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Memory: delete all memories",
+    ),
     (
         Tab::Context,
         "Context & files",
@@ -4118,6 +4348,10 @@ mod tests {
         assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
         assert_eq!(search_settings("projects")[0].0, Tab::Context);
+        assert_eq!(search_settings("memory")[0].0, Tab::Context);
+        assert_eq!(search_settings("memory size")[0].0, Tab::Context);
+        assert_eq!(search_settings("memory per project")[0].0, Tab::Context);
+        assert_eq!(search_settings("delete all memories")[0].0, Tab::Context);
         assert_eq!(search_settings("project files size")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);

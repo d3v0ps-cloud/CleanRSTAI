@@ -15,6 +15,8 @@ How to work with CleanRSTAI day to day.
 - [Subagents](subagents.html): letting the model delegate tasks to parallel agents.
 - [Projects](projects.html): grouping chats with shared instructions and files, and exporting
   a project with its chats.
+- [Memory](memory.html): facts the model keeps across chats, incognito chats, and managing
+  the memories in Settings.
 - [Docker sandbox](../settings/docker.html): running the model's shell commands in a container,
   with network rules.
 - [Command line](command-line.html): running one request from a terminal or a script with
