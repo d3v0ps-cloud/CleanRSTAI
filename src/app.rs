@@ -1081,6 +1081,8 @@ impl ChatApp {
             review,
         };
         if !self.queue.is_empty() || self.runs.len() >= limit.max(1) {
+            // The last reply's error would read as this one's while it waits.
+            self.errors.remove(&id);
             self.queue.push(item);
             return;
         }
