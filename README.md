@@ -180,6 +180,8 @@ too, as an installer and a portable `.exe`.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, fork a chat from any message into a new chat,
   or stop a generation.
+- **Branches**: regenerating a reply or editing a message keeps the version it replaces, and
+  **‹ k/N ›** arrows switch between the versions (up to 10 kept per message by default).
 - **Markdown rendering** with syntax-highlighted code blocks, tables and images. ```` ```mermaid ````
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
@@ -353,7 +355,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, branches (keep the replaced version, versions kept per message), updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |

@@ -18,6 +18,7 @@ nav_order: 2
 | Conversations | one JSON file per chat in the `conversations` folder (command-line runs only with `--save` or the Save setting) |
 | API keys (including the web search key), header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 | Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
+| Replies and turns kept as branches when they were regenerated or edited (the whole earlier version, as the chat was) | in the chat's file in the `conversations` folder |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
 | Projects: name, instructions, file paths, folder, provider, model, tool switches and mode | one JSON file per project in the `projects` folder. The files' text is not stored, only their paths. Project export files (`.cleanrstai-project.json`) hold the project and its chats, unencrypted, wherever you save them |
 

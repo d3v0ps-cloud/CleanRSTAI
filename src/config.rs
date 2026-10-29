@@ -1021,6 +1021,9 @@ pub struct GeneralSettings {
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
+    /// Regenerating and editing keep the replaced version as a branch (see `branches`).
+    #[serde(default)]
+    pub branching: crate::branches::BranchSettings,
     /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
     #[serde(default)]
     pub save_as: SaveAsSettings,
@@ -1087,6 +1090,7 @@ impl Default for GeneralSettings {
             save_as: Default::default(),
             projects: Default::default(),
             plan: Default::default(),
+            branching: Default::default(),
         }
     }
 }
@@ -1396,6 +1400,7 @@ impl Settings {
             url.to_owned()
         };
         self.general.plan.normalized();
+        self.general.branching.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -2093,6 +2098,17 @@ mod tests {
             back.default_approval_mode,
             crate::approval::ApprovalMode::ReadOnly
         );
+    }
+
+    #[test]
+    fn branching_settings_load_from_older_files_and_clamp() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.branching, crate::branches::BranchSettings::default());
+        assert!(s.branching.enabled);
+        let mut settings = Settings::default();
+        settings.general.branching.max_per_message = 0;
+        settings.normalize();
+        assert_eq!(settings.general.branching.max_per_message, 1);
     }
 
     #[test]

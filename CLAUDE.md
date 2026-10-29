@@ -137,6 +137,16 @@ public addresses (its own client with a filtering DNS resolver and redirect poli
   holds the diff, the previous content and the SHA-256 of what was written. Undo restores a
   turn newest first and skips files whose hash changed; `prune` drops old checkpoints.
 
+**Branches** (`branches.rs`): regenerating (`prepare_regenerate`) and editing (`divide`, run
+when the edit is sent, from `send_message_with`) take the replaced tail aside. The first message
+of the current tail holds the other versions in `ChatMessage.alternatives` (each a complete tail,
+nested alternatives included) and `alt_index`, the current one's place in creation order. A
+regeneration waits in `ChatApp::holds` until the new reply's first message arrives (`attach` on
+`AssistantStart`, `settle` at `Done`, `restore` on stop); the `AssistantFinal` event keeps the
+versions. `messages` is always the current tail, so compaction, export, fork (which drops the
+versions), the remote view and undo see only it. `Action::SwitchBranch` drives the `‹ k/N ›`
+arrows; `feature:branches` gates it per chat.
+
 **Skills** (`skills.rs`): a skill is a folder with `SKILL.md` (optional `name:`/`description:`
 front matter, parsed by hand) from `<config dir>/skills/` and, with `skills.workspace_skills`,
 `<workspace>/.cleanrstai/skills/` (a workspace skill replaces a user one of the same name).
