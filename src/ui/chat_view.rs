@@ -89,11 +89,13 @@ pub fn show(
                 .iter()
                 .chain(m.subagents.iter().flat_map(|s| s.stats.iter()))
         }));
-        // The chat's own latest request; subagents have contexts of their own.
+        // The chat's own latest request; subagents have contexts of their own, and a summary
+        // request's size says nothing about the chat's context.
         let context = conv
             .messages
             .iter()
             .rev()
+            .filter(|m| m.compaction.is_none())
             .find_map(|m| m.stats.as_ref())
             .and_then(crate::stats::RequestStats::context_use);
         if totals.requests > 0 {
@@ -128,7 +130,8 @@ pub fn show(
                     match msg.role {
                         Role::System => {
                             if let Some(info) = &msg.compaction {
-                                compaction_marker(ui, i, info, &msg.content);
+                                let stats = msg.stats.as_ref().filter(|_| v.show_stats);
+                                compaction_marker(ui, i, info, &msg.content, stats);
                                 ui.add_space(18.0);
                             }
                             continue;
@@ -613,6 +616,7 @@ fn compaction_marker(
     idx: usize,
     info: &crate::types::CompactionInfo,
     summary: &str,
+    stats: Option<&crate::stats::RequestStats>,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
     card(ui, p.rule, |ui| {
@@ -651,6 +655,10 @@ fn compaction_marker(
                         .selectable(true)
                         .wrap(),
                 );
+                if let Some(s) = stats {
+                    ui.add_space(4.0);
+                    super::stats_view::request_line(ui, s);
+                }
             });
     });
 }

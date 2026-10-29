@@ -1006,7 +1006,8 @@ impl ChatApp {
         result: Result<crate::review::ReviewDiff, String>,
     ) -> Result<(), String> {
         let diff = result?;
-        let text = crate::review::message_text(&self.settings.general.review.prompt, &diff);
+        let review = &self.settings.general.review;
+        let text = crate::review::message_text(&review.prompt, review.strictness, &diff);
         let ctx = self.repaint_ctx.clone();
         self.send_message_with(id, text, vec![crate::review::attachment(&diff)], &ctx, true)
     }
@@ -1480,10 +1481,13 @@ impl ChatApp {
                 kept,
                 summary,
                 info,
+                stats,
             } => {
                 let at = compaction_marker_at(&conv.messages, kept);
                 let mut marker = ChatMessage::new(Role::System, summary);
                 marker.compaction = Some(info);
+                // The summary request counts in the chat's totals, but not as its context.
+                marker.stats = Some(*stats);
                 conv.messages.insert(at, marker);
                 conv.save();
             }

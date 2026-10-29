@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::config::{CompactionSettings, ProviderConfig};
 use crate::llm::{self, ToolSpec};
+use crate::stats::RequestStats;
 use crate::types::{ChatMessage, Role};
 
 /// Tokens an image is counted as (its base64 data says little about what the model sees).
@@ -66,6 +67,10 @@ pub fn estimate_tokens(
     let reported = anchor
         .then(|| {
             history.iter().enumerate().rev().find_map(|(i, m)| {
+                // A summary request's size says nothing about the messages sent after it.
+                if m.compaction.is_some() {
+                    return None;
+                }
                 let s = m.stats.as_ref()?;
                 Some((i, s.prompt_tokens? + s.completion_tokens.unwrap_or(0)))
             })
@@ -131,13 +136,14 @@ pub fn transcript(previous: Option<&str>, old: &[ChatMessage]) -> String {
     out
 }
 
-/// Ask `c.provider` for a summary of `old` (and the `previous` summary).
+/// Ask `c.provider` for a summary of `old` (and the `previous` summary). Also returns the
+/// request's stats, which the chat counts.
 pub async fn summarise(
     http: &reqwest::Client,
     c: &Compaction,
     previous: Option<&str>,
     old: &[ChatMessage],
-) -> Result<String> {
+) -> Result<(String, RequestStats)> {
     let messages = vec![
         json!({"role": "system", "content": c.settings.prompt}),
         json!({"role": "user", "content": format!(
@@ -150,7 +156,7 @@ pub async fn summarise(
     if summary.is_empty() {
         bail!("the model returned an empty summary");
     }
-    Ok(summary.to_owned())
+    Ok((summary.to_owned(), turn.stats))
 }
 
 /// The latest task list among `old`, as a checklist, when `kept` has none of its own: the
@@ -273,6 +279,34 @@ mod tests {
     }
 
     #[test]
+    fn a_summary_requests_stats_do_not_anchor_the_estimate() {
+        let mut h = turn();
+        h[1].stats = Some(crate::stats::RequestStats {
+            prompt_tokens: Some(9000),
+            completion_tokens: Some(100),
+            ..Default::default()
+        });
+        let plain = estimate_tokens("sys", &h, &[], true);
+        let mut marker = ChatMessage::new(Role::System, "summary");
+        marker.compaction = Some(crate::types::CompactionInfo {
+            messages: 1,
+            tokens_before: 0,
+            manual: false,
+        });
+        marker.stats = Some(crate::stats::RequestStats {
+            prompt_tokens: Some(50),
+            ..Default::default()
+        });
+        h.push(marker.clone());
+        let with_marker = estimate_tokens("sys", &h, &[], true);
+        marker.stats = None;
+        h.pop();
+        h.push(marker);
+        assert_eq!(with_marker, estimate_tokens("sys", &h, &[], true));
+        assert!(with_marker > plain, "the marker's own text counts");
+    }
+
+    #[test]
     fn transcript_and_trimming_shorten_long_tool_output() {
         let h = turn();
         let t = transcript(Some("earlier"), &h);
@@ -329,7 +363,8 @@ mod tests {
     async fn summarises_with_the_given_provider() {
         let (base, log) = crate::testutil::serve(|_| {
             crate::testutil::Response::json(json!({
-                "choices": [{"message": {"role": "assistant", "content": " - user wants a fix\n"}, "finish_reason": "stop"}]
+                "choices": [{"message": {"role": "assistant", "content": " - user wants a fix\n"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 9}
             }))
         })
         .await;
@@ -343,10 +378,14 @@ mod tests {
             },
             auto: true,
         };
-        let out = summarise(&reqwest::Client::new(), &c, None, &turn())
+        let (out, stats) = summarise(&reqwest::Client::new(), &c, None, &turn())
             .await
             .unwrap();
         assert_eq!(out, "- user wants a fix");
+        assert_eq!(
+            (stats.prompt_tokens, stats.completion_tokens),
+            (Some(120), Some(9))
+        );
         let body = log.lock().unwrap()[0].json();
         assert_eq!(body["model"], "summary-model");
         assert!(body.get("tools").is_none() || body["tools"].as_array().unwrap().is_empty());

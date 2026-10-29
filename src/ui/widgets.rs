@@ -213,7 +213,7 @@ pub fn quiet_icons(ui: &mut egui::Ui, items: &[(&str, &str)]) -> Option<usize> {
 
 /// A number that is either set or left to `inherited` (the provider's or model's), or to
 /// the server when nothing sets it.
-fn inherited_value<T: egui::emath::Numeric + std::fmt::Display>(
+pub fn inherited_value<T: egui::emath::Numeric + std::fmt::Display>(
     ui: &mut egui::Ui,
     value: &mut Option<T>,
     inherited: Option<T>,

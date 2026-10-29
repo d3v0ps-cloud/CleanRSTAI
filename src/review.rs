@@ -8,7 +8,7 @@ use std::path::Path;
 use tokio::process::Command;
 
 use crate::attach::Attachment;
-use crate::config::{ReviewScope, ReviewSettings};
+use crate::config::{ReviewScope, ReviewSettings, ReviewStrictness};
 
 /// The name the diff is attached under.
 pub const DIFF_NAME: &str = "changes.diff";
@@ -55,10 +55,15 @@ pub fn pick_base(
 }
 
 /// The text of the message that carries the diff: the prompt, then what the attachment holds.
-pub fn message_text(prompt: &str, diff: &ReviewDiff) -> String {
+pub fn message_text(prompt: &str, strictness: ReviewStrictness, diff: &ReviewDiff) -> String {
+    let extra = strictness.instruction();
+    let prompt = if extra.is_empty() {
+        prompt.trim().to_owned()
+    } else {
+        format!("{} {extra}", prompt.trim())
+    };
     format!(
-        "{}\n\nThe diff covers {} and is attached as {DIFF_NAME}.",
-        prompt.trim(),
+        "{prompt}\n\nThe diff covers {} and is attached as {DIFF_NAME}.",
         diff.covers
     )
 }
@@ -206,7 +211,7 @@ mod tests {
             text: "+x\n".into(),
             covers: "uncommitted changes in the working folder".into(),
         };
-        let text = message_text("  Review it.  ", &diff);
+        let text = message_text("  Review it.  ", ReviewStrictness::Normal, &diff);
         assert_eq!(
             text,
             "Review it.\n\nThe diff covers uncommitted changes in the working folder and is \
@@ -215,6 +220,28 @@ mod tests {
         let a = attachment(&diff);
         assert_eq!(a.name, DIFF_NAME);
         assert_eq!(a.text.as_deref(), Some("+x\n"));
+    }
+
+    #[test]
+    fn strictness_adds_its_instruction_to_the_prompt() {
+        let diff = ReviewDiff {
+            text: String::new(),
+            covers: "x".into(),
+        };
+        let lenient = message_text("Review it.", ReviewStrictness::Lenient, &diff);
+        assert!(lenient.starts_with(
+            "Review it. Only report problems that would cause bugs, data loss or security \
+             issues; skip style and minor suggestions.\n\n"
+        ));
+        let strict = message_text("Review it.", ReviewStrictness::Strict, &diff);
+        assert!(strict.starts_with(
+            "Review it. Be thorough: also report style, naming, readability, missing tests and \
+             documentation, and any risky assumption.\n\n"
+        ));
+        assert!(
+            message_text("Review it.", ReviewStrictness::Normal, &diff)
+                .starts_with("Review it.\n\n")
+        );
     }
 
     fn git_available() -> bool {

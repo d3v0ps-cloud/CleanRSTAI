@@ -22,7 +22,7 @@ summary starts (see [Chats → Long chats](../using/chats.html#long-chats)).
 |---|---|---|
 | **Compact at** | 80% | Compact once a request would fill this share of the context (50–95%). |
 | **Keep word for word** | 6 latest messages | Messages at the end of the chat that are always sent in full (2–50). A tool result stays with the call that asked for it, so a few more may be kept. |
-| **Context size** | 0 | The context size, in tokens, to assume when the server doesn't report one. With 0, automatic compaction only happens when it does: llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter report it (set **Server type** on the provider). For other servers, enter the model's context size. |
+| **Context size** | 0 | The context size, in tokens, to assume when neither the server nor the provider's own **Context size** ([Providers](providers.html#context-size)) gives one. With 0, automatic compaction only happens when one of them does: llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter report it (set **Server type** on the provider). For other servers, enter the model's context size on the provider. |
 | **Summary by** | The chat's provider | The provider profile that writes the summary. |
 | **Summary model** | the provider's selected model | A model for the summary, such as a cheaper or faster one. |
 | **Older tool results** | off, 2000 characters | **Shorten long results of older tool calls in what is sent**: results older than the kept messages are cut to this many characters (200–100,000). This is a cheaper step that sends less with every request; the chat keeps the results whole. |
@@ -35,6 +35,9 @@ How the size is worked out: after a reply the server reports how many tokens it 
 adds about one token per four characters for what came after. Once a chat has a summary, the
 whole estimate is by characters, since the server's counts covered messages that are no longer
 sent.
+
+The request that writes a summary counts in the chat's totals and cost, and its line shows under
+the summary marker. Its size doesn't count as the chat's context use.
 
 ## Project instructions
 
@@ -82,6 +85,7 @@ both entries.
 | **Review by** | The chat's provider | The provider profile that writes the review. |
 | **Review model** | the provider's selected model | A model for the review, such as a stronger one. |
 | **Largest diff** | 200 KB | A longer diff is cut to this size (16–4096 KB), and the model is told where it was cut. |
+| **How strict** | Normal | **Lenient** reports only problems that would cause bugs, data loss or security issues, and skips style and minor suggestions. **Normal** sends the instructions as written. **Strict** also reports style, naming, readability, missing tests and documentation, and any risky assumption. The chosen level is added to the instructions. |
 | **Review instructions** | (built in) | What the model is asked to look for. **Reset** restores the built-in text. |
 
 The working folder must be a git repository. If there are no changes, or the base branch can't

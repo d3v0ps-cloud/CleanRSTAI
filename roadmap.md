@@ -271,8 +271,8 @@ in them follows the same rule:
   alternative, switched separately
 - [x] Use the context size the provider reports (llama.cpp, LiteLLM, Ollama, LM Studio, vLLM,
   OpenRouter), or one set in Settings when the server doesn't report one
-- [ ] A context size per provider or model, instead of the one setting
-- [ ] Count compaction requests in the chat's stats and cost
+- [x] A context size per provider, instead of the one setting
+- [x] Count compaction requests in the chat's stats and cost
 
 ## 16. Project instructions
 
@@ -381,9 +381,8 @@ in them follows the same rule:
 
 - [x] **Review changes**: send the workspace's uncommitted diff, or a branch against its base,
   to the model with a review prompt and show findings as a list
-- [ ] Settings: on/off, review prompt, model (the chat's or a provider profile) and how strict
-  to be. Done: on/off, prompt, model and provider, base branch and diff size. Not yet: how
-  strict to be (no strictness setting)
+- [x] Settings: on/off, review prompt, model (the chat's or a provider profile), how strict to
+  be, base branch and diff size
 
 Smaller items from the same comparison:
 

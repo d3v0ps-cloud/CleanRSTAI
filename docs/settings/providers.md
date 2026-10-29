@@ -92,6 +92,15 @@ Decides which extra statistics are read:
 
 **Detect** probes the server and picks the type for you.
 
+### Context size
+
+**Context size** (off by default) is the model's context size in tokens, for a server that
+doesn't report it. Tick it and enter the size, from 1,024 to 10,000,000. A size the server
+reports (llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter) always wins over this one.
+The size is used for [context compaction](../settings/context.html#context-compaction) and the
+context-use figure in the chat's stats. When neither this nor the server gives a size, the
+**Context size** setting under Context & files is used.
+
 ### Token usage
 
 **Request usage in streamed responses (stream_options)** (default on). Needed for exact token
