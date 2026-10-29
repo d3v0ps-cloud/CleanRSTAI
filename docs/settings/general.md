@@ -78,6 +78,12 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
     **Show** toggle. It is kept in the keychain like your API keys.
   - **Public hostname** (named tunnel): optional, the hostname of the tunnel's route, such as
     `chat.example.com`. The app also learns it from `cloudflared` once the tunnel connects.
+  - **Cloudflare Access** (named tunnel only): tick *Require Cloudflare Access in front of the
+    tunnel's hostname* to require an Access login before the app's login page. Enter the **Team
+    domain** (`name.cloudflareaccess.com`) and the **Audience (AUD) tag** of the Access application.
+    *Sign in with Access* also signs the browser in, so the app password is not asked. The status
+    line shows the last Access error or a missing team domain or tag. See
+    [Cloudflare Access](../using/cloudflare-tunnel.html#cloudflare-access-sign-in-before-the-login).
   - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
     with **Browse…**.
   - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy

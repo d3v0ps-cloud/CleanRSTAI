@@ -171,6 +171,8 @@ pub struct ChatApp {
     tunnel_error: Option<String>,
     /// The tunnel's public hostnames, shared with the server (which also answers them).
     tunnel_hosts: crate::remote::TunnelHosts,
+    /// Cloudflare Access checks, shared with the server; the settings page shows its last error.
+    access: Arc<crate::remote::AccessGate>,
     /// Fingerprints of each chat as last sent to the browsers (see `chat_fingerprint`).
     remote_seen: HashMap<Uuid, u64>,
     /// Fingerprint of the chat list and models as last sent (see `list_fingerprint`).
@@ -414,6 +416,7 @@ impl ChatApp {
             tunnel: None,
             tunnel_error: None,
             tunnel_hosts: Default::default(),
+            access: Default::default(),
             remote_seen: HashMap::new(),
             remote_list_seen: 0,
             remote_sent: HashMap::new(),
@@ -3833,6 +3836,9 @@ impl ChatApp {
     /// the settings. A running server or tunnel with the same settings is left alone; a
     /// change to the tunnel alone doesn't restart the server.
     fn sync_remote(&mut self) {
+        // Access settings don't restart the server (they are not in `server_settings`), so
+        // the server's checks are updated here.
+        self.access.configure(&self.settings.general.remote.tunnel);
         self.sync_server();
         self.sync_tunnel();
     }
@@ -3858,7 +3864,8 @@ impl ChatApp {
         let ctx = self.repaint_ctx.clone();
         let repaint = Arc::new(move || ctx.request_repaint());
         let hosts = self.tunnel_hosts.clone();
-        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint, hosts) {
+        let access = self.access.clone();
+        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint, hosts, access) {
             Ok(handle) => {
                 self.remote_status = RemoteStatus::Running {
                     urls: handle.urls().to_vec(),
@@ -4548,6 +4555,7 @@ impl eframe::App for ChatApp {
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
             let tunnel = self.tunnel_status();
+            let access_error = self.access.last_error();
             let chats: Vec<(Uuid, String)> = self
                 .conversations
                 .iter()
@@ -4565,6 +4573,7 @@ impl eframe::App for ChatApp {
                             &views,
                             &self.remote_status,
                             &tunnel,
+                            access_error.as_deref(),
                             &chats,
                         )
                     })

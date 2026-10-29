@@ -8,10 +8,11 @@ use super::widgets::{code_block, icon_button, kv_editor, list_editor};
 use crate::approval::ApprovalMode;
 use crate::commands::SlashCommand;
 use crate::config::{
-    DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
-    McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull,
-    SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode, import_mcp_json,
+    AccessSettings, DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES,
+    McpServerConfig, McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings,
+    RemoteTls, ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork,
+    SandboxPull, SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode,
+    import_mcp_json,
 };
 use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
@@ -322,6 +323,8 @@ pub struct RemoteUiStatus<'a> {
     pub tunnel: &'a TunnelStatus,
     pub server_dirty: bool,
     pub tunnel_dirty: bool,
+    /// The last reason Cloudflare Access refused a tunnel request, or a failed key fetch.
+    pub access_error: Option<&'a str>,
 }
 
 /// The "Cloudflare Tunnel" rows, under the Remote access status.
@@ -500,6 +503,85 @@ fn tunnel_rows(
         }
     });
     ui.end_row();
+    access_rows(ui, &mut r.tunnel.access, r.tunnel.mode, status.access_error);
+}
+
+/// The "Cloudflare Access" rows of the tunnel: a login gate in front of a named tunnel's
+/// hostname, set up in the Cloudflare dashboard (see `remote::access`).
+fn access_rows(
+    ui: &mut egui::Ui,
+    access: &mut AccessSettings,
+    mode: TunnelMode,
+    error: Option<&str>,
+) {
+    ui.label("Cloudflare Access");
+    if mode == TunnelMode::Quick {
+        ui.weak("Only for named tunnels: a quick tunnel's address can't be put behind an Access application.");
+        ui.end_row();
+        return;
+    }
+    ui.checkbox(
+        &mut access.enabled,
+        "Require Cloudflare Access in front of the tunnel's hostname",
+    );
+    ui.end_row();
+    if !access.enabled {
+        return;
+    }
+
+    ui.label("Team domain");
+    ui.add(
+        egui::TextEdit::singleline(&mut access.team_domain)
+            .hint_text("myteam.cloudflareaccess.com")
+            .desired_width(FIELD_WIDTH - 100.0),
+    );
+    ui.end_row();
+
+    ui.label("Audience (AUD) tag");
+    ui.add(
+        egui::TextEdit::singleline(&mut access.audience)
+            .hint_text("from the Access application's overview")
+            .desired_width(FIELD_WIDTH - 100.0),
+    );
+    ui.end_row();
+
+    ui.label("Sign in with Access");
+    ui.checkbox(
+        &mut access.skip_password,
+        "A valid Access login also signs the browser in, so the app password is not asked",
+    );
+    ui.end_row();
+
+    ui.label("Access status");
+    ui.vertical(|ui| {
+        let warn = ui.visuals().warn_fg_color;
+        let team = crate::config::team_host(&access.team_domain);
+        if !crate::remote::valid_team_domain(&team) {
+            ui.colored_label(
+                warn,
+                "Enter the team domain, e.g. myteam.cloudflareaccess.com.",
+            );
+        }
+        if access.audience.trim().is_empty() {
+            ui.colored_label(warn, "Enter the application's audience (AUD) tag.");
+        }
+        match error {
+            Some(e) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            None => {
+                ui.weak("No Access errors so far.");
+            }
+        }
+        weak_note(
+            ui,
+            "In the Cloudflare Zero Trust dashboard, add a self-hosted application for the \
+             tunnel's public hostname, with a policy for who may sign in. Copy its Application \
+             Audience (AUD) tag here, and your team domain (the name.cloudflareaccess.com \
+             address your team signs in to). Requests that skip Access are refused.",
+        );
+    });
+    ui.end_row();
 }
 
 /// Weak text in a grid cell, wrapped at the width of the fields.
@@ -672,6 +754,7 @@ impl SettingsUi {
     }
 
     /// Render the settings page into `ui` (it takes over the main area while open).
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -679,6 +762,7 @@ impl SettingsUi {
         servers: &[ServerView],
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
+        access_error: Option<&str>,
         chats: &[(Uuid, String)],
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
@@ -813,7 +897,9 @@ impl SettingsUi {
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::Background => self.background_tab(ui, chats, &mut actions),
-                Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
+                Tab::General => {
+                    self.general_tab(ui, live, remote, (tunnel, access_error), &mut actions)
+                }
             }
         });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
@@ -2666,7 +2752,7 @@ impl SettingsUi {
         ui: &mut egui::Ui,
         live: &Settings,
         remote: &RemoteStatus,
-        tunnel: &TunnelStatus,
+        (tunnel, access_error): (&TunnelStatus, Option<&str>),
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
@@ -2677,6 +2763,7 @@ impl SettingsUi {
             server_dirty: crate::remote::server_settings(draft_remote)
                 != crate::remote::server_settings(live_remote),
             tunnel_dirty: draft_remote.tunnel != live_remote.tunnel,
+            access_error,
         };
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
@@ -3203,6 +3290,18 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Cloudflare quick tunnel (trycloudflare.com)",
     ),
     (Tab::General, "General", "cloudflared path"),
+    (Tab::General, "General", "Cloudflare Access"),
+    (Tab::General, "General", "Cloudflare Access team domain"),
+    (
+        Tab::General,
+        "General",
+        "Cloudflare Access audience (AUD) tag",
+    ),
+    (
+        Tab::General,
+        "General",
+        "Cloudflare Access sign in without the app password",
+    ),
     (Tab::General, "General", "Show speed stats"),
     (Tab::General, "General", "Load web images in replies"),
     (
@@ -3446,6 +3545,9 @@ mod tests {
         assert_eq!(search_settings("menu bar")[0].0, Tab::Background);
         assert_eq!(search_settings("system tray")[0].0, Tab::Background);
         assert_eq!(search_settings("scheduled tasks")[0].0, Tab::Background);
+        assert_eq!(search_settings("cloudflare access")[0].0, Tab::General);
+        assert_eq!(search_settings("team domain")[0].0, Tab::General);
+        assert_eq!(search_settings("AUD tag")[0].0, Tab::General);
         assert_eq!(search_settings("catch up")[0].0, Tab::Background);
         assert!(search_settings("zzzz").is_empty());
     }

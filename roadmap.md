@@ -25,7 +25,7 @@ files list and read-only git tools in **v0.9.2-dev.2**, and skills and backgroun
 limit on replies at once with a queue, a time limit, desktop notifications, the Background
 settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
 tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
-settings on the Background tab) in **v0.9.2-dev.4**.
+settings on the Background tab) in **v0.9.2-dev.4**, and Cloudflare Access in front of a named tunnel in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -227,7 +227,7 @@ Later, beyond the first version:
   with a token for a named tunnel, so the server is reachable from outside the network without
   opening a port on the router; show the public address, and keep the login required. Also
   quick tunnels (`trycloudflare.com`, no account, optional email check)
-- [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
+- [x] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
 
 ## 14. Docker sandbox for tools
 

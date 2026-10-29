@@ -153,6 +153,36 @@ In the browser:
 - For a quick tunnel, **Allowed emails** adds Cloudflare's email check in front of the login
   page.
 
+## Cloudflare Access: sign-in before the login
+
+For a named tunnel you can put Cloudflare Access (Cloudflare's sign-in for applications) in front of
+the tunnel's hostname. Visitors then sign in with Access first and only afterwards reach the app's
+login page. Quick tunnels can't use it, because their address is made up by Cloudflare at each start.
+
+Set it up in the Cloudflare Zero Trust dashboard:
+
+1. Add a **self-hosted application** for the tunnel's public hostname (the same one as the route).
+2. Add an **Allow** policy for who may sign in, such as an email domain or a list of addresses.
+3. Copy the application's **Application Audience (AUD) tag** from its overview, and your
+   **team domain**: the `name.cloudflareaccess.com` address your team signs in to.
+
+In CleanRSTAI, open **Settings → General → Remote access**, tick **Require Cloudflare Access in
+front of the tunnel's hostname**, enter the team domain and the AUD tag, and click **Apply**.
+
+The app checks every request to the tunnel's hostname. It needs a valid Access token, either in the
+`Cf-Access-Jwt-Assertion` header (which Cloudflare adds) or in the `CF_Authorization` cookie. The
+token's signature is checked against the team's public keys, fetched from
+`https://<team>/cdn-cgi/access/certs` and cached, and its issuer, audience and expiry are checked too.
+A request without a valid token gets **403 "Cloudflare Access is required"** before any login page
+is shown. This applies to the tunnel's hostname on your own network too.
+
+**Sign in with Access** (off by default): a valid Access login also signs the browser in to the app,
+so the app password is not asked. Without it, the app password still applies after Access.
+
+Settings shows the last Access error, such as a failed key fetch, and warns about an empty team domain
+or AUD tag. Refused requests are only logged at debug level, because scanners reach the tunnel from
+the internet.
+
 ## Privacy
 
 Cloudflare ends the HTTPS connection to the browser, so everything the page exchanges with the
