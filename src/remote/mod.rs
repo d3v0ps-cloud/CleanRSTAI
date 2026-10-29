@@ -114,6 +114,9 @@ pub struct ChatSummary {
     pub updated_at: DateTime<Utc>,
     pub running: bool,
     pub approvals: usize,
+    /// The chat's project's name, for a chat in a project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

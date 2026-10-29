@@ -53,6 +53,20 @@ menu shows which files the latest request read.
 | **Parent folders** | off | Also read them from the folders above the workspace, outermost first, so the workspace's own file reads as the most specific. |
 | **Size limit** | 64 KB | Text beyond this, in all the files together, is left out (1–1024 KB). |
 
+## Projects
+
+**Projects** (default on) groups chats in the sidebar, with the instructions and files each
+project adds to its chats. Off hides the projects from the sidebar and stops adding their
+context to requests; a chat can also leave the project context out from the tools menu. See
+[Projects](../using/projects.html).
+
+| Setting | Default | Description |
+|---|---|---|
+| **Files size limit** | 256 KB | The text of a project's files sent with each request, in all (16–4096 KB). Longer files are cut. |
+| **New projects: folder** | None | The working folder a new project starts with. |
+| **New projects: provider** | Settings' active provider | The provider a new project's chats start with. |
+| **New projects: instructions** | Empty | The instructions a new project starts with. |
+
 ## Workspace file edits
 
 | Setting | Default | Description |

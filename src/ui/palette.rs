@@ -32,6 +32,8 @@ pub enum Command {
     CheckForUpdates,
     SetApprovalMode(ApprovalMode),
     RunScheduledTask(Uuid),
+    NewProject,
+    ImportProject,
 }
 
 #[derive(Clone, Debug)]

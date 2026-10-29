@@ -144,6 +144,16 @@ per folder in `SkillCache`, cleared when settings are applied.
 
 **Hooks** (`hooks.rs`): commands from `general.hooks` (Settings only, never the workspace or the model) run around tool calls in `agent::run`: `Runner::before_tool` after approval (a failure becomes the call's error, `Blocked by hook …`), `after_tool` appends `[hook name]` output to the result, and `reply_done` gives `ChatEvent::HookNotice` once a reply ends without `ChatEvent::Error`. `Runner::run` uses `workspace::shell_command` in the workspace folder (home without one), or `Place::exec_env` in the chat's sandbox container when the workspace's commands run there (`docker exec -e` passes the `CLEANRSTAI_*` variables). The `feature:hooks` chat switch gates them, and subagents and compact-only runs never reach them. `hooks::matches` takes the comma-separated glob list.
 
+**Projects** (`projects.rs`; sidebar in `app.rs`, editor in `ui/project_editor.rs`): a project
+is one JSON file in `projects/`, and its chats link to it by `Conversation.project`. `apply_to`
+and `new_chat` copy its folder, provider, model, tool switches and permission mode into a chat
+(`Conversation.provider` and `model` override the active provider and its model in
+`AgentRequest::for_chat`). The caller loads the text of the instructions and files as a
+`ProjectContext` (`load_context`, on the runtime in `ChatApp::launch_run`, or in `exec`), and
+`agent::run` adds it to the system prompt while `general.projects.enabled` and the chat's
+`feature:project` switch are on. `bundle` and `unbundle` export a project with its chats, with
+new ids on import.
+
 **Approvals** (`approval.rs`): the agent sends `ChatEvent::ToolApproval` with a oneshot
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by

@@ -19,6 +19,7 @@ nav_order: 2
 | API keys (including the web search key), header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 | Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
+| Projects: name, instructions, file paths, folder, provider, model, tool switches and mode | one JSON file per project in the `projects` folder. The files' text is not stored, only their paths. Project export files (`.cleanrstai-project.json`) hold the project and its chats, unencrypted, wherever you save them |
 
 On macOS and Linux, settings, export files and the remote access key are created readable only
 by you. If the keychain is off or unavailable, secrets are kept in `settings.json` instead
@@ -55,6 +56,10 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   folder with the mode you chose.
 - **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
   chat's workspace folder, go to the provider with the system prompt.
+- **Projects**: in a chat that belongs to a [project](../using/projects.html), the project's
+  instructions and the text of its files (read again for each request, up to the files size
+  limit) go to the provider with every request in that chat, as part of the system prompt.
+  Switch the project context off for one chat, or for all of them in Settings.
 - **Skills**: the names and descriptions of the skills (from your skills folder and the chat's
   `.cleanrstai/skills` folder) go to the provider with every message while skills are on and
   some exist. A skill's text, and any other file of the skill that the model asks for, go to
