@@ -103,7 +103,11 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
   app makes goes through `git::safe_command` (`git.rs`), which switches off the repository's own
   fsmonitor, external diff, textconv and pager programs, blanks its clean/smudge/process filter
   drivers (git runs them on `status` and `diff`), and leaves submodules out
-  (`--ignore-submodules=all`); `review.rs` uses it too;
+  (`--ignore-submodules=all`); `review.rs` uses it too. `git_commit` (`tools/commit.rs`, switch `builtin_tools.git_commit`, off by
+  default) stages the chosen paths and runs `git commit -- <paths>` (hooks off, signing off unless
+  `allow_signing`), never pushes; `approval::always_asks` makes it ask in every mode but AllowAll
+  and keeps it out of "Always allow". Read only drops it, subagents never get it, and the Commit
+  dialog (`ui/commit_dialog.rs`) runs the same functions on the user's click;
 - MCP tools routed as `<server>__<tool>` by `mcp::manager::ToolRouter`.
 
 `ToolSelection` resolves what is on: Settings defaults plus per-chat `ToolOverrides` keyed

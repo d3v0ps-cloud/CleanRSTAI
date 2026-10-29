@@ -337,6 +337,14 @@ pub struct BuiltinToolSettings {
     pub fetch_private_networks: bool,
     /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
     pub workspace: bool,
+    /// Let the model commit a chat's workspace changes to its git repository, after approval.
+    /// Off by default; it is also a per-chat switch.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub git_commit: bool,
+    /// Let `git_commit` sign commits when the repository's git config asks for signing (gpg
+    /// may then prompt, and a failed signature fails the commit). Off: commits are never signed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub allow_signing: bool,
     /// Search the web through the service in `search`.
     pub web_search: bool,
     pub search: WebSearchSettings,
@@ -351,6 +359,8 @@ impl Default for BuiltinToolSettings {
             fetch: true,
             fetch_private_networks: false,
             workspace: true,
+            git_commit: false,
+            allow_signing: false,
             web_search: true,
             search: WebSearchSettings::default(),
         }
@@ -2135,6 +2145,30 @@ mod tests {
         s.general.remote.port = 0;
         s.normalize();
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn git_commit_settings_default_off_and_load_from_older_files() {
+        // Settings written before commits existed load with both switches off.
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"builtin_tools": {"workspace": true}}}"#).unwrap();
+        assert!(!s.general.builtin_tools.git_commit);
+        assert!(!s.general.builtin_tools.allow_signing);
+        assert!(s.general.builtin_tools.workspace);
+        // Off values aren't written, so an untouched file keeps its shape.
+        let json = serde_json::to_string(&BuiltinToolSettings::default()).unwrap();
+        assert!(
+            !json.contains("git_commit") && !json.contains("allow_signing"),
+            "{json}"
+        );
+        let on = BuiltinToolSettings {
+            git_commit: true,
+            allow_signing: true,
+            ..Default::default()
+        };
+        let back: BuiltinToolSettings =
+            serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert_eq!(back, on);
     }
 
     #[test]

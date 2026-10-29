@@ -316,7 +316,10 @@ in them follows the same rule:
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
 - [x] Read-only `git_status` and `git_diff` workspace tools
-- [ ] Commit from the chat (with approval)
+- [x] Commit from the chat (with approval): a `git_commit` workspace tool (off by default, in
+  Settings and per chat) that commits the chosen paths, or every change, locally and never
+  pushes; every commit asks, in every mode but Allow all; and a **Commit…** dialog in the
+  changed files window and the command palette
 
 ## 20. Approval modes
 

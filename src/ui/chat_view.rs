@@ -806,10 +806,12 @@ fn approval_prompt(
         if ui.add(theme::primary_button("Run", dark)).clicked() {
             answer = Some(Approval::Once);
         }
-        if ui
-            .button("Always allow this tool")
-            .on_hover_text("Run this tool without asking for the rest of this chat")
-            .clicked()
+        // A commit asks every time (see `approval::always_asks`), so it has no "always" choice.
+        if !crate::approval::always_asks(&pending.call.name)
+            && ui
+                .button("Always allow this tool")
+                .on_hover_text("Run this tool without asking for the rest of this chat")
+                .clicked()
         {
             answer = Some(Approval::AlwaysTool);
         }

@@ -98,6 +98,8 @@ impl Delegation {
         // Subagents don't load skills either (the instructions would reach them only through
         // their own tool, which they don't have).
         force(&mut selection, "skills", false);
+        // Subagents never commit: their tool calls don't ask for approval.
+        force(&mut selection, ws_tools::GIT_COMMIT, false);
         for id in &sa.excluded_servers {
             selection
                 .overrides
@@ -494,6 +496,16 @@ mod tests {
             "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}
         }))
+    }
+
+    #[test]
+    fn subagents_never_get_the_commit_tool() {
+        let mut s = Settings::default();
+        s.general.builtin_tools.git_commit = true;
+        let chat = ToolSelection::new(&s, &ToolOverrides::default());
+        assert!(chat.builtin_on(ws_tools::GIT_COMMIT));
+        let d = Delegation::new(&s, &chat).unwrap();
+        assert!(!d.selection.builtin_on(ws_tools::GIT_COMMIT));
     }
 
     #[test]

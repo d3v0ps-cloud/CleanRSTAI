@@ -183,6 +183,8 @@ pub struct ApprovalView {
     pub label: String,
     pub arguments: String,
     pub server_name: Option<String>,
+    /// False for a commit, which asks every time (see `approval::always_asks`).
+    pub can_always_tool: bool,
     pub can_always_server: bool,
 }
 
