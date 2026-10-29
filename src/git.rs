@@ -100,8 +100,11 @@ pub mod test_support {
     //! A repository whose filter drivers would run on plain `git status`, shared by the git
     //! tool and review tests. The markers are files the filter commands create when they run.
 
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
+    #[cfg(unix)]
     pub struct FilterRepo {
         /// Created by the `filter.x.clean` command.
         pub clean_marker: PathBuf,
@@ -109,6 +112,7 @@ pub mod test_support {
         pub process_marker: PathBuf,
     }
 
+    #[cfg(unix)]
     impl FilterRepo {
         pub fn clear_markers(&self) {
             let _ = std::fs::remove_file(&self.clean_marker);
@@ -131,6 +135,7 @@ pub mod test_support {
         assert!(out.status.success(), "git {args:?} failed: {out:?}");
     }
 
+    #[cfg(unix)]
     /// Makes `dir` a repository with `a.txt` and `b.md` committed, `*.txt` mapped to the clean
     /// filter `x` in `.gitattributes`, `*.md` mapped to the process filter `y` in
     /// `.git/info/attributes`, and a smudge filter `z` configured. Markers go in `marker_dir`.
@@ -163,6 +168,7 @@ pub mod test_support {
         repo
     }
 
+    #[cfg(unix)]
     /// Rewrites both tracked files with eight copies of `c`. The size stays the same as the
     /// committed files: git reads a changed file's content (and runs its filters) only when its
     /// size matches the index; a size change is reported without reading the file.
@@ -172,6 +178,7 @@ pub mod test_support {
         std::fs::write(dir.join("b.md"), &text).unwrap();
     }
 
+    #[cfg(unix)]
     /// Checks the setup is real: plain `git status` must run each filter, or the tool checks
     /// prove nothing. The process filter makes plain git exit with an error after it runs, so
     /// the two filters are checked one at a time: first the clean filter alone (the `*.md`
