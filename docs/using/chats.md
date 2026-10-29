@@ -253,10 +253,12 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   on. Made-up names like "Flowchart" never make versions.
 - **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
   that runs the page's scripts but, by default, blocks everything from the network (set in
-  [General](../settings/general.html#web-page-preview)); links open in your browser. **Open in
-  browser** writes the page to a temporary file and opens it in your default browser, where its
-  scripts run as in any local file and it can load anything; on Linux that is the only way to
-  see a page. SVGs can open there too.
+  [General](../settings/general.html#web-page-preview)); links open in your browser. On Linux,
+  **Open live preview** shows the page in a window of its own, with the same settings, when
+  WebKitGTK is installed; the window follows the page as a reply streams. Without WebKitGTK it
+  opens in your browser, with a notice. **Open in browser** writes the page to a temporary file
+  and opens it in your default browser, where its scripts run as in any local file and it can
+  load anything. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
   panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar

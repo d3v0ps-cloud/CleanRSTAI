@@ -328,9 +328,11 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
   `artifacts::markdown_options`. `ui/artifact_panel.rs` is the right-hand panel; `ChatApp`
   keeps the open `ArtifactView` and the chat's artifact list, re-found when messages change.
   `ui/webview.rs` previews HTML live on macOS and Windows: a `wry` child web view (a
-  target-specific dependency; none on Linux, where "Open in browser" writes a temp file)
-  placed over the area `artifact_panel::show` returns, with a CSP `<meta>` from
-  `HtmlPreviewSettings`. It is a native window above egui, so `ChatApp::ui` hides it while
+  target-specific dependency) placed over the area `artifact_panel::show` returns, with a CSP
+  `<meta>` from `HtmlPreviewSettings`. On Linux `ui/linux_preview.rs` opens the page in its own
+  WebKitGTK window instead: GTK and WebKitGTK are `dlopen`ed at run time (`libloading`; the
+  release builds link neither), GTK runs on one preview thread, and the CSP (`webview::page`) is
+  shared. Without them, "Open in browser" writes a temp file. It is a native window above egui, so `ChatApp::ui` hides it while
   settings, the palette, a popup, a dialog or a file drop could cover it.
 - Widget ids inside a reply are scoped by message index (`push_id`), and tool results are
   matched to the tool messages that directly follow their assistant message, because some

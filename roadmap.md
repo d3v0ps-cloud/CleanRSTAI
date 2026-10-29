@@ -28,9 +28,8 @@ tool calls and when a reply is done, and the command-line mode (`cleanrstai exec
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
 and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
-Built-in Tools), and conversation branches (regenerating and editing keep the version
-they replace, with arrows to switch between versions, and the Branches settings on the
-General tab) in **v0.9.2-dev.5**.
+Built-in Tools), and the live web page preview on Linux (in a window of its own, when WebKitGTK
+is installed) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -364,7 +363,9 @@ in them follows the same rule:
 - [x] Live HTML preview in the artifact panel on macOS (WebKit) and Windows (WebView2): a switch
   to keep "Open in browser" only, and settings for whether scripts may run and whether the page
   may load from the network (off by default); links open in the browser
-- [ ] Live HTML preview on Linux (WebKitGTK, which the release builds don't link yet)
+- [x] Live HTML preview on Linux in a window of its own, when WebKitGTK is installed (it is
+  loaded at run time, as the release builds link neither GTK nor WebKitGTK; without it, or a
+  display, pages open in the browser)
 - [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
