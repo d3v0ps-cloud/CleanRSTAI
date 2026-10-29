@@ -152,6 +152,17 @@ the context is full, the server may drop older parts of the chat or refuse the r
 start a new chat before it gets there, or let the app compact it (below). Other server types
 don't report their context size, so no figure is shown for them.
 
+### Slash commands
+
+A saved prompt can be sent by typing its name after a slash: `/explain fn main() {}` sends the
+*explain* prompt with `fn main() {}` filled in. Type `/` in the message box and the matching
+commands are listed above it; click one to put its name in the box. The message in the chat is
+the expanded prompt, not the command. Commands come from
+[Settings → Built-in Tools](../settings/built-in-tools.html#slash-commands), and from
+`.cleanrstai/commands/` in the chat's working folder: each `<name>.md` file there is a command,
+and a first line `description: …` gives its description. A folder command replaces a setting
+with the same name. A `/name` that matches no command is sent as typed.
+
 ## Long chats
 
 When a request would fill most of the model's context, the app *compacts* the chat: a model

@@ -7,6 +7,7 @@ mod approval;
 mod artifacts;
 mod attach;
 mod checkpoints;
+mod commands;
 mod compaction;
 mod config;
 mod documents;

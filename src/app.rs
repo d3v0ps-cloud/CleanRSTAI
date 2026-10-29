@@ -126,6 +126,8 @@ pub struct ChatApp {
     /// Focus is being moved with the keyboard, so the focused widget gets a visible ring
     /// (until the next pointer press).
     keyboard_nav: bool,
+    /// Slash commands suggested under the message box while a `/name` is typed.
+    slash_cache: crate::commands::SuggestionCache,
     /// The Docker sandbox for the workspace shell tool, while it's on.
     sandbox: Option<crate::sandbox::Sandbox>,
     /// When idle sandbox containers were last removed.
@@ -351,6 +353,7 @@ impl ChatApp {
             server_info: None,
             input_focused_once: false,
             keyboard_nav: false,
+            slash_cache: Default::default(),
             sandbox,
             sandbox_reaped: Instant::now(),
             remote: None,
@@ -865,11 +868,35 @@ impl ChatApp {
         if self.runs.contains_key(&id) {
             return;
         }
+        let text = self.expand_command(id, text);
         let attachments = std::mem::take(&mut self.pending_attachments);
         match self.send_message(id, text, attachments, ctx) {
             Ok(()) => self.input.clear(),
             Err(e) => self.notice = Some(e),
         }
+    }
+
+    /// The text to send for a message: a `/name` command's prompt when one matches, otherwise
+    /// the message as typed.
+    fn expand_command(&self, id: Uuid, text: String) -> String {
+        let settings = &self.settings.general.slash_commands;
+        if !text.starts_with('/') {
+            return text;
+        }
+        let workspace = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.workspace.as_deref());
+        let commands = crate::commands::available(settings, workspace);
+        crate::commands::expand(&text, &commands).unwrap_or(text)
+    }
+
+    /// The open chat's working folder.
+    fn current_workspace(&self) -> Option<std::path::PathBuf> {
+        self.current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .and_then(|c| c.workspace.clone())
     }
 
     /// Adds a user message to a chat and starts its reply. Fails when the chat is missing or a
@@ -1394,6 +1421,7 @@ impl ChatApp {
         }
         self.settings = new;
         self.settings.normalize();
+        self.slash_cache.clear();
         if self.settings.sandbox != sandbox_before {
             // Dropping the old sandbox removes its containers.
             self.sandbox = self
@@ -2773,6 +2801,20 @@ impl ChatApp {
             });
         }
 
+        // Slash commands that match the `/name` being typed.
+        let suggestions =
+            if self.input.starts_with('/') && self.settings.general.slash_commands.enabled {
+                let workspace = self.current_workspace();
+                let all = self.slash_cache.get(
+                    &self.settings.general.slash_commands,
+                    workspace.as_deref(),
+                    &self.input,
+                );
+                crate::commands::suggestions(&self.input, all)
+            } else {
+                Vec::new()
+            };
+
         ui.add_space(8.0);
         centered(ui, |ui| {
             if let Some(n) = self.notice.clone() {
@@ -2782,6 +2824,40 @@ impl ChatApp {
                         self.notice = None;
                     }
                 });
+            }
+            if !suggestions.is_empty() {
+                let mut picked = None;
+                egui::Frame::new()
+                    .fill(p.raised)
+                    .stroke(egui::Stroke::new(1.0, p.outline))
+                    .corner_radius(12)
+                    .inner_margin(6)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        for c in &suggestions {
+                            let text = if c.description.is_empty() {
+                                format!("/{}", c.name)
+                            } else {
+                                format!("/{}  ·  {}", c.name, c.description)
+                            };
+                            if ui.selectable_label(false, text).clicked() {
+                                picked = Some(c.name.clone());
+                            }
+                        }
+                    });
+                if let Some(name) = picked {
+                    // Replace the typed name and put the cursor after the space.
+                    self.input = format!("/{name} ");
+                    let end = egui::text::CCursor::new(self.input.chars().count());
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                        state.store(ui.ctx(), id);
+                    }
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+                ui.add_space(6.0);
             }
             // Live stats for the request currently streaming in; the finished response
             // carries the same figures, so this only shows mid-completion. Prompt progress

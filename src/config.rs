@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::commands::{SlashCommand, default_commands};
 use crate::secrets::SecretStore;
 
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
@@ -489,6 +490,28 @@ impl Default for InstructionSettings {
     }
 }
 
+/// Saved prompts typed as `/name` in the message box (see `commands`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SlashCommandSettings {
+    /// Expand `/name` commands when a message is sent, and suggest them while typing.
+    pub enabled: bool,
+    /// Commands from Settings, by name. Names are unique after normalizing.
+    pub commands: Vec<SlashCommand>,
+    /// Also load `.cleanrstai/commands/*.md` from the chat's working folder.
+    pub workspace_commands: bool,
+}
+
+impl Default for SlashCommandSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            commands: default_commands(),
+            workspace_commands: true,
+        }
+    }
+}
+
 /// What the app keeps around the workspace's `write_file` and `edit_file` calls.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -724,6 +747,8 @@ pub struct GeneralSettings {
     pub instructions: InstructionSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
+    /// Slash commands: saved prompts typed as `/name` (see `commands`).
+    pub slash_commands: SlashCommandSettings,
     /// Browser remote access (see `remote`).
     pub remote: RemoteSettings,
 }
@@ -754,6 +779,7 @@ impl Default for GeneralSettings {
             compaction: CompactionSettings::default(),
             instructions: InstructionSettings::default(),
             file_edits: FileEditSettings::default(),
+            slash_commands: SlashCommandSettings::default(),
             remote: RemoteSettings::default(),
         }
     }
@@ -1083,6 +1109,17 @@ impl Settings {
             .collect();
         let fe = &mut self.general.file_edits;
         fe.max_file_kb = fe.max_file_kb.clamp(16, 65_536);
+        // Names are trimmed; commands that can't be typed, and repeats of a name, are dropped.
+        let mut names = std::collections::HashSet::new();
+        let commands = std::mem::take(&mut self.general.slash_commands.commands);
+        self.general.slash_commands.commands = commands
+            .into_iter()
+            .map(|mut c| {
+                c.name = c.name.trim().to_owned();
+                c
+            })
+            .filter(|c| crate::commands::valid_name(&c.name) && names.insert(c.name.clone()))
+            .collect();
         let search = &mut self.general.builtin_tools.search;
         search.max_results = search.max_results.clamp(1, MAX_SEARCH_RESULTS);
         search.searxng_url = search.searxng_url.trim().trim_end_matches('/').to_owned();

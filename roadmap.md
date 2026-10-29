@@ -356,7 +356,7 @@ in them follows the same rule:
 
 ## 25. Commands, skills and hooks
 
-- [ ] Slash commands: saved prompts with arguments, typed as `/name` in the message box, kept in
+- [x] Slash commands: saved prompts with arguments, typed as `/name` in the message box, kept in
   Settings and optionally in the workspace (`.cleanrstai/commands/`)
 - [ ] Skills: folders of instructions and files the model loads when a task matches, each
   with its own on/off switch

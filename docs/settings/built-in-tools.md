@@ -42,6 +42,20 @@ link-local addresses, such as cloud metadata endpoints, also after a redirect.
 The service and its address come from these settings, never from the model, so a SearXNG
 instance on your own computer or network works.
 
+## Slash commands
+
+Saved prompts, typed as `/name` in the message box (see
+[Chats → Slash commands](../using/chats.html#slash-commands)). Two examples are included.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Slash commands (saved prompts)** | on | Expands `/name` when a message is sent, and lists the matching commands while you type. Off: `/name` is sent as typed. |
+| **Commands** | `explain`, `summarize` | Each has a **name** (letters, digits, `-` and `_`; trimmed, and a name used twice keeps its first entry), a **description** shown in the list, and a **prompt** (several lines). `{{args}}` in the prompt is replaced by what you type after the name; without it, the text is added after a blank line. Delete with the bin button, add with **Add command**. |
+| **Also load commands from the chat's working folder** | on | Each `.cleanrstai/commands/<name>.md` file in the chat's folder is a command whose prompt is the file's text. A first line `description: …` sets its description and is not sent. A file replaces a command here with the same name. |
+
+The commands are kept in `settings.json` with the other settings; the workspace files are
+read only when you type a command, so nothing is read from the folder otherwise.
+
 The `delegate` tool has its own page: [Subagents](subagents.html). Context compaction, project
 instructions and undo for file edits are on [Context & files](context.html). See
 [Tools and approvals](../using/tools.html) for how the tools behave in a chat.
