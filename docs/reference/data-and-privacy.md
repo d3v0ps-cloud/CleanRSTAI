@@ -18,6 +18,7 @@ nav_order: 2
 | Conversations | one JSON file per chat in the `conversations` folder (command-line runs only with `--save` or the Save setting) |
 | API keys (including the web search key), header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 | Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
+| Replies and turns kept as branches when they were regenerated or edited (the whole earlier version, as the chat was) | in the chat's file in the `conversations` folder |
 | Remote access certificate and key (self-signed, when HTTPS uses it) | PEM files in a `remote` folder inside the configuration folder, next to `settings.json` |
 | Projects: name, instructions, file paths, folder, provider, model, tool switches and mode | one JSON file per project in the `projects` folder. The files' text is not stored, only their paths. Project export files (`.cleanrstai-project.json`) hold the project and its chats, unencrypted, wherever you save them |
 | Memories: the facts the model saved or you wrote in Settings, with their scope, dates and the chat they came from | `memory.json` in the data folder (plain text, not encrypted). Deleting a memory removes it from the file |
@@ -55,6 +56,14 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   Nothing is saved unless you pass `--save` or turn on **Save each run's chat**
   ([Background](../settings/background.html#command-line)). Its tools act on the `--workspace`
   folder with the mode you chose.
+- **Voice input**: a recording is sent as WAV to the transcription endpoint of the provider
+  chosen under [Voice](../settings/voice.html) (`POST …/audio/transcriptions`), with that
+  provider's key. It is not kept after the text comes back. A local server keeps it on your
+  network; a cloud provider receives it.
+- **Reading replies aloud**: with the speech endpoint, the reply's text (after the Markdown is
+  cut out) goes to the provider chosen under Voice, and the WAV audio that comes back is played
+  here. The system voice (`say`, System.Speech, spd-say or espeak) runs on this computer and
+  sends nothing.
 - **Project instructions**: `AGENTS.md`, `CLAUDE.md` or the other files you list, from a
   chat's workspace folder, go to the provider with the system prompt.
 - **Projects**: in a chat that belongs to a [project](../using/projects.html), the project's
@@ -75,6 +84,9 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   for an after-tool hook, the tool's result, in environment variables. What a hook prints is
   kept in the chat, and an after-tool hook's output goes to the provider with the result. A
   command can do anything you could do in a terminal, so only set hooks you have read.
+- **Commits** (the `git_commit` tool and the Commit dialog) write a commit to the working folder's
+  git repository on your computer, in its `.git` folder. Nothing is pushed, and no commit leaves
+  the computer. Git hooks don't run for them.
 - **Code review** sends the working folder's git diff (up to the size you set, and the names of
   new files) to the provider and model chosen in
   [Context & files](../settings/context.html#code-review), when you choose Review changes.
@@ -107,6 +119,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   ([Cloudflare Tunnel](../using/cloudflare-tunnel.html#privacy)).
   With Cloudflare Access on, the app also fetches the team's public signing keys from
   `https://<team>/cdn-cgi/access/certs`; that request carries no chat data.
+- **Replies and artifacts saved as Word, PDF or Excel files** are written to the place you pick in
+  the save dialog. Building the file happens on this computer; nothing is sent anywhere.
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
   system's temporary folder and run in the browser, where a page can load anything it links to.
   The app only does this when you click **Open in browser**.

@@ -83,6 +83,9 @@ too, as an installer and a portable `.exe`.
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
   **Settings → Built-in Tools** or per chat.
+  - **Commits**: with **Commit (git_commit)** on (off by default), the model can commit the
+    folder's changes, or chosen files, to its git repository locally. Every commit asks for
+    approval, nothing is pushed, and a **Commit…** dialog does the same by hand.
   - **Project instructions**: an `AGENTS.md` or `CLAUDE.md` in the folder (names, order,
     parent folders and size limit are configurable) goes into the system prompt.
   - **Diffs and undo**: `write_file` and `edit_file` show their change as a diff on the
@@ -130,6 +133,9 @@ too, as an installer and a portable `.exe`.
   model for simple tasks), system prompt, tool access, how many run at once, round limit and
   time limit. With the Docker sandbox on, subagents can also use the workspace, each running
   commands in a container of its own on the chat's network.
+- **Voice**: dictate into the message box with a microphone button (⌘/Ctrl+Shift+M) through
+  a cloud transcription service or a local Whisper server, and have replies read aloud (⌘/Ctrl+Shift+S)
+  with the system voice or a speech endpoint. Both are off by default; see **Settings → Voice**.
 - **Background replies**: a reply keeps running when you open another chat. The sidebar shows
   which chats are replying, waiting for approval, queued or finished. Desktop notifications say
   when a reply finishes, fails or needs approval (each chat can turn its own off). **Settings →
@@ -180,6 +186,8 @@ too, as an installer and a portable `.exe`.
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, fork a chat from any message into a new chat,
   or stop a generation.
+- **Branches**: regenerating a reply or editing a message keeps the version it replaces, and
+  **‹ k/N ›** arrows switch between the versions (up to 10 kept per message by default).
 - **Markdown rendering** with syntax-highlighted code blocks, tables and images. ```` ```mermaid ````
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
@@ -187,8 +195,11 @@ too, as an installer and a portable `.exe`.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
   save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
-  live in the panel (scripts on, network off by default; both switchable), and any page can
-  open in your browser.
+  live in the panel, and on Linux in a window of their own when WebKitGTK is installed (scripts
+  on, network off by default; both switchable), and any page can open in your browser.
+- **Save as files**: a reply or a Markdown, code or CSV artifact can be saved as a Word document,
+  a PDF or an Excel workbook (one sheet per table, numbers as numbers), each format switched on
+  or off in Settings → General.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to
@@ -350,7 +361,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, branches (keep the replaced version, versions kept per message), updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
@@ -446,6 +457,8 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |
 | ⌘/Ctrl + , | Settings (Esc closes it when there are no unsaved changes) |
+| ⌘/Ctrl + Shift + M | Start or stop voice input (dictation into the message box) |
+| ⌘/Ctrl + Shift + S | Read the latest reply aloud, or stop reading |
 | Tab / Shift+Tab | Move between controls, with a visible focus outline; Space or Enter presses the focused button |
 
 ## Development
@@ -488,6 +501,7 @@ src/
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
   ocr.rs          OCR for scanned PDFs: page images, a vision model or Tesseract
+  save_as.rs      Word, PDF and Excel files from replies and artifacts
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
   remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client

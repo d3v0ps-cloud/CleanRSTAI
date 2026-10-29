@@ -13,6 +13,7 @@ use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::approval::{AlwaysAllow, Approval, PendingApproval};
 use crate::attach::{Attachment, Reading};
 use crate::background::{self, Outcome, Queued, RunQueue};
+use crate::branches::{self, BranchSettings, Hold};
 use crate::config::{RemoteTls, Settings, Theme};
 use crate::export;
 use crate::llm;
@@ -23,12 +24,14 @@ use crate::remote::{
     RemoteEvent, RemoteStatus, StateView, ToolCallView,
 };
 use crate::schedule::{self, ScheduleSettings, ScheduledTask, Target};
+use crate::tools::workspace::Workspace;
 use crate::tools::{self, ToolOverrides, ToolSelection};
 use crate::tray;
 use crate::types::{ChatMessage, Conversation, Role, fork_messages};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
+use crate::ui::commit_dialog::{CommitAction, CommitDialog};
 use crate::ui::palette::{Command, Entry, Palette};
 use crate::ui::project_editor::{self, EditorOutcome, ProjectEditor};
 use crate::ui::settings::{SettingsAction, SettingsUi, Tab};
@@ -69,12 +72,27 @@ pub(crate) enum Action {
     CloseArtifact,
     SaveArtifact(crate::artifacts::Artifact),
     OpenArtifactInBrowser(crate::artifacts::Artifact),
+    /// Show a web page in its own live preview window (Linux, see `ui::linux_preview`).
+    OpenLivePreview(crate::artifacts::Artifact),
     /// Undo the file edits of the turn holding this message.
     UndoTurn(Uuid, usize),
+    /// Show another version of the message's tail: chat, message index, version index (see
+    /// `branches`).
+    SwitchBranch(Uuid, usize, usize),
+    /// Save a reply or artifact as a Word, PDF or Excel file: the chat, the file's title (the
+    /// chat's when `None`), what to save and the format.
+    SaveAs {
+        conv: Uuid,
+        title: Option<String>,
+        content: crate::save_as::Content,
+        format: crate::save_as::Format,
+    },
     /// Approve the plan a Plan chat's latest reply proposed (see `plan`).
     ApprovePlan(Uuid),
     /// Keep planning: focus the message box.
     KeepPlanning,
+    /// Read a reply aloud, or stop it when it is the one being read: chat, message index.
+    Speak(Uuid, usize),
 }
 
 pub struct ChatApp {
@@ -106,6 +124,11 @@ pub struct ChatApp {
     /// The "still running" notification was sent in this app run.
     tray_notified: bool,
     errors: HashMap<Uuid, String>,
+    /// Replaced tails waiting for the reply that replaces them (see `branches`), by chat.
+    holds: HashMap<Uuid, Hold>,
+    /// A message being edited: its chat and position. The turn it starts is replaced when the
+    /// edit is sent.
+    editing: Option<(Uuid, usize)>,
     /// First name for the greeting, from the OS account.
     user_name: Option<String>,
     /// Tools and servers the user chose to always allow, per chat, until the app quits.
@@ -124,6 +147,10 @@ pub struct ChatApp {
     renaming: Option<(Uuid, String)>,
     search: String,
     notice: Option<String>,
+    /// Voice input and reading replies aloud, in progress (see `voice`).
+    voice: crate::voice::VoiceState,
+    /// Repaint handle for the background threads that report back.
+    egui_ctx: egui::Context,
     keychain_warned: bool,
     pending_attachments: Vec<Attachment>,
     /// Files still being read for `pending_attachments`.
@@ -137,6 +164,8 @@ pub struct ChatApp {
     prompt_form: Option<PromptForm>,
     /// The "Changed files" window is open.
     changed_files_open: bool,
+    /// The Commit dialog, while it is open.
+    commit_dialog: Option<crate::ui::commit_dialog::CommitDialog>,
     /// For background tasks to request a repaint when their results arrive.
     repaint_ctx: egui::Context,
     palette: Palette,
@@ -426,6 +455,8 @@ impl ChatApp {
             quitting: false,
             tray_notified: false,
             errors: HashMap::new(),
+            holds: HashMap::new(),
+            editing: None,
             user_name: user_first_name(),
             always_allow: HashMap::new(),
             md_cache: CommonMarkCache::default(),
@@ -438,6 +469,8 @@ impl ChatApp {
             renaming: None,
             search: String::new(),
             notice: loaded.notice,
+            voice: Default::default(),
+            egui_ctx: cc.egui_ctx.clone(),
             keychain_warned: false,
             pending_attachments: Vec::new(),
             reading_files: 0,
@@ -447,6 +480,7 @@ impl ChatApp {
             viewing: None,
             prompt_form: None,
             changed_files_open: false,
+            commit_dialog: None,
             repaint_ctx: cc.egui_ctx.clone(),
             palette: Palette::default(),
             sidebar_open: true,
@@ -1178,10 +1212,19 @@ impl ChatApp {
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
+        let edit_at = self.editing.take_if(|(c, _)| *c == id).map(|(_, at)| at);
+        let settings = self.branch_settings(id);
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
+        // An edited prompt replaces the turn from it on: that turn stays as a version.
+        let hold = edit_at
+            .filter(|&at| conv.messages.get(at).is_some_and(|m| m.role == Role::User))
+            .map(|at| branches::divide(&mut conv.messages, at, &settings));
         let mut msg = ChatMessage::new(Role::User, text);
         msg.attachments = attachments;
         conv.messages.push(msg);
+        if let Some(hold) = hold {
+            branches::attach(&mut conv.messages, &hold);
+        }
         conv.auto_title();
         conv.updated_at = chrono::Utc::now();
         conv.save();
@@ -1442,16 +1485,28 @@ impl ChatApp {
     fn stop(&mut self, id: Uuid) {
         let queued = self.queue.remove(id);
         let run = self.runs.remove(&id);
-        let compact_only = match (&run, queued) {
+        let held = self.holds.remove(&id);
+        let compact_only = match (&run, &queued) {
             (Some(run), _) => run.compact_only,
             (None, Some(item)) => item.compact_only,
-            (None, None) => return,
+            (None, None) => false,
         };
+        let started = run.is_some() || queued.is_some();
         if let Some(run) = run {
             run.task.abort();
         }
+        // A stopped regeneration puts back the reply it was replacing, rather than cutting the
+        // chat back to its prompt.
+        if let Some(hold) = held {
+            if let Some(conv) = self.conv_mut(id) {
+                branches::restore(&mut conv.messages, hold);
+                conv.updated_at = chrono::Utc::now();
+                conv.save();
+            }
+            return;
+        }
         // A compaction has no prompt of its own to take back.
-        if compact_only {
+        if !started || compact_only {
             return;
         }
         let Some(conv) = self.conv_mut(id) else {
@@ -1469,10 +1524,30 @@ impl ChatApp {
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
+        let settings = self.branch_settings(id);
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
-        cut_for_regenerate(&mut conv.messages)?;
+        // The replaced reply waits in a hold until the new one arrives (see `handle_chat_event`).
+        if let Some(hold) = branches::prepare_regenerate(&mut conv.messages, &settings)? {
+            self.holds.insert(id, hold);
+        }
+        if self.editing.is_some_and(|(c, _)| c == id) {
+            self.editing = None;
+        }
         self.start_run(id, ctx);
         Ok(())
+    }
+
+    /// Branch settings for a chat: Settings, unless the chat's `feature:branches` switch
+    /// overrides them.
+    fn branch_settings(&self, id: Uuid) -> BranchSettings {
+        let mut settings = self.settings.general.branching.clone();
+        if let Some(conv) = self.conversations.iter().find(|c| c.id == id) {
+            settings.enabled = conv
+                .tool_overrides
+                .get(&ToolOverrides::feature_key(tools::BRANCHES))
+                .unwrap_or(settings.enabled);
+        }
+        settings
     }
 
     /// Answers a tool approval waiting in a chat, and any other waiting call the answer now
@@ -1520,6 +1595,46 @@ impl ChatApp {
     fn handle_events(&mut self) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                AppEvent::VoiceCaptured(result) => {
+                    self.voice.recording = None;
+                    match result {
+                        Ok(wav) => {
+                            self.voice.transcribing = true;
+                            let ctx = self.egui_ctx.clone();
+                            crate::voice::spawn_transcription(
+                                &self.rt,
+                                &self.http,
+                                &self.settings,
+                                wav,
+                                &self.tx,
+                                move || ctx.request_repaint(),
+                            );
+                        }
+                        Err(e) => self.notice = Some(e),
+                    }
+                }
+                AppEvent::VoiceTranscribed(result) => {
+                    self.voice.transcribing = false;
+                    match result {
+                        Ok(text) => {
+                            let id = egui::Id::unique(INPUT_ID);
+                            let cursor = egui::TextEdit::load_state(&self.egui_ctx, id)
+                                .and_then(|s| s.cursor.char_range())
+                                .map(|r| r.primary.index.0);
+                            crate::voice::insert_text(&mut self.input, cursor, &text);
+                            self.egui_ctx.memory_mut(|m| m.request_focus(id));
+                        }
+                        Err(e) => self.notice = Some(format!("Voice input failed: {e}")),
+                    }
+                }
+                AppEvent::SpeechEnded { key, result } => {
+                    if self.voice.speaking_key() == Some(key) {
+                        self.voice.speaking = None;
+                    }
+                    if let Err(e) = result {
+                        self.notice = Some(format!("Reading aloud failed: {e}"));
+                    }
+                }
                 AppEvent::UpdateChecked { result, explicit } => {
                     use crate::update::UpdateCheck;
                     if let Some(ui) = self.settings_ui.as_mut().filter(|_| explicit) {
@@ -1589,6 +1704,31 @@ impl ChatApp {
                 AppEvent::ReviewReady { conv_id, result } => {
                     if let Err(e) = self.finish_review(conv_id, result) {
                         self.notice = Some(e);
+                    }
+                }
+                AppEvent::CommitListed { conv_id, result } => {
+                    if let Some(d) = self.commit_dialog.as_mut().filter(|d| d.conv == conv_id) {
+                        d.set_listing(result);
+                    }
+                }
+                AppEvent::Committed { conv_id, result } => {
+                    if self
+                        .commit_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.conv == conv_id)
+                    {
+                        match result {
+                            Ok(text) => {
+                                self.commit_dialog = None;
+                                self.notice = text.lines().next().map(str::to_owned);
+                            }
+                            Err(e) => {
+                                if let Some(d) = self.commit_dialog.as_mut() {
+                                    d.busy = false;
+                                    d.error = Some(e);
+                                }
+                            }
+                        }
                     }
                 }
                 AppEvent::OcrStarted => self.reading_ocr += 1,
@@ -1668,8 +1808,51 @@ impl ChatApp {
                     }
                 }
                 AppEvent::Chat { conv_id, event } => self.handle_chat_event(conv_id, event),
+                AppEvent::SavedAs(result) => {
+                    self.notice = Some(match result {
+                        Ok(msg) | Err(msg) => msg,
+                    });
+                }
             }
         }
+    }
+
+    /// "Save as…" for a reply or artifact: the file dialog here (as the other saves do, since
+    /// macOS wants it on the main thread), then the file is built and written off the UI
+    /// thread and its outcome comes back as `AppEvent::SavedAs`.
+    fn save_as(
+        &mut self,
+        conv: Uuid,
+        title: Option<String>,
+        content: crate::save_as::Content,
+        format: crate::save_as::Format,
+    ) {
+        let title = title.unwrap_or_else(|| {
+            self.conversations
+                .iter()
+                .find(|c| c.id == conv)
+                .map(|c| c.title.clone())
+                .unwrap_or_default()
+        });
+        let stem = crate::save_as::file_stem(&title);
+        let name = export::safe_file_name(stem, format.extension());
+        let Some(path) = export::pick_save_path_as(&name, format.label(), format.extension())
+        else {
+            return;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let result = content
+                .render(format)
+                .map_err(|e| format!("Couldn't save {}: {e:#}", path.display()))
+                .and_then(|bytes| {
+                    crate::config::write_private(&path, &bytes)
+                        .map_err(|e| format!("Couldn't save {}: {e:#}", path.display()))
+                })
+                .map(|()| format!("Saved {}", path.display()));
+            let _ = tx.send(AppEvent::SavedAs(result));
+            ctx.request_repaint();
+        });
     }
 
     fn handle_chat_event(&mut self, id: Uuid, event: ChatEvent) {
@@ -1749,11 +1932,19 @@ impl ChatApp {
         }
         let is_final = matches!(event, ChatEvent::AssistantFinal(_));
         let keep_turns = self.settings.general.file_edits.keep_turns;
-        let Some(conv) = self.conv_mut(id) else {
+        // Disjoint fields, so the held tails can change while the chat is borrowed.
+        let holds = &mut self.holds;
+        let Some(conv) = self.conversations.iter_mut().find(|c| c.id == id) else {
             return;
         };
         match event {
-            ChatEvent::AssistantStart => conv.messages.push(ChatMessage::new(Role::Assistant, "")),
+            ChatEvent::AssistantStart => {
+                conv.messages.push(ChatMessage::new(Role::Assistant, ""));
+                // The first reply of a regeneration takes the versions it is replacing.
+                if let Some(hold) = holds.get(&id) {
+                    branches::reply_started(&mut conv.messages, hold);
+                }
+            }
             ChatEvent::ContentDelta(s) => {
                 if let Some(m) = conv
                     .messages
@@ -1778,7 +1969,12 @@ impl ChatApp {
                     .last_mut()
                     .filter(|m| m.role == Role::Assistant)
                 {
+                    // The message's versions stay with it.
+                    let (alternatives, alt_index) =
+                        (std::mem::take(&mut m.alternatives), m.alt_index);
                     *m = *msg;
+                    m.alternatives = alternatives;
+                    m.alt_index = alt_index;
                 }
             }
             ChatEvent::ToolResult(msg) => conv.messages.push(*msg),
@@ -1794,9 +1990,16 @@ impl ChatApp {
                 // The summary request counts in the chat's totals, but not as its context.
                 marker.stats = Some(*stats);
                 conv.messages.insert(at, marker);
+                // A held tail moves up with the messages after the marker.
+                if let Some(hold) = holds.get_mut(&id) {
+                    branches::marker_inserted(hold, at);
+                }
                 conv.save();
             }
             ChatEvent::Done => {
+                if let Some(hold) = holds.remove(&id) {
+                    branches::settle(&mut conv.messages, hold);
+                }
                 if conv.messages.last().is_some_and(|m| {
                     m.role == Role::Assistant && m.content.is_empty() && m.tool_calls.is_empty()
                 }) {
@@ -1871,6 +2074,11 @@ impl ChatApp {
             .collect();
         for id in stuck {
             self.runs.remove(&id);
+            if let Some(hold) = self.holds.remove(&id)
+                && let Some(conv) = self.conv_mut(id)
+            {
+                branches::settle(&mut conv.messages, hold);
+            }
             self.errors
                 .entry(id)
                 .or_insert_with(|| "The reply stopped unexpectedly.".into());
@@ -2279,6 +2487,77 @@ impl ChatApp {
         }
     }
 
+    /// Opens the Commit dialog on chat `id` and asks for its working folder's changes.
+    fn open_commit_dialog(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
+        let root = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("Chat not found")?
+            .workspace
+            .clone()
+            .ok_or("This chat has no working folder")?;
+        self.commit_dialog = Some(CommitDialog::new(id, root.clone()));
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = match Workspace::open(&root) {
+                Ok(ws) => ws.commit_changes_list().await,
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(AppEvent::CommitListed {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        Ok(())
+    }
+
+    /// Commits `paths` (as the Commit dialog checked them) in the dialog's working folder.
+    fn start_commit(&mut self, id: Uuid, message: String, paths: Vec<String>, ctx: &egui::Context) {
+        let Some(dialog) = self.commit_dialog.as_mut() else {
+            return;
+        };
+        dialog.busy = true;
+        dialog.error = None;
+        let root = dialog.root.clone();
+        // The user's click in the dialog is the approval; signing follows Settings.
+        let sign = self.settings.general.builtin_tools.allow_signing;
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = match Workspace::open(&root) {
+                Ok(ws) => {
+                    ws.with_commit_signing(sign)
+                        .commit_changes(&message, Some(&paths))
+                        .await
+                }
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(AppEvent::Committed {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Draws the Commit dialog and runs what the user asks for.
+    fn commit_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.commit_dialog.take() else {
+            return;
+        };
+        let idle = !self.busy(dialog.conv);
+        match crate::ui::commit_dialog::show(ctx, &mut dialog, idle) {
+            CommitAction::Keep => self.commit_dialog = Some(dialog),
+            CommitAction::Close => {}
+            CommitAction::Commit { message, paths } => {
+                let id = dialog.conv;
+                self.commit_dialog = Some(dialog);
+                self.start_commit(id, message, paths, ctx);
+            }
+        }
+    }
+
     /// The current chat's file edits, one collapsible section per file, with their diffs.
     fn changed_files_window(&mut self, ctx: &egui::Context) {
         if !self.changed_files_open {
@@ -2289,11 +2568,25 @@ impl ChatApp {
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
             .map(|c| crate::checkpoints::changed_files(&c.messages))
             .unwrap_or_default();
+        let has_workspace = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some());
+        let mut commit = false;
         egui::Window::new("Changed files")
             .open(&mut self.changed_files_open)
             .resizable(true)
             .default_width(600.0)
             .show(ctx, |ui| {
+                let button = egui::Button::new("Commit…").small();
+                if ui
+                    .add_enabled(has_workspace, button)
+                    .on_hover_text("Commit the working folder's changes to its git repository")
+                    .clicked()
+                {
+                    commit = true;
+                }
+                ui.add_space(4.0);
                 if files.is_empty() {
                     ui.label(RichText::new("This chat hasn't changed any files.").weak());
                     return;
@@ -2346,6 +2639,12 @@ impl ChatApp {
                         });
                 }
             });
+        if commit
+            && let Some(id) = self.current
+            && let Err(e) = self.open_commit_dialog(id, ctx)
+        {
+            self.notice = Some(e);
+        }
     }
 
     fn prompt_form_window(&mut self, ctx: &egui::Context) {
@@ -2586,6 +2885,19 @@ impl ChatApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let (mic, read_aloud) = ctx.input_mut(|i| {
+            let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+            (
+                i.consume_key(shift, egui::Key::M),
+                i.consume_key(shift, egui::Key::S),
+            )
+        });
+        if mic {
+            self.toggle_recording();
+        }
+        if read_aloud {
+            self.read_latest_or_stop();
+        }
         let (new_chat, settings, palette, sidebar) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
@@ -2606,6 +2918,117 @@ impl ChatApp {
         }
         if sidebar {
             self.sidebar_open = !self.sidebar_open;
+        }
+    }
+
+    /// Voice input: starts a recording, or ends it and transcribes the clip.
+    fn toggle_recording(&mut self) {
+        if self.voice.recording.is_some() {
+            self.voice.stop_recording();
+            return;
+        }
+        if !self.settings.general.voice.input.enabled {
+            self.notice = Some("Turn on voice input in Settings → Voice".into());
+            return;
+        }
+        let max_secs = self.settings.general.voice.input.max_secs;
+        let ctx = self.egui_ctx.clone();
+        if let Err(e) = self
+            .voice
+            .start_recording(max_secs, &self.tx, move || ctx.request_repaint())
+        {
+            self.notice = Some(e);
+        }
+    }
+
+    /// Reads a reply aloud, or stops it when that reply is the one being read.
+    fn toggle_speaking(&mut self, conv: Uuid, idx: usize) {
+        if self.voice.speaking_key() == Some((conv, idx)) {
+            self.voice.stop_speaking();
+            return;
+        }
+        if !self.settings.general.voice.output.enabled {
+            self.notice = Some("Turn on reading replies aloud in Settings → Voice".into());
+            return;
+        }
+        let text = self
+            .conversations
+            .iter()
+            .find(|c| c.id == conv)
+            .and_then(|c| c.messages.get(idx))
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let speech = crate::voice::speak::prose(
+            &text,
+            self.settings.general.voice.output.max_chars as usize,
+        );
+        if speech.trim().is_empty() {
+            self.notice = Some("There is nothing to read in that reply".into());
+            return;
+        }
+        let (tx, ctx) = (self.tx.clone(), self.egui_ctx.clone());
+        self.voice.start_speaking(
+            &self.rt,
+            &self.http,
+            &self.settings,
+            (conv, idx),
+            speech,
+            move |event| {
+                let _ = tx.send(event);
+                ctx.request_repaint();
+            },
+        );
+    }
+
+    /// Ctrl/⌘+Shift+S: stops the reading in progress, or reads the chat's latest reply.
+    fn read_latest_or_stop(&mut self) {
+        if self.voice.speaking.is_some() {
+            self.voice.stop_speaking();
+            return;
+        }
+        let Some(conv) = self.current else { return };
+        let latest = self
+            .conversations
+            .iter()
+            .find(|c| c.id == conv)
+            .and_then(|c| crate::voice::latest_reply(&c.messages));
+        match latest {
+            Some(idx) => self.toggle_speaking(conv, idx),
+            None => self.notice = Some("There is no reply to read yet".into()),
+        }
+    }
+
+    /// The microphone under the message box: starts a recording, shows its elapsed time in red
+    /// while it runs, and a spinner while the clip is transcribed.
+    fn mic_button(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui.visuals().dark_mode);
+        if let Some(started) = self.voice.recording.as_ref().map(|r| r.started) {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+            let secs = started.elapsed().as_secs();
+            let label = RichText::new(format!(
+                "{}  {}:{:02}",
+                icon::MICROPHONE,
+                secs / 60,
+                secs % 60
+            ))
+            .color(p.error);
+            if ui
+                .add(egui::Button::new(label))
+                .on_hover_text("Stop and transcribe (⌘/Ctrl+Shift+M)")
+                .clicked()
+            {
+                self.toggle_recording();
+            }
+        } else if self.voice.transcribing {
+            ui.spinner().on_hover_text("Transcribing…");
+        } else if ui
+            .add(egui::Button::new(
+                RichText::new(icon::MICROPHONE).size(17.0),
+            ))
+            .on_hover_text("Dictate into the message box (⌘/Ctrl+Shift+M)")
+            .clicked()
+        {
+            self.toggle_recording();
         }
     }
 
@@ -2796,6 +3219,18 @@ impl ChatApp {
                 Command::ReviewChanges,
             ));
         }
+        if self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some())
+        {
+            e.push(Entry::new(
+                icon::CHECK_SQUARE,
+                "Commit changes…",
+                "Chat",
+                Command::CommitChanges,
+            ));
+        }
         for c in &self.conversations {
             e.push(Entry::new(
                 icon::CHAT,
@@ -2902,6 +3337,13 @@ impl ChatApp {
             Command::ReviewChanges => {
                 if let Some(id) = self.current
                     && let Err(e) = self.start_review(id, ctx)
+                {
+                    self.notice = Some(e);
+                }
+            }
+            Command::CommitChanges => {
+                if let Some(id) = self.current
+                    && let Err(e) = self.open_commit_dialog(id, ctx)
                 {
                     self.notice = Some(e);
                 }
@@ -4339,6 +4781,9 @@ impl ChatApp {
                         self.tools_menu(ui);
                         self.model_options_menu(ui);
                         self.mcp_menu(ui);
+                        if self.settings.general.voice.input.enabled {
+                            self.mic_button(ui);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if running {
                                 if ui
@@ -4462,9 +4907,41 @@ impl ChatApp {
                     .as_ref()
                     .filter(|v| v.conv == conv.id)
                     .map(|v| (v.message, v.index)),
+                save_as: self.settings.general.save_as,
                 plan_ready,
+                voice_out: self.settings.general.voice.output.enabled,
+                speaking: self
+                    .voice
+                    .speaking_key()
+                    .filter(|(c, _)| *c == conv.id)
+                    .map(|(_, i)| i),
             },
         )
+    }
+
+    /// "Open live preview" (Linux): the page in a window of its own. Without WebKitGTK, or a
+    /// display, the browser opens it instead, with a notice the first time.
+    fn open_live_preview(&mut self, a: &crate::artifacts::Artifact) {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::ui::linux_preview;
+            match linux_preview::show(&a.title, &a.source, &self.settings.general.html_preview) {
+                Ok(()) => return,
+                Err(why) if linux_preview::take_fallback_notice() => {
+                    self.notice = Some(if linux_preview::probe().is_err() {
+                        "Live preview needs WebKitGTK (libwebkit2gtk-4.1); opened in the browser \
+                         instead"
+                            .to_owned()
+                    } else {
+                        format!("Live preview couldn't open ({why}); opened in the browser instead")
+                    });
+                }
+                Err(_) => {}
+            }
+        }
+        if let Err(e) = crate::artifacts::open_in_browser(a) {
+            self.notice = Some(format!("Couldn't open it in the browser: {e}"));
+        }
     }
 
     fn apply_actions(&mut self, actions: Vec<Action>, ctx: &egui::Context) {
@@ -4478,6 +4955,7 @@ impl ChatApp {
                     self.approve(conv, &call_id, answer);
                 }
                 Action::ApprovePlan(conv) => self.approve_plan(conv, ctx),
+                Action::Speak(conv, idx) => self.toggle_speaking(conv, idx),
                 Action::KeepPlanning => {
                     ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                 }
@@ -4517,16 +4995,37 @@ impl ChatApp {
                         Ok(msg) | Err(msg) => msg,
                     });
                 }
+                Action::SaveAs {
+                    conv,
+                    title,
+                    content,
+                    format,
+                } => self.save_as(conv, title, content, format),
                 Action::OpenArtifactInBrowser(a) => {
                     if let Err(e) = crate::artifacts::open_in_browser(&a) {
                         self.notice = Some(format!("Couldn't open it in the browser: {e}"));
                     }
                 }
+                Action::OpenLivePreview(a) => self.open_live_preview(&a),
                 Action::ForkFrom(conv, idx) => {
                     self.notice = Some(match self.fork_chat(conv, idx) {
                         Ok(_) => "Forked into a new chat".into(),
                         Err(e) => e,
                     });
+                }
+                Action::SwitchBranch(conv, at, to) => {
+                    if self.busy(conv) {
+                        continue;
+                    }
+                    if let Some(c) = self.conv_mut(conv)
+                        && branches::switch(&mut c.messages, at, to)
+                    {
+                        c.updated_at = chrono::Utc::now();
+                        c.save();
+                    }
+                    if self.editing.is_some_and(|(c, _)| c == conv) {
+                        self.editing = None;
+                    }
                 }
                 Action::EditFrom(conv, idx) => {
                     if self.busy(conv) {
@@ -4535,10 +5034,11 @@ impl ChatApp {
                     if let Some(c) = self.conv_mut(conv)
                         && idx < c.messages.len()
                     {
+                        // The turn is replaced when the edit is sent, so until then the chat
+                        // still shows it.
                         let text = c.messages[idx].content.clone();
                         let attachments = c.messages[idx].attachments.clone();
-                        c.messages.truncate(idx);
-                        c.save();
+                        self.editing = Some((conv, idx));
                         self.input = text;
                         self.pending_attachments = attachments;
                         self.errors.remove(&conv);
@@ -4892,8 +5392,6 @@ fn throttle(sent: &mut HashMap<Uuid, Instant>, id: Uuid, now: Instant) -> Option
     None
 }
 
-/// Drops the reply being regenerated and anything after the last user message, which is kept
-/// for the new reply. Nothing changes when there is no user message.
 /// Where a compaction marker goes so that `kept` messages (not counting cancelled prompts or
 /// earlier markers, which the agent never saw) follow it.
 fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
@@ -4907,16 +5405,6 @@ fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
         }
     }
     if seen == kept { 0 } else { messages.len() }
-}
-
-fn cut_for_regenerate(messages: &mut Vec<ChatMessage>) -> Result<(), String> {
-    let last_user = messages
-        .iter()
-        .rposition(|m| m.role == Role::User)
-        .ok_or("There is nothing to regenerate")?;
-    messages.truncate(last_user + 1);
-    messages[last_user].cancelled = false;
-    Ok(())
 }
 
 /// The model name a browser sent, trimmed. Names are limited to 200 characters.
@@ -5006,6 +5494,7 @@ fn approval_view(p: &PendingApproval) -> ApprovalView {
         label: tools::display_name(&p.call.name),
         arguments: p.call.arguments.clone(),
         server_name: p.server_name.clone(),
+        can_always_tool: !crate::approval::always_asks(&p.call.name),
         can_always_server: p.origin.is_some(),
     }
 }
@@ -5208,10 +5697,20 @@ impl eframe::App for ChatApp {
 
         if !settings_open {
             let remote_images = self.settings.general.load_remote_images;
-            let live_html = if !crate::ui::webview::SUPPORTED {
-                Err("Web pages open in your browser: this build has no web view.")
-            } else if !self.settings.general.html_preview.enabled {
+            let preview = &self.settings.general.html_preview;
+            // Linux: the page opens in its own window, from the panel's button.
+            #[cfg(target_os = "linux")]
+            let own_window = preview.enabled.then(crate::ui::linux_preview::is_open);
+            #[cfg(not(target_os = "linux"))]
+            let own_window = None;
+            let live_html = if !preview.enabled {
                 Err("Live preview is off (Settings → General); web pages open in your browser.")
+            } else if crate::ui::webview::OWN_WINDOW {
+                Err(
+                    "Web pages open in their own window (needs WebKitGTK); otherwise in your browser.",
+                )
+            } else if !crate::ui::webview::SUPPORTED {
+                Err("Web pages open in your browser: this build has no web view.")
             } else if self.html_preview.error.is_some() {
                 Err("The web view couldn't start, so web pages open in your browser.")
             } else {
@@ -5242,10 +5741,26 @@ impl eframe::App for ChatApp {
                             &self.artifacts.list,
                             remote_images,
                             live_html,
+                            own_window,
+                            self.settings.general.save_as,
                             &mut actions,
                         )
                     });
                 web_area = web_area.or(panel.inner);
+                // The window follows the page the panel shows.
+                #[cfg(target_os = "linux")]
+                if let Some(a) = self
+                    .artifacts
+                    .list
+                    .iter()
+                    .find(|a| (a.message, a.index) == (view.message, view.index))
+                    .filter(|a| a.kind == crate::artifacts::Kind::Html)
+                {
+                    crate::ui::linux_preview::follow(
+                        &a.source,
+                        &self.settings.general.html_preview,
+                    );
+                }
                 self.apply_actions(actions, &ctx);
             }
             // A fresh chat shows the composer under the greeting instead.
@@ -5269,6 +5784,7 @@ impl eframe::App for ChatApp {
         self.prompt_form_window(&ctx);
         self.project_windows(&ctx);
         self.changed_files_window(&ctx);
+        self.commit_dialog_window(&ctx);
         if let Some(image) = &self.viewing
             && !attach_ui::viewer(&ctx, image)
         {
@@ -5690,7 +6206,11 @@ mod remote_tests {
     #[test]
     fn regenerate_keeps_the_chat_when_there_is_no_user_message() {
         let mut messages = vec![ChatMessage::new(Role::Assistant, "hi")];
-        assert!(cut_for_regenerate(&mut messages).is_err());
+        let off = BranchSettings {
+            enabled: false,
+            ..BranchSettings::default()
+        };
+        assert!(branches::prepare_regenerate(&mut messages, &off).is_err());
         assert_eq!(messages.len(), 1);
     }
 
@@ -5704,7 +6224,11 @@ mod remote_tests {
             ChatMessage::new(Role::Tool, "result"),
         ];
         messages[2].cancelled = true;
-        cut_for_regenerate(&mut messages).unwrap();
+        let off = BranchSettings {
+            enabled: false,
+            ..BranchSettings::default()
+        };
+        branches::prepare_regenerate(&mut messages, &off).unwrap();
         let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(contents, ["first", "answer", "second"]);
         assert!(!messages[2].cancelled);

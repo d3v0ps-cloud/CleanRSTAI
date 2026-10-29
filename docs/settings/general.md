@@ -134,11 +134,30 @@ contents in the image address.
 
 | Setting | Default | Description |
 |---|---|---|
-| **Show web pages live in the panel** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). Off: the panel shows the code, and **Open in browser** opens the page. Linux builds have no web view, so pages open in the browser there. |
+| **Show web pages live in the panel** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). On Linux the panel's **Open live preview** button shows the page in a window of its own, when WebKitGTK is installed (see below). Off: the panel shows the code, and **Open in browser** opens the page. |
 | **Let pages run their scripts** | on | Off blocks every script in the page. |
 | **Let pages load from the network** | off | Off: scripts, styles, fonts, images and requests from the web are blocked, so a page can't send chat content anywhere; what is written into the page itself still works. Pages that load a library from a CDN need this on. |
 
-Links in a previewed page open in your browser, never in the panel.
+On Linux the page opens in its own window, with the same settings for scripts and the network.
+WebKitGTK is not part of the release files, so install it first: `libwebkit2gtk-4.1-0` on Debian
+and Ubuntu, `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch. The checkbox's note says whether
+it was found. Without it, or without a display, **Open live preview** opens the page in your
+browser instead, with a notice the first time.
+
+Links in a previewed page open in your browser, never in the panel or the Linux window.
+
+## Save as files
+
+Which formats the **Save as…** menu of a [reply or artifact](../using/chats.html#saving-as-files)
+offers. The menu lists only the checked formats that suit the content.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Word document (.docx)** | on | Replies and Markdown, code and CSV artifacts can be saved as Word documents. |
+| **PDF (.pdf)** | on | Replies and Markdown, code and CSV artifacts can be saved as PDF files on A4 pages. |
+| **Excel workbook (.xlsx)** | on | Replies with a table, and CSV and TSV artifacts, can be saved as Excel workbooks: one sheet per table. |
+
+With all three off, no reply or artifact offers **Save as…**.
 
 ## Tool calls
 
@@ -167,6 +186,16 @@ on approval. An empty message restores the default.
 
 **Plan instructions** is the system prompt section a Plan chat gets, in place of the default text;
 an empty field restores it, and **Reset** does the same.
+
+## Branches
+
+**Keep the version a reply replaces** (default on): retrying a reply or editing a message keeps
+the version it replaces, and arrows switch between the versions. See
+[Editing and retrying](../using/chats.html#branches). Off, the replaced version is dropped as
+before; versions already kept stay switchable. A chat's **Branches** switch overrides this.
+
+**Versions kept per message** is how many older versions of one message are kept: 1 to 50,
+default 10. The oldest is dropped beyond that.
 
 ## Max tool rounds
 

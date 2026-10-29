@@ -185,14 +185,33 @@ Each message has small action icons:
 
 - Your messages: **Edit and resend**, **Copy**, and **Fork from here**.
 - Replies: **Copy**, **Retry** to generate the reply again (the latest reply only), and
-  **Fork from here**.
+  **Fork from here**. A reply with other versions shows the **‹ k/N ›** arrows.
 
 **Fork from here** copies the chat up to that message into a new chat, titled with
 "(fork)" after the original title. The new chat keeps the original's workspace folder, tool
 switches, model options and permissions, and the original is left as it was. The workspace
 folder is shared, not copied, so file edits made in either chat change the same files. The
 file edits copied into the fork can't be undone from the fork, only from the original chat.
-Forking is not available while a reply is being generated in that chat.
+Forking is not available while a reply is being generated in that chat. Only the version
+of the chat that is shown is copied (see [Branches](#branches)).
+
+### Branches
+
+**Retry** and **Edit and resend** keep what they replace as a branch instead of losing it.
+A message with other versions shows arrows, **‹ k/N ›**: N is the number of versions and k
+the one shown. The arrows switch to the previous or next version, and the replies after that
+message then come from the version you picked. Editing keeps the turn from the edited message
+on (its reply and what followed) as a version; the edit takes effect when you send it, so the
+chat still shows the turn until then. Stopping a retry puts back the reply it was replacing.
+
+Only the version shown is sent to the model, exported, compacted, forked and shown in the
+browser client. Switching doesn't change files, and **Undo file edit** only undoes the edits
+of the version shown. Arrows are unavailable while a reply runs or waits in the chat.
+
+Settings → General → Branches keeps up to **Versions kept per message** (default 10) older
+versions per message and drops the oldest beyond that. Turn it off there, or with **Branches**
+under **Chat features** in the tools menu for one chat: off, Retry and Edit replace the
+version as they always did (versions already kept stay switchable).
 
 ## Replies
 
@@ -205,6 +224,8 @@ tables and images.
 - Images from the web show as links unless **Load web images in replies** is on in
   [General](../settings/general.html#images). Loading them tells the image's server that the
   chat was opened, so it is off by default.
+- **Save as…** (the download icon under the reply) saves it as a Word document, a PDF or an
+  Excel workbook; see [Saving as files](#saving-as-files).
 
 ## Artifacts
 
@@ -232,14 +253,40 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   on. Made-up names like "Flowchart" never make versions.
 - **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
   that runs the page's scripts but, by default, blocks everything from the network (set in
-  [General](../settings/general.html#web-page-preview)); links open in your browser. **Open in
-  browser** writes the page to a temporary file and opens it in your default browser, where its
-  scripts run as in any local file and it can load anything; on Linux that is the only way to
-  see a page. SVGs can open there too.
+  [General](../settings/general.html#web-page-preview)); links open in your browser. On Linux,
+  **Open live preview** shows the page in a window of its own, with the same settings, when
+  WebKitGTK is installed; the window follows the page as a reply streams. Without WebKitGTK it
+  opens in your browser, with a notice. **Open in browser** writes the page to a temporary file
+  and opens it in your default browser, where its scripts run as in any local file and it can
+  load anything. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
   panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar
   button still open it.
+- **Save as…** in the panel's title row saves Markdown documents, code, and CSV or TSV
+  artifacts as a Word document, a PDF or (for CSV and TSV) an Excel workbook.
+
+## Saving as files
+
+A reply or a Markdown, code or CSV artifact can be saved as a file from its **Save as…** menu.
+Each format is switched on or off in [General](../settings/general.html#save-as-files); the menu
+offers only the enabled ones that suit the content. The file dialog suggests the chat's name (or
+the artifact's title) with the new extension.
+
+- **Word (.docx)**: headings, paragraphs with bold, italic and `code`, links as their text
+  followed by the address, bulleted and numbered lists (nested too), code blocks in a monospace
+  font on a grey background, block quotes, tables with a bold header row, and rules.
+- **PDF (.pdf)**: the same elements on A4 pages, with word wrap and page breaks. Text is set in
+  Instrument Sans and code in IBM Plex Mono, both embedded. The PDF has no italic face, so
+  italic text is upright. Characters the fonts lack (most non-Latin scripts) are left out.
+- **Excel (.xlsx)**: offered when the reply has a table, and for CSV and TSV artifacts. Each
+  Markdown table becomes a sheet named "Table 1", "Table 2" and so on, with a bold header row;
+  a CSV or TSV file becomes one sheet, "Sheet1". Cells that read as numbers (plain digits with
+  an optional sign and point) are stored as numbers, so they sum and sort; codes with leading
+  zeros, numbers with separators or exponents, and numbers longer than 15 digits stay text.
+
+Images in a reply are saved as their alt text and address, and raw HTML is left out. The files
+are written only where you choose; nothing is sent anywhere.
 
 ## Attachments
 

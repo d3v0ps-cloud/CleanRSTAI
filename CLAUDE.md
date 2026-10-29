@@ -103,7 +103,11 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
   app makes goes through `git::safe_command` (`git.rs`), which switches off the repository's own
   fsmonitor, external diff, textconv and pager programs, blanks its clean/smudge/process filter
   drivers (git runs them on `status` and `diff`), and leaves submodules out
-  (`--ignore-submodules=all`); `review.rs` uses it too;
+  (`--ignore-submodules=all`); `review.rs` uses it too. `git_commit` (`tools/commit.rs`, switch `builtin_tools.git_commit`, off by
+  default) stages the chosen paths and runs `git commit -- <paths>` (hooks off, signing off unless
+  `allow_signing`), never pushes; `approval::always_asks` makes it ask in every mode but AllowAll
+  and keeps it out of "Always allow". Read only drops it, subagents never get it, and the Commit
+  dialog (`ui/commit_dialog.rs`) runs the same functions on the user's click;
 - MCP tools routed as `<server>__<tool>` by `mcp::manager::ToolRouter`.
 
 `ToolSelection` resolves what is on: Settings defaults plus per-chat `ToolOverrides` keyed
@@ -132,6 +136,16 @@ public addresses (its own client with a filtering DNS resolver and redirect poli
   `PendingApproval::preview`) and the edit match; the result's `ChatMessage::edit` (`FileEdit`)
   holds the diff, the previous content and the SHA-256 of what was written. Undo restores a
   turn newest first and skips files whose hash changed; `prune` drops old checkpoints.
+
+**Branches** (`branches.rs`): regenerating (`prepare_regenerate`) and editing (`divide`, run
+when the edit is sent, from `send_message_with`) take the replaced tail aside. The first message
+of the current tail holds the other versions in `ChatMessage.alternatives` (each a complete tail,
+nested alternatives included) and `alt_index`, the current one's place in creation order. A
+regeneration waits in `ChatApp::holds` until the new reply's first message arrives (`attach` on
+`AssistantStart`, `settle` at `Done`, `restore` on stop); the `AssistantFinal` event keeps the
+versions. `messages` is always the current tail, so compaction, export, fork (which drops the
+versions), the remote view and undo see only it. `Action::SwitchBranch` drives the `‹ k/N ›`
+arrows; `feature:branches` gates it per chat.
 
 **Memory** (`memory.rs`): facts the model saves across chats, in `memory.json` in the data dir
 (`MemoryStore`, behind an `Arc`, every change written to the file before it is kept; the store is
@@ -253,6 +267,16 @@ the update restart, set `quitting` first because egui sends its own `Close` as a
 Hidden, the app asks for a repaint every 250 ms to poll the tray. Linux has a stub (no tray; tray-icon
 needs GTK there), and `tray-icon` stays under the macOS/Windows target section of `Cargo.toml`.
 
+**Voice** (`voice/`): `VoiceSettings` (`GeneralSettings.voice`, a Voice tab) holds voice
+input (`input`: a provider profile, model, language, `max_secs`) and reading aloud (`output`: an
+`OsVoice` or `Endpoint` engine). `record::start` captures 16 kHz mono WAV on a thread: cpal on
+macOS and Windows, `pw-record`/`parecord`/`arecord` (stopped with SIGINT) elsewhere, since cpal
+needs ALSA headers the Linux release can't link. `AppEvent::VoiceCaptured` starts
+`voice::spawn_transcription` (multipart `POST {base}/audio/transcriptions`), and the text goes into
+the message box at the cursor. `speak::prose` turns Markdown into speech text; `VoiceState::start_speaking`
+runs `speak::os_voice_command` (text on stdin, never in argv on Windows) or fetches
+`POST {base}/audio/speech` WAV and plays it with `speak::play_wav`. Voice threads report through
+`AppEvent::SpeechEnded`/`VoiceTranscribed`; the speaker button is an `Action::Speak` in the reply action row.
 **Persistence**: settings are one JSON file (`config.rs`, paths via `directories` with
 `ProjectDirs("net", "bukn", "CleanRSTAI")`); each conversation is its own JSON file
 (`types::Conversation`). New fields must be `#[serde(default)]` (usually with
@@ -263,6 +287,13 @@ plain-text fallback when the keychain is off or unavailable.
 **Share as HTML** (`export.rs`, `render_body`) renders the chat's Markdown with pulldown-cmark,
 drops all raw HTML except the app's own `<details>` wrapper, and allow-lists link (http/https/mailto)
 and image (raster `data:`) destinations, so the shared file loads nothing.
+
+**Save as files** (`save_as.rs`): "Save as…" on a reply or a Markdown, code or CSV artifact
+(`ui/chat_view.rs`, `save_as_menu`) reads the Markdown into a block model (`blocks`) that the
+Word, PDF and Excel writers share. Word and Excel are hand-written OOXML over the `zip` crate;
+PDF is `genpdf` with the static Instrument Sans and IBM Plex Mono in `assets/fonts`. The dialog
+runs on the UI thread, the rendering on a blocking task (`AppEvent::SavedAs`). Formats come from
+`GeneralSettings.save_as`; Excel only where there is a table or CSV.
 
 **Providers**: `ProviderKind` (generic OpenAI-compatible, llama.cpp, LiteLLM, Ollama,
 LM Studio, vLLM, OpenRouter) is detected by `llm::detect_kind` and decides which stats are
@@ -316,9 +347,11 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
   `artifacts::markdown_options`. `ui/artifact_panel.rs` is the right-hand panel; `ChatApp`
   keeps the open `ArtifactView` and the chat's artifact list, re-found when messages change.
   `ui/webview.rs` previews HTML live on macOS and Windows: a `wry` child web view (a
-  target-specific dependency; none on Linux, where "Open in browser" writes a temp file)
-  placed over the area `artifact_panel::show` returns, with a CSP `<meta>` from
-  `HtmlPreviewSettings`. It is a native window above egui, so `ChatApp::ui` hides it while
+  target-specific dependency) placed over the area `artifact_panel::show` returns, with a CSP
+  `<meta>` from `HtmlPreviewSettings`. On Linux `ui/linux_preview.rs` opens the page in its own
+  WebKitGTK window instead: GTK and WebKitGTK are `dlopen`ed at run time (`libloading`; the
+  release builds link neither), GTK runs on one preview thread, and the CSP (`webview::page`) is
+  shared. Without them, "Open in browser" writes a temp file. It is a native window above egui, so `ChatApp::ui` hides it while
   settings, the palette, a popup, a dialog or a file drop could cover it.
 - Widget ids inside a reply are scoped by message index (`push_id`), and tool results are
   matched to the tool messages that directly follow their assistant message, because some

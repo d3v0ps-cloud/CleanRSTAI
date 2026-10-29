@@ -7,6 +7,7 @@ mod approval;
 mod artifacts;
 mod attach;
 mod background;
+mod branches;
 mod checkpoints;
 mod commands;
 mod compaction;
@@ -29,6 +30,7 @@ mod projects;
 mod remote;
 mod review;
 mod sandbox;
+mod save_as;
 mod schedule;
 mod secrets;
 mod servers;
@@ -43,6 +45,7 @@ mod tray;
 mod types;
 mod ui;
 mod update;
+mod voice;
 
 use eframe::egui;
 

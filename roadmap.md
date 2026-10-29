@@ -28,8 +28,13 @@ tool calls and when a reply is done, and the command-line mode (`cleanrstai exec
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
 and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
+<<<<<<< HEAD
 Built-in Tools), and memory (facts the model saves across chats, with approval, a size limit,
 global or per-project scope, and incognito chats) in **v0.9.2-dev.5**.
+=======
+Built-in Tools), and the live web page preview on Linux (in a window of its own, when WebKitGTK
+is installed) in **v0.9.2-dev.5**.
+>>>>>>> origin/dev
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -317,7 +322,10 @@ in them follows the same rule:
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
 - [x] Read-only `git_status` and `git_diff` workspace tools
-- [ ] Commit from the chat (with approval)
+- [x] Commit from the chat (with approval): a `git_commit` workspace tool (off by default, in
+  Settings and per chat) that commits the chosen paths, or every change, locally and never
+  pushes; every commit asks, in every mode but Allow all; and a **Commit…** dialog in the
+  changed files window and the command palette
 
 ## 20. Approval modes
 
@@ -340,10 +348,10 @@ in them follows the same rule:
 
 ## 22. Conversation branching
 
-- [ ] Keep the old reply when regenerating and the old turns when editing a message, as
+- [x] Keep the old reply when regenerating and the old turns when editing a message, as
   branches, with ‹ 1/3 › arrows to switch between them
 - [x] Fork a chat from any message into a new chat
-- [ ] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
+- [x] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
   branches kept per message
 
 ## 23. Model options
@@ -360,11 +368,13 @@ in them follows the same rule:
 - [x] Live HTML preview in the artifact panel on macOS (WebKit) and Windows (WebView2): a switch
   to keep "Open in browser" only, and settings for whether scripts may run and whether the page
   may load from the network (off by default); links open in the browser
-- [ ] Live HTML preview on Linux (WebKitGTK, which the release builds don't link yet)
-- [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
+- [x] Live HTML preview on Linux in a window of its own, when WebKitGTK is installed (it is
+  loaded at run time, as the release builds link neither GTK nor WebKitGTK; without it, or a
+  display, pages open in the browser)
+- [x] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
-- [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
+- [x] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
 
 ## 25. Commands, skills and hooks
 

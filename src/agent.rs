@@ -84,6 +84,16 @@ pub enum AppEvent {
         conv_id: Uuid,
         result: Result<crate::review::ReviewDiff, String>,
     },
+    /// The working folder's changes for the Commit dialog, or why they couldn't be read.
+    CommitListed {
+        conv_id: Uuid,
+        result: Result<Vec<crate::tools::commit::Change>, String>,
+    },
+    /// A commit from the Commit dialog: what it recorded, or why it failed.
+    Committed {
+        conv_id: Uuid,
+        result: Result<String, String>,
+    },
     /// Result of a GitHub Releases check. `explicit` when the user asked for it.
     UpdateChecked {
         result: Result<crate::update::UpdateCheck, String>,
@@ -134,6 +144,17 @@ pub enum AppEvent {
         /// Whether the user asked (Detect button) rather than it running alongside a fetch.
         explicit: bool,
     },
+    /// A voice input recording as WAV bytes, or why it failed (or stopped with nothing in it).
+    VoiceCaptured(Result<Vec<u8>, String>),
+    /// What a voice recording said, or why transcription failed.
+    VoiceTranscribed(Result<String, String>),
+    /// A reply read aloud has finished, was stopped, or failed.
+    SpeechEnded {
+        key: (uuid::Uuid, usize),
+        result: Result<(), String>,
+    },
+    /// A "Save as…" file was written (its message), or why it wasn't.
+    SavedAs(Result<String, String>),
 }
 
 pub struct AgentRequest {
@@ -279,6 +300,7 @@ pub async fn run(
             checkpoint: req.selection.feature_on(tools::CHECKPOINTS),
             max_checkpoint_bytes: u64::from(edits.max_file_kb) * 1024,
         })
+        .with_commit_signing(req.general.builtin_tools.allow_signing)
     });
     // Shell commands run in the chat's sandbox container, when the sandbox is on.
     let workspace = match (workspace, &req.sandbox) {
@@ -574,7 +596,8 @@ pub async fn run(
         }
 
         for call in &calls {
-            let approved = if req.general.auto_approve_tools
+            let approved = if (req.general.auto_approve_tools
+                && !crate::approval::always_asks(&call.name))
                 || !toolbox.asks_call(&call.name, &call.arguments)
                 || req
                     .approval_mode
@@ -583,6 +606,11 @@ pub async fn run(
                 true
             } else {
                 let preview = match &workspace {
+                    Some(ws) if call.name == tools::workspace::GIT_COMMIT => {
+                        let args = serde_json::from_str(&call.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        ws.commit_preview(&args).await
+                    }
                     Some(ws) if req.general.file_edits.diff_preview => {
                         let (ws, name, args) =
                             (ws.clone(), call.name.clone(), call.arguments.clone());
@@ -950,6 +978,134 @@ mod tests {
             std::fs::read_to_string(dir.join("out/hello.txt")).unwrap(),
             "hi"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One chat turn in the git repository `dir` where the mock model calls `git_commit` (with
+    /// the switch on). Returns the approval prompts asked, their previews, the tool result and
+    /// the tool names offered to the model.
+    async fn commit_turn(
+        dir: &std::path::Path,
+        mode: crate::approval::ApprovalMode,
+        auto_approve: bool,
+    ) -> (usize, Vec<String>, ChatMessage, Vec<String>) {
+        let mut settings = crate::config::Settings::default();
+        settings.general.builtin_tools.git_commit = true;
+        settings.general.auto_approve_tools = auto_approve;
+        let http = reqwest::Client::new();
+        let (base, log) = tool_calling_llm(
+            tools::workspace::GIT_COMMIT,
+            r#"{"message": "Agent commit"}"#,
+        )
+        .await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.to_path_buf());
+        req.approval_mode = mode;
+        req.selection = req.selection.clone().with_mode(mode);
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+        let (mut approvals, mut previews, mut result) = (0, Vec::new(), None);
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            match event {
+                ChatEvent::ToolApproval {
+                    respond, preview, ..
+                } => {
+                    approvals += 1;
+                    previews.extend(preview);
+                    respond.send(true).unwrap();
+                }
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                ChatEvent::Done => break,
+                _ => {}
+            }
+        }
+        agent.await.unwrap();
+        let first = log.lock().unwrap()[0].json();
+        let names = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        (approvals, previews, result.unwrap(), names)
+    }
+
+    /// A commit always asks, in every mode but Allow all (not even Auto in workspace, nor the
+    /// "run all tools" setting), and Read only doesn't offer it at all.
+    #[tokio::test]
+    async fn a_commit_asks_in_every_mode_but_allow_all() {
+        use crate::approval::ApprovalMode;
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-commit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        // Each case starts from a changed file, so the commit has something to record.
+        let reset = |dir: &std::path::Path| {
+            std::fs::write(dir.join("a.txt"), format!("{}\n", Uuid::new_v4())).unwrap();
+        };
+        for (mode, auto) in [
+            (ApprovalMode::Default, false),
+            (ApprovalMode::AutoWorkspace, false),
+            (ApprovalMode::Default, true),
+        ] {
+            reset(&dir);
+            let (approvals, previews, result, names) = commit_turn(&dir, mode, auto).await;
+            assert!(names.contains(&"git_commit".to_owned()), "{names:?}");
+            assert!(!result.is_error, "{mode:?}: {}", result.content);
+            assert_eq!(approvals, 1, "{mode:?} auto={auto} did not ask");
+            assert!(previews[0].contains("Agent commit"), "{}", previews[0]);
+            assert!(previews[0].contains(" M a.txt"), "{}", previews[0]);
+        }
+
+        // Allow all runs it without asking.
+        reset(&dir);
+        let (approvals, _, result, _) = commit_turn(&dir, ApprovalMode::AllowAll, false).await;
+        assert_eq!(approvals, 0);
+        assert!(
+            result.content.starts_with("Committed "),
+            "{}",
+            result.content
+        );
+
+        // Read only doesn't offer the tool, so the call fails and nothing is committed. (The
+        // agent still asks before an unoffered call, as it does for any tool; a Run answer
+        // can't commit, because the call is refused.)
+        reset(&dir);
+        let (_, _, result, names) = commit_turn(&dir, ApprovalMode::ReadOnly, false).await;
+        assert!(!names.contains(&"git_commit".to_owned()), "{names:?}");
+        assert!(result.is_error, "{}", result.content);
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let subjects = String::from_utf8_lossy(&log.stdout).into_owned();
+        // Four commits from the turns above, then the initial one.
+        assert_eq!(subjects.lines().count(), 5, "{subjects}");
+        assert!(subjects.ends_with("init\n"), "{subjects}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

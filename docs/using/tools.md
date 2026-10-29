@@ -42,6 +42,7 @@ these tools for that chat:
 | `get_info` | The workspace's path, OS, shell, git branch and top-level contents, or a file's or folder's details | No |
 | `git_status` | The repository's status: the branch, and the changed, staged and untracked files | No |
 | `git_diff` | The repository's diff: unstaged changes, or staged ones with `staged`; optionally one `path` or against a `base` branch, tag or commit | No |
+| `git_commit` | Commit the folder's changes, or only the `paths` given, as one local commit. Off unless turned on (see [Commits](#commits)) | Yes, every time |
 | `write_file` | Create or overwrite a file | Yes |
 | `edit_file` | Replace exact text in a file | Yes |
 | `exec_shell_command` | Run a command in the folder (`sh`, or `cmd` on Windows); 120 s by default, at most 600 s | Yes |
@@ -53,6 +54,34 @@ are refused. Searches skip files ignored by `.gitignore`.
 is on. A repository's own config can't make them run programs: its fsmonitor hook, external diff
 drivers, textconv filters and clean, smudge and process filters are switched off, submodules are
 left out, and repository hooks never run.
+
+### Commits
+
+`git_commit` records the folder's changes as one commit in its git repository, with a message the
+model writes. It is off by default: turn it on under **Settings → Built-in Tools** (**Commit
+(git_commit)**, which needs the workspace tools on) or per chat in the tools menu, where it sits
+with the other workspace tools. In **Read only** mode it isn't offered.
+
+- **Approval.** Every commit asks, even in **Auto in workspace** mode and with **Run all tools
+  without asking** on. The prompt shows the message, the files that would be committed and the
+  diff summary. **Always allow** isn't offered for commits. Only **Allow all** runs one without
+  asking.
+- **What is committed.** Without `paths`, every change in the folder, including new files and
+  deletions. With `paths`, only those files (relative to the folder; a path outside it is
+  refused). Files you staged yourself elsewhere stay staged, so they don't end up in the commit.
+- **What never happens.** Nothing is pushed, and commits are never amended. Git hooks don't run,
+  so a `pre-commit` script in the repository doesn't. Commits aren't signed unless **Allow signed
+  commits** is on in Settings, and then only where the repository's git config asks for signing.
+- **Identity.** Git needs a name and an email for the commit. If they aren't set, the tool says
+  how: `git config user.name "Your Name"` and `git config user.email you@example.com`.
+- **Limits.** Files with a git filter driver (such as Git LFS) are committed as they are on disk,
+  because the app doesn't run the repository's filters. Subagents can't commit.
+
+**Commit…** in the **Changed files** window, or **Commit changes…** in the command palette, opens
+a dialog for you to commit by hand: a message, the folder's changed files with a checkbox each
+(all checked to start), and a **Commit** button. Clicking **Commit** is your approval, so the
+dialog works in Read only mode too. It waits while a reply is running in the chat. It needs the
+folder to be a git repository.
 
 Hover over the folder name to see the full path; click it to choose another folder, or click
 **×** to stop using it.
@@ -80,7 +109,8 @@ the same for the latest turn. Both can be turned off in
 chat** in the command palette, opens a read-only window listing every file the current chat's
 edits changed. Each file has a collapsible section with the number of lines added and removed,
 and each edit to it shows its diff, marked **Undone** where it was undone. It follows the chat
-you have open, and it has no undo buttons: use **Undo file edits** for that.
+you have open, and it has no undo buttons: use **Undo file edits** for that. Its **Commit…**
+button opens the [Commit dialog](#commits) for the folder's changes.
 
 ### Reviewing changes
 
@@ -112,7 +142,7 @@ switches apply to the current chat from the next message. Defaults for new chats
 [MCP Servers](../settings/mcp-servers.html).
 
 Under **Chat features**, the same menu switches **Context compaction**, **Project
-instructions**, **Undo for file edits**, **Hooks** and **Memory** for the chat (defaults in
+instructions**, **Undo for file edits**, **Hooks**, **Branches** and **Memory** for the chat (defaults in
 [Context & files](../settings/context.html) and [Skills & hooks](../settings/skills-and-hooks.html)),
 and **Compact now** summarises the chat's older messages straight away. Memory switched off makes
 the chat [incognito](memory.html#incognito-chats).
@@ -152,7 +182,7 @@ each mode, which sets the current chat's mode (or the next chat's, before a chat
 | Mode | What happens |
 |---|---|
 | **Default permissions** (default) | Calls ask as described above, unless the setting below or "Always allow" says otherwise. |
-| **Auto in workspace** | `write_file`, `edit_file` and commands in the Docker sandbox run without asking; commands on this computer, MCP tools, web fetch and `delegate` still ask. |
+| **Auto in workspace** | `write_file`, `edit_file` and commands in the Docker sandbox run without asking; commands on this computer, commits (`git_commit`), MCP tools, web fetch and `delegate` still ask. |
 | **Allow all** | Every tool call runs without asking, as with the setting below but for this chat only. |
 | **Read only** | The workspace tools that write files or run commands are off (also for subagents); other tools ask as by default. |
 | **Plan** | Read only, plus a plan: the model investigates with the read-only tools and replies with a numbered plan. Under the reply, **Approve plan** switches the chat to the mode set in [Settings → General](../settings/general.html#plan-mode) (Default permissions unless changed) and sends the approval message; **Keep planning** leaves the chat as it is. Plan is listed only while Plan mode is on in Settings; with it off, a chat set to Plan is read only. |

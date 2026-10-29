@@ -337,6 +337,14 @@ pub struct BuiltinToolSettings {
     pub fetch_private_networks: bool,
     /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
     pub workspace: bool,
+    /// Let the model commit a chat's workspace changes to its git repository, after approval.
+    /// Off by default; it is also a per-chat switch.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub git_commit: bool,
+    /// Let `git_commit` sign commits when the repository's git config asks for signing (gpg
+    /// may then prompt, and a failed signature fails the commit). Off: commits are never signed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub allow_signing: bool,
     /// Search the web through the service in `search`.
     pub web_search: bool,
     pub search: WebSearchSettings,
@@ -351,6 +359,8 @@ impl Default for BuiltinToolSettings {
             fetch: true,
             fetch_private_networks: false,
             workspace: true,
+            git_commit: false,
+            allow_signing: false,
             web_search: true,
             search: WebSearchSettings::default(),
         }
@@ -700,7 +710,8 @@ impl Default for FileEditSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct HtmlPreviewSettings {
-    /// Show web pages live in the panel (where the platform has a web view).
+    /// Show web pages live: in the panel (a web view on macOS and Windows) or in their own
+    /// window (Linux, with WebKitGTK).
     pub enabled: bool,
     /// Let the page run its scripts.
     pub scripts: bool,
@@ -1013,6 +1024,37 @@ pub struct GeneralSettings {
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
+    /// Voice input (dictation into the message box) and reading replies aloud (see `voice`).
+    #[serde(default)]
+    pub voice: crate::voice::VoiceSettings,
+    /// Regenerating and editing keep the replaced version as a branch (see `branches`).
+    #[serde(default)]
+    pub branching: crate::branches::BranchSettings,
+    /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
+    #[serde(default)]
+    pub save_as: SaveAsSettings,
+}
+
+/// Which file types "Save as…" offers for replies and artifacts (Settings → General).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SaveAsSettings {
+    /// Word documents (.docx).
+    pub docx: bool,
+    /// PDF files.
+    pub pdf: bool,
+    /// Excel workbooks (.xlsx), for replies with a table and CSV or TSV artifacts.
+    pub xlsx: bool,
+}
+
+impl Default for SaveAsSettings {
+    fn default() -> Self {
+        Self {
+            docx: true,
+            pdf: true,
+            xlsx: true,
+        }
+    }
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -1051,9 +1093,12 @@ impl Default for GeneralSettings {
             exec: Default::default(),
             hooks: Default::default(),
             schedules: Default::default(),
+            save_as: Default::default(),
             projects: Default::default(),
             memory: Default::default(),
             plan: Default::default(),
+            voice: Default::default(),
+            branching: Default::default(),
         }
     }
 }
@@ -1363,6 +1408,9 @@ impl Settings {
             url.to_owned()
         };
         self.general.plan.normalized();
+        let providers = &self.providers;
+        self.general.voice.normalize(providers);
+        self.general.branching.normalized();
         self.general.memory.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
@@ -2064,6 +2112,17 @@ mod tests {
     }
 
     #[test]
+    fn branching_settings_load_from_older_files_and_clamp() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.branching, crate::branches::BranchSettings::default());
+        assert!(s.branching.enabled);
+        let mut settings = Settings::default();
+        settings.general.branching.max_per_message = 0;
+        settings.normalize();
+        assert_eq!(settings.general.branching.max_per_message, 1);
+    }
+
+    #[test]
     fn plan_settings_load_from_older_files_and_normalize() {
         let s: GeneralSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.plan, crate::plan::PlanSettings::default());
@@ -2114,6 +2173,30 @@ mod tests {
         s.general.remote.port = 0;
         s.normalize();
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn git_commit_settings_default_off_and_load_from_older_files() {
+        // Settings written before commits existed load with both switches off.
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"builtin_tools": {"workspace": true}}}"#).unwrap();
+        assert!(!s.general.builtin_tools.git_commit);
+        assert!(!s.general.builtin_tools.allow_signing);
+        assert!(s.general.builtin_tools.workspace);
+        // Off values aren't written, so an untouched file keeps its shape.
+        let json = serde_json::to_string(&BuiltinToolSettings::default()).unwrap();
+        assert!(
+            !json.contains("git_commit") && !json.contains("allow_signing"),
+            "{json}"
+        );
+        let on = BuiltinToolSettings {
+            git_commit: true,
+            allow_signing: true,
+            ..Default::default()
+        };
+        let back: BuiltinToolSettings =
+            serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert_eq!(back, on);
     }
 
     #[test]
