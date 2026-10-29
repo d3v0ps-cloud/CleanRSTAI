@@ -31,11 +31,11 @@ link-local addresses, such as cloud metadata endpoints, also after a redirect.
 
 | Setting | Default | Description |
 |---|---|---|
-| **Service** | DuckDuckGo | **DuckDuckGo** (its HTML results page; no account or key, but it may ask for a human check after many searches), **SearXNG** (your own or a public instance), **Brave Search API** or **Tavily** (both need an API key). |
+| **Service** | DuckDuckGo | **DuckDuckGo** (its HTML results page; no account or key, but it may ask for a human check after many searches), **SearXNG** (your own or a public instance), **Brave Search API**, **Tavily** or **Kagi Search API** (these three need an API key). |
 | **Instance** | (empty) | SearXNG only: the instance's address, such as `https://searx.example.org` or `http://localhost:8888`. The instance must allow JSON results: add `json` to `search.formats` in its `settings.yml`. |
-| **API key** | (empty) | Brave and Tavily only. Kept in the system keychain when **Store API keys and secrets in the system keychain** is on ([General](general.html#secrets)). |
+| **API key** | (empty) | Brave, Tavily and Kagi only. Kept in the system keychain when **Store API keys and secrets in the system keychain** is on ([General](general.html#secrets)). |
 | **Results** | 5 per search | 1–20. The model may ask for more in a call, up to 20. |
-| **Safe search** | on | Asks the service to filter adult results (Tavily has no such option). |
+| **Safe search** | on | Asks the service to filter adult results (Tavily and Kagi have no such option). |
 | **Ask before each search** | on | The query leaves your computer and can contain parts of the chat. Subagents and auto-approved calls never ask. |
 | **Subagents may search** | on | When subagents may use the built-in tools ([Subagents](subagents.html)). |
 

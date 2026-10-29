@@ -68,8 +68,8 @@ too, as an installer and a portable `.exe`.
     *Let web fetch reach this computer and private networks* is on.
   - **Web search**: searches the web and lists the results (title, address, snippet) for the
     model to read with web fetch. DuckDuckGo works without an account; a SearXNG instance
-    (your own, even on localhost), the Brave Search API or Tavily can be chosen instead, with
-    the result count, safe search and whether to ask before each search.
+    (your own, even on localhost), the Brave Search API, Tavily or the Kagi Search API can be
+    chosen instead, with the result count, safe search and whether to ask before each search.
 
   Time, calculator and task list run locally without asking. Web fetch and web search reach the
   internet, so they ask for approval like MCP tools do ("Always allow this tool" skips that for

@@ -322,7 +322,8 @@ in them follows the same rule:
 
 - [x] A built-in `web_search` tool with a choice of backend (DuckDuckGo without a key, SearXNG,
   Brave, Tavily), with the API key in the keychain
-- [ ] More backends: Kagi, and the provider's own search when it has one
+- [x] Kagi Search API backend
+- [ ] The provider's own search when it has one
 - [x] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
   subagents may use it
 - [x] Per chat: on/off in the tools menu, like the other built-in tools
