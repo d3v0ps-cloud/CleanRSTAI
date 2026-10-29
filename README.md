@@ -138,7 +138,8 @@ too, as an installer and a portable `.exe`.
   chats and recents, a full-page searchable settings screen and a ⌘K command palette. Fonts
   are bundled (SIL OFL, see `assets/fonts`).
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
-  edit and resend a message, regenerate a reply, or stop a generation.
+  edit and resend a message, regenerate a reply, fork a chat from any message into a new chat,
+  or stop a generation.
 - **Markdown rendering** with syntax-highlighted code blocks, tables and images. ```` ```mermaid ````
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
@@ -308,10 +309,11 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
+| Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
+| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
 

@@ -22,7 +22,7 @@ use crate::remote::{
 };
 use crate::subagent::Delegation;
 use crate::tools::{self, ToolOverrides, ToolSelection};
-use crate::types::{ChatMessage, Conversation, Role};
+use crate::types::{ChatMessage, Conversation, Role, fork_messages};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
@@ -51,6 +51,8 @@ pub(crate) enum Action {
     Copy(String),
     Regenerate(Uuid),
     EditFrom(Uuid, usize),
+    /// Copy the chat up to this message into a new chat: chat, message index.
+    ForkFrom(Uuid, usize),
     ViewImage(String, egui::load::Bytes, String),
     /// Save a drawing from a reply as an SVG file.
     SaveSvg(Vec<u8>),
@@ -986,6 +988,33 @@ impl ChatApp {
         Ok(())
     }
 
+    /// Copy chat `id` up to message `idx` into a new chat, which becomes the current one.
+    fn fork_chat(&mut self, id: Uuid, idx: usize) -> Result<Uuid, String> {
+        if self.runs.contains_key(&id) {
+            return Err("Wait for the reply to finish before forking this chat.".into());
+        }
+        let orig = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("This chat no longer exists.")?;
+        if idx >= orig.messages.len() {
+            return Err("That message no longer exists.".into());
+        }
+        let mut forked = Conversation::new();
+        forked.title = format!("{} (fork)", orig.title);
+        forked.messages = fork_messages(&orig.messages, idx);
+        forked.workspace = orig.workspace.clone();
+        forked.tool_overrides = orig.tool_overrides.clone();
+        forked.model_options = orig.model_options.clone();
+        forked.permissions = orig.permissions.clone();
+        forked.save();
+        let new_id = forked.id;
+        self.conversations.insert(0, forked);
+        self.current = Some(new_id);
+        Ok(new_id)
+    }
+
     /// Undo the file edits of the turn holding message `idx`.
     fn undo_turn(&mut self, id: Uuid, idx: usize) -> Result<String, String> {
         if self.runs.contains_key(&id) {
@@ -1855,6 +1884,7 @@ impl ChatApp {
                 "Chat",
                 Command::UndoLastEdits,
             ),
+            Entry::new(icon::FLOW, "Fork this chat", "Chat", Command::ForkChat),
             Entry::new(
                 icon::SIDEBAR,
                 "Toggle sidebar",
@@ -2021,6 +2051,22 @@ impl ChatApp {
                     && let Err(e) = self.compact_now(id, ctx)
                 {
                     self.notice = Some(e);
+                }
+            }
+            Command::ForkChat => {
+                if let Some(id) = self.current {
+                    let last = self
+                        .conversations
+                        .iter()
+                        .find(|c| c.id == id)
+                        .and_then(|c| c.messages.len().checked_sub(1));
+                    self.notice = Some(match last {
+                        Some(i) => match self.fork_chat(id, i) {
+                            Ok(_) => "Forked into a new chat".into(),
+                            Err(e) => e,
+                        },
+                        None => "This chat has no messages.".into(),
+                    });
                 }
             }
             Command::UndoLastEdits => {
@@ -3043,6 +3089,12 @@ impl ChatApp {
                     if let Err(e) = crate::artifacts::open_in_browser(&a) {
                         self.notice = Some(format!("Couldn't open it in the browser: {e}"));
                     }
+                }
+                Action::ForkFrom(conv, idx) => {
+                    self.notice = Some(match self.fork_chat(conv, idx) {
+                        Ok(_) => "Forked into a new chat".into(),
+                        Err(e) => e,
+                    });
                 }
                 Action::EditFrom(conv, idx) => {
                     if self.runs.contains_key(&conv) {

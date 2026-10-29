@@ -171,8 +171,15 @@ their context size, set **Context size** there, or compaction only happens when 
 
 Each message has small action icons:
 
-- Your messages: **Edit and resend**, **Copy**.
-- Replies: **Copy**, and **Retry** to generate the reply again.
+- Your messages: **Edit and resend**, **Copy**, and **Fork from here**.
+- Replies: **Copy**, **Retry** to generate the reply again (the latest reply only), and
+  **Fork from here**.
+
+**Fork from here** copies the chat up to that message into a new chat, titled with
+"(fork)" after the original title. The new chat keeps the original's workspace folder, tool
+switches, model options and permissions, and the original is left as it was. The workspace
+folder is shared, not copied, so file edits made in either chat change the same files. Forking
+is not available while a reply is being generated in that chat.
 
 ## Replies
 
@@ -255,8 +262,8 @@ once, use **Export conversations…** in [General](../settings/general.html#expo
 ## Command palette
 
 **⌘/Ctrl + K** opens a searchable list of commands: new chat, attach files, export this chat,
-compact this chat, undo the last turn's file edits, toggle the sidebar, change theme, open each
-settings page, export and import, check for updates, switch provider or model, and open any
-chat.
+compact this chat, undo the last turn's file edits, fork this chat, share this chat as HTML,
+toggle the sidebar, change theme, open each settings page, export and import, check for
+updates, switch provider or model, and open any chat.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.html) for the rest.

@@ -145,6 +145,23 @@ pub fn results_after(
         .collect()
 }
 
+/// The messages a fork up to message `idx` keeps: everything through `idx`, and for an
+/// assistant message with tool calls, the tool results that directly follow it, so the
+/// fork never ends on a call without its results. Empty if `idx` is out of range.
+pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
+    let Some(msg) = messages.get(idx) else {
+        return Vec::new();
+    };
+    let mut end = idx + 1;
+    if msg.role == Role::Assistant && !msg.tool_calls.is_empty() {
+        end += messages[end..]
+            .iter()
+            .take_while(|m| m.role == Role::Tool)
+            .count();
+    }
+    messages[..end].to_vec()
+}
+
 impl ChatMessage {
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {
@@ -320,5 +337,48 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn fork_at_a_user_message_keeps_up_to_it() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "one"),
+            ChatMessage::new(Role::Assistant, "two"),
+            ChatMessage::new(Role::User, "three"),
+            ChatMessage::new(Role::Assistant, "four"),
+        ];
+        let forked = fork_messages(&messages, 2);
+        assert_eq!(forked, messages[..=2]);
+    }
+
+    #[test]
+    fn fork_at_a_tool_call_keeps_its_results() {
+        let mut call = ChatMessage::new(Role::Assistant, "");
+        call.tool_calls.push(ToolCall {
+            id: "c1".into(),
+            name: "time".into(),
+            arguments: "{}".into(),
+        });
+        let mut result = ChatMessage::new(Role::Tool, "12:00");
+        result.tool_call_id = Some("c1".into());
+        let messages = vec![
+            ChatMessage::new(Role::User, "what time is it?"),
+            call.clone(),
+            result.clone(),
+            ChatMessage::new(Role::Assistant, "It is noon."),
+            ChatMessage::new(Role::User, "thanks"),
+        ];
+        let forked = fork_messages(&messages, 1);
+        assert_eq!(forked, vec![messages[0].clone(), call, result]);
+    }
+
+    #[test]
+    fn fork_at_the_last_message_keeps_everything() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "hi"),
+            ChatMessage::new(Role::Assistant, "hello"),
+        ];
+        assert_eq!(fork_messages(&messages, 1), messages);
+        assert!(fork_messages(&messages, 2).is_empty());
     }
 }

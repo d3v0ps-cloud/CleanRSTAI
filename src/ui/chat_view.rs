@@ -246,11 +246,16 @@ fn user_message(
         let items: &[(&str, &str)] = if running {
             &[(icon::COPY, "Copy")]
         } else {
-            &[(icon::EDIT, "Edit and resend"), (icon::COPY, "Copy")]
+            &[
+                (icon::EDIT, "Edit and resend"),
+                (icon::COPY, "Copy"),
+                (icon::FLOW, "Fork from here"),
+            ]
         };
         match quiet_icons(ui, items).map(|i| items[i].1) {
             Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
             Some("Edit and resend") => actions.push(Action::EditFrom(conv, idx)),
+            Some("Fork from here") => actions.push(Action::ForkFrom(conv, idx)),
             _ => {}
         }
     });
@@ -372,9 +377,13 @@ fn assistant_body(
             if cx.last {
                 items.push((icon::REGENERATE, "Retry"));
             }
+            if cx.run.is_none() {
+                items.push((icon::FLOW, "Fork from here"));
+            }
             match quiet_icons(ui, &items).map(|i| items[i].1) {
                 Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
                 Some("Retry") => actions.push(Action::Regenerate(cx.conv)),
+                Some("Fork from here") => actions.push(Action::ForkFrom(cx.conv, cx.idx)),
                 _ => {}
             }
             if let Some(n) = cx.undo {
