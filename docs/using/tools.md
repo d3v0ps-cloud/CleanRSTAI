@@ -112,7 +112,7 @@ switches apply to the current chat from the next message. Defaults for new chats
 [MCP Servers](../settings/mcp-servers.html).
 
 Under **Chat features**, the same menu switches **Context compaction**, **Project
-instructions**, **Undo for file edits** and **Hooks** for the chat (defaults in
+instructions**, **Undo for file edits**, **Hooks** and **Branches** for the chat (defaults in
 [Context & files](../settings/context.html) and [Skills & hooks](../settings/skills-and-hooks.html)),
 and **Compact now** summarises the chat's older messages straight away.
 

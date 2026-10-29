@@ -185,14 +185,33 @@ Each message has small action icons:
 
 - Your messages: **Edit and resend**, **Copy**, and **Fork from here**.
 - Replies: **Copy**, **Retry** to generate the reply again (the latest reply only), and
-  **Fork from here**.
+  **Fork from here**. A reply with other versions shows the **‹ k/N ›** arrows.
 
 **Fork from here** copies the chat up to that message into a new chat, titled with
 "(fork)" after the original title. The new chat keeps the original's workspace folder, tool
 switches, model options and permissions, and the original is left as it was. The workspace
 folder is shared, not copied, so file edits made in either chat change the same files. The
 file edits copied into the fork can't be undone from the fork, only from the original chat.
-Forking is not available while a reply is being generated in that chat.
+Forking is not available while a reply is being generated in that chat. Only the version
+of the chat that is shown is copied (see [Branches](#branches)).
+
+### Branches
+
+**Retry** and **Edit and resend** keep what they replace as a branch instead of losing it.
+A message with other versions shows arrows, **‹ k/N ›**: N is the number of versions and k
+the one shown. The arrows switch to the previous or next version, and the replies after that
+message then come from the version you picked. Editing keeps the turn from the edited message
+on (its reply and what followed) as a version; the edit takes effect when you send it, so the
+chat still shows the turn until then. Stopping a retry puts back the reply it was replacing.
+
+Only the version shown is sent to the model, exported, compacted, forked and shown in the
+browser client. Switching doesn't change files, and **Undo file edit** only undoes the edits
+of the version shown. Arrows are unavailable while a reply runs or waits in the chat.
+
+Settings → General → Branches keeps up to **Versions kept per message** (default 10) older
+versions per message and drops the oldest beyond that. Turn it off there, or with **Branches**
+under **Chat features** in the tools menu for one chat: off, Retry and Edit replace the
+version as they always did (versions already kept stay switchable).
 
 ## Replies
 

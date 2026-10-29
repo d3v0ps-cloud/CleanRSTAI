@@ -162,6 +162,16 @@ on approval. An empty message restores the default.
 **Plan instructions** is the system prompt section a Plan chat gets, in place of the default text;
 an empty field restores it, and **Reset** does the same.
 
+## Branches
+
+**Keep the version a reply replaces** (default on): retrying a reply or editing a message keeps
+the version it replaces, and arrows switch between the versions. See
+[Editing and retrying](../using/chats.html#branches). Off, the replaced version is dropped as
+before; versions already kept stay switchable. A chat's **Branches** switch overrides this.
+
+**Versions kept per message** is how many older versions of one message are kept: 1 to 50,
+default 10. The oldest is dropped beyond that.
+
 ## Max tool rounds
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.

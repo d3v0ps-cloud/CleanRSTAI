@@ -28,7 +28,9 @@ tool calls and when a reply is done, and the command-line mode (`cleanrstai exec
 settings on the Background tab) in **v0.9.2-dev.4**, and plan mode (a Plan permission with
 **Approve plan** and **Keep planning** under a finished plan, and its settings on the General tab)
 and the provider's own web search (Anthropic, OpenAI Responses and OpenRouter, chosen under
-Built-in Tools) in **v0.9.2-dev.5**.
+Built-in Tools), and conversation branches (regenerating and editing keep the version
+they replace, with arrows to switch between versions, and the Branches settings on the
+General tab) in **v0.9.2-dev.5**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -339,10 +341,10 @@ in them follows the same rule:
 
 ## 22. Conversation branching
 
-- [ ] Keep the old reply when regenerating and the old turns when editing a message, as
+- [x] Keep the old reply when regenerating and the old turns when editing a message, as
   branches, with ‹ 1/3 › arrows to switch between them
 - [x] Fork a chat from any message into a new chat
-- [ ] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
+- [x] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
   branches kept per message
 
 ## 23. Model options

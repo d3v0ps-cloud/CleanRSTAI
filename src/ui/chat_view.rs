@@ -13,6 +13,7 @@ use super::widgets::{code_block, diff_block, diff_stat, quiet_icons};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::artifacts::Artifact;
+use crate::branches;
 use crate::config::ReasoningDisplay;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
@@ -74,6 +75,8 @@ pub fn show(
 ) -> Vec<Action> {
     let mut actions = Vec::new();
     let conv = v.conv;
+    // Versions are switched only while no reply runs or waits in this chat.
+    let switchable = v.run.is_none() && v.queued.is_none();
     let last_assistant = conv
         .messages
         .iter()
@@ -141,9 +144,17 @@ pub fn show(
                             continue;
                         }
                         Role::Tool => continue,
-                        Role::User => {
-                            user_message(ui, images, conv.id, i, msg, v.run.is_some(), &mut actions)
-                        }
+                        Role::User => user_message(
+                            ui,
+                            images,
+                            conv.id,
+                            i,
+                            msg,
+                            v.run.is_some(),
+                            switchable,
+                            branches::count(&conv.messages, i),
+                            &mut actions,
+                        ),
                         Role::Assistant => {
                             let streaming = v.run.is_some() && i + 1 == conv.messages.len();
                             assistant_message(
@@ -165,6 +176,8 @@ pub fn show(
                                     open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                     undo: undo_at.get(&i).copied(),
+                                    versions: branches::count(&conv.messages, i),
+                                    switchable,
                                 },
                                 msg,
                                 &mut actions,
@@ -206,6 +219,7 @@ pub fn show(
     actions
 }
 
+#[allow(clippy::too_many_arguments)]
 fn user_message(
     ui: &mut egui::Ui,
     images: &mut ImageCache,
@@ -213,6 +227,8 @@ fn user_message(
     idx: usize,
     msg: &ChatMessage,
     running: bool,
+    switchable: bool,
+    versions: (usize, usize),
     actions: &mut Vec<Action>,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
@@ -282,6 +298,41 @@ fn user_message(
             Some("Fork from here") => actions.push(Action::ForkFrom(conv, idx)),
             _ => {}
         }
+        branch_arrows(ui, conv, idx, versions, switchable, actions);
+    });
+}
+
+/// The `‹ k/N ›` arrows under a message that has other versions (see `branches`). They switch
+/// the version the chat shows from here on; disabled while a reply runs.
+fn branch_arrows(
+    ui: &mut egui::Ui,
+    conv: Uuid,
+    idx: usize,
+    versions: (usize, usize),
+    switchable: bool,
+    actions: &mut Vec<Action>,
+) {
+    let (current, total) = versions;
+    if total < 2 {
+        return;
+    }
+    // A horizontal group, so the arrows keep their order inside a right-to-left row.
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(switchable, |ui| {
+            let prev = ui
+                .add_enabled(current > 1, egui::Button::new("‹").small())
+                .on_hover_text("Previous version");
+            if prev.clicked() {
+                actions.push(Action::SwitchBranch(conv, idx, current - 2));
+            }
+            ui.label(RichText::new(format!("{current}/{total}")).small().weak());
+            let next = ui
+                .add_enabled(current < total, egui::Button::new("›").small())
+                .on_hover_text("Next version");
+            if next.clicked() {
+                actions.push(Action::SwitchBranch(conv, idx, current));
+            }
+        });
     });
 }
 
@@ -301,6 +352,10 @@ struct AssistantCtx<'a> {
     last: bool,
     /// The last reply of a turn whose file edits can be undone: how many.
     undo: Option<usize>,
+    /// The message's version (1-based) and how many there are.
+    versions: (usize, usize),
+    /// The message's other versions can be switched to now (no reply runs or waits).
+    switchable: bool,
 }
 
 fn assistant_message(
@@ -414,6 +469,7 @@ fn assistant_body(
                 Some("Fork from here") => actions.push(Action::ForkFrom(cx.conv, cx.idx)),
                 _ => {}
             }
+            branch_arrows(ui, cx.conv, cx.idx, cx.versions, cx.switchable, actions);
             if let Some(n) = cx.undo {
                 let label = if n == 1 {
                     "Undo file edit".to_owned()

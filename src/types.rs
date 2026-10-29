@@ -74,6 +74,19 @@ pub struct ChatMessage {
     /// The provider's own search ran for this reply (even when it cites nothing).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub searched: bool,
+    /// The other versions of the tail that starts at this message (a replaced reply, or an
+    /// edited prompt and what followed it), each a complete tail. Only the first message of a
+    /// tail holds them (see `branches`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<Vec<ChatMessage>>,
+    /// Where this tail is among its versions, in creation order (`alternatives` with this one
+    /// inserted at this index).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub alt_index: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A web page a provider's own search cited.
@@ -166,7 +179,8 @@ pub fn results_after(
 ///
 /// The fork shares the original's workspace folder, so its copied file edits must not be
 /// undoable from the fork: their checkpoints are dropped (`checkpoint` false, `before` None)
-/// while the diff is kept for the tool card.
+/// while the diff is kept for the tool card. Other versions of the tail (branches) are left
+/// out too: a fork starts from the current tail only.
 pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
     let Some(msg) = messages.get(idx) else {
         return Vec::new();
@@ -184,6 +198,8 @@ pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
             edit.checkpoint = false;
             edit.before = None;
         }
+        m.alternatives.clear();
+        m.alt_index = 0;
     }
     kept
 }
@@ -208,6 +224,8 @@ impl ChatMessage {
             native: None,
             sources: Vec::new(),
             searched: false,
+            alternatives: Vec::new(),
+            alt_index: 0,
         }
     }
 
@@ -457,6 +475,21 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_leaves_out_other_versions() {
+        let mut messages = vec![
+            ChatMessage::new(Role::User, "one"),
+            ChatMessage::new(Role::Assistant, "two"),
+        ];
+        messages[1].alternatives = vec![vec![ChatMessage::new(Role::Assistant, "old")]];
+        messages[1].alt_index = 1;
+        let forked = fork_messages(&messages, 1);
+        assert!(forked[1].alternatives.is_empty());
+        assert_eq!(forked[1].alt_index, 0);
+        // The original keeps them.
+        assert_eq!(messages[1].alternatives.len(), 1);
+    }
+
+    #[test]
     fn messages_without_sources_still_load() {
         let m: ChatMessage =
             serde_json::from_str(r#"{"role": "assistant", "content": "hi"}"#).unwrap();
@@ -474,5 +507,20 @@ mod tests {
         // Plain replies stay as small as before.
         let plain = serde_json::to_value(ChatMessage::new(Role::Assistant, "y")).unwrap();
         assert!(plain.get("sources").is_none() && plain.get("searched").is_none());
+    }
+
+    #[test]
+    fn a_chat_from_before_branches_loads_and_saves_without_them() {
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000001","title":"Hi",
+            "created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z",
+            "messages":[{"role":"user","content":"q"},{"role":"assistant","content":"a"}]}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert!(
+            c.messages
+                .iter()
+                .all(|m| m.alternatives.is_empty() && m.alt_index == 0)
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("alternatives") && !json.contains("alt_index"));
     }
 }

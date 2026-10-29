@@ -13,6 +13,7 @@ use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::approval::{AlwaysAllow, Approval, PendingApproval};
 use crate::attach::Attachment;
 use crate::background::{self, Outcome, Queued, RunQueue};
+use crate::branches::{self, BranchSettings, Hold};
 use crate::config::{RemoteTls, Settings, Theme};
 use crate::export;
 use crate::llm;
@@ -69,6 +70,9 @@ pub(crate) enum Action {
     OpenArtifactInBrowser(crate::artifacts::Artifact),
     /// Undo the file edits of the turn holding this message.
     UndoTurn(Uuid, usize),
+    /// Show another version of the message's tail: chat, message index, version index (see
+    /// `branches`).
+    SwitchBranch(Uuid, usize, usize),
     /// Approve the plan a Plan chat's latest reply proposed (see `plan`).
     ApprovePlan(Uuid),
     /// Keep planning: focus the message box.
@@ -104,6 +108,11 @@ pub struct ChatApp {
     /// The "still running" notification was sent in this app run.
     tray_notified: bool,
     errors: HashMap<Uuid, String>,
+    /// Replaced tails waiting for the reply that replaces them (see `branches`), by chat.
+    holds: HashMap<Uuid, Hold>,
+    /// A message being edited: its chat and position. The turn it starts is replaced when the
+    /// edit is sent.
+    editing: Option<(Uuid, usize)>,
     /// First name for the greeting, from the OS account.
     user_name: Option<String>,
     /// Tools and servers the user chose to always allow, per chat, until the app quits.
@@ -377,6 +386,8 @@ impl ChatApp {
             quitting: false,
             tray_notified: false,
             errors: HashMap::new(),
+            holds: HashMap::new(),
+            editing: None,
             user_name: user_first_name(),
             always_allow: HashMap::new(),
             md_cache: CommonMarkCache::default(),
@@ -1065,10 +1076,19 @@ impl ChatApp {
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
+        let edit_at = self.editing.take_if(|(c, _)| *c == id).map(|(_, at)| at);
+        let settings = self.branch_settings(id);
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
+        // An edited prompt replaces the turn from it on: that turn stays as a version.
+        let hold = edit_at
+            .filter(|&at| conv.messages.get(at).is_some_and(|m| m.role == Role::User))
+            .map(|at| branches::divide(&mut conv.messages, at, &settings));
         let mut msg = ChatMessage::new(Role::User, text);
         msg.attachments = attachments;
         conv.messages.push(msg);
+        if let Some(hold) = hold {
+            branches::attach(&mut conv.messages, &hold);
+        }
         conv.auto_title();
         conv.updated_at = chrono::Utc::now();
         conv.save();
@@ -1304,16 +1324,28 @@ impl ChatApp {
     fn stop(&mut self, id: Uuid) {
         let queued = self.queue.remove(id);
         let run = self.runs.remove(&id);
-        let compact_only = match (&run, queued) {
+        let held = self.holds.remove(&id);
+        let compact_only = match (&run, &queued) {
             (Some(run), _) => run.compact_only,
             (None, Some(item)) => item.compact_only,
-            (None, None) => return,
+            (None, None) => false,
         };
+        let started = run.is_some() || queued.is_some();
         if let Some(run) = run {
             run.task.abort();
         }
+        // A stopped regeneration puts back the reply it was replacing, rather than cutting the
+        // chat back to its prompt.
+        if let Some(hold) = held {
+            if let Some(conv) = self.conv_mut(id) {
+                branches::restore(&mut conv.messages, hold);
+                conv.updated_at = chrono::Utc::now();
+                conv.save();
+            }
+            return;
+        }
         // A compaction has no prompt of its own to take back.
-        if compact_only {
+        if !started || compact_only {
             return;
         }
         let Some(conv) = self.conv_mut(id) else {
@@ -1331,10 +1363,30 @@ impl ChatApp {
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
+        let settings = self.branch_settings(id);
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
-        cut_for_regenerate(&mut conv.messages)?;
+        // The replaced reply waits in a hold until the new one arrives (see `handle_chat_event`).
+        if let Some(hold) = branches::prepare_regenerate(&mut conv.messages, &settings)? {
+            self.holds.insert(id, hold);
+        }
+        if self.editing.is_some_and(|(c, _)| c == id) {
+            self.editing = None;
+        }
         self.start_run(id, ctx);
         Ok(())
+    }
+
+    /// Branch settings for a chat: Settings, unless the chat's `feature:branches` switch
+    /// overrides them.
+    fn branch_settings(&self, id: Uuid) -> BranchSettings {
+        let mut settings = self.settings.general.branching.clone();
+        if let Some(conv) = self.conversations.iter().find(|c| c.id == id) {
+            settings.enabled = conv
+                .tool_overrides
+                .get(&ToolOverrides::feature_key(tools::BRANCHES))
+                .unwrap_or(settings.enabled);
+        }
+        settings
     }
 
     /// Answers a tool approval waiting in a chat, and any other waiting call the answer now
@@ -1607,11 +1659,19 @@ impl ChatApp {
         }
         let is_final = matches!(event, ChatEvent::AssistantFinal(_));
         let keep_turns = self.settings.general.file_edits.keep_turns;
-        let Some(conv) = self.conv_mut(id) else {
+        // Disjoint fields, so the held tails can change while the chat is borrowed.
+        let holds = &mut self.holds;
+        let Some(conv) = self.conversations.iter_mut().find(|c| c.id == id) else {
             return;
         };
         match event {
-            ChatEvent::AssistantStart => conv.messages.push(ChatMessage::new(Role::Assistant, "")),
+            ChatEvent::AssistantStart => {
+                conv.messages.push(ChatMessage::new(Role::Assistant, ""));
+                // The first reply of a regeneration takes the versions it is replacing.
+                if let Some(hold) = holds.get(&id) {
+                    branches::reply_started(&mut conv.messages, hold);
+                }
+            }
             ChatEvent::ContentDelta(s) => {
                 if let Some(m) = conv
                     .messages
@@ -1636,7 +1696,12 @@ impl ChatApp {
                     .last_mut()
                     .filter(|m| m.role == Role::Assistant)
                 {
+                    // The message's versions stay with it.
+                    let (alternatives, alt_index) =
+                        (std::mem::take(&mut m.alternatives), m.alt_index);
                     *m = *msg;
+                    m.alternatives = alternatives;
+                    m.alt_index = alt_index;
                 }
             }
             ChatEvent::ToolResult(msg) => conv.messages.push(*msg),
@@ -1652,9 +1717,16 @@ impl ChatApp {
                 // The summary request counts in the chat's totals, but not as its context.
                 marker.stats = Some(*stats);
                 conv.messages.insert(at, marker);
+                // A held tail moves up with the messages after the marker.
+                if let Some(hold) = holds.get_mut(&id) {
+                    branches::marker_inserted(hold, at);
+                }
                 conv.save();
             }
             ChatEvent::Done => {
+                if let Some(hold) = holds.remove(&id) {
+                    branches::settle(&mut conv.messages, hold);
+                }
                 if conv.messages.last().is_some_and(|m| {
                     m.role == Role::Assistant && m.content.is_empty() && m.tool_calls.is_empty()
                 }) {
@@ -1729,6 +1801,11 @@ impl ChatApp {
             .collect();
         for id in stuck {
             self.runs.remove(&id);
+            if let Some(hold) = self.holds.remove(&id)
+                && let Some(conv) = self.conv_mut(id)
+            {
+                branches::settle(&mut conv.messages, hold);
+            }
             self.errors
                 .entry(id)
                 .or_insert_with(|| "The reply stopped unexpectedly.".into());
@@ -3838,6 +3915,20 @@ impl ChatApp {
                         Err(e) => e,
                     });
                 }
+                Action::SwitchBranch(conv, at, to) => {
+                    if self.busy(conv) {
+                        continue;
+                    }
+                    if let Some(c) = self.conv_mut(conv)
+                        && branches::switch(&mut c.messages, at, to)
+                    {
+                        c.updated_at = chrono::Utc::now();
+                        c.save();
+                    }
+                    if self.editing.is_some_and(|(c, _)| c == conv) {
+                        self.editing = None;
+                    }
+                }
                 Action::EditFrom(conv, idx) => {
                     if self.busy(conv) {
                         continue;
@@ -3845,10 +3936,11 @@ impl ChatApp {
                     if let Some(c) = self.conv_mut(conv)
                         && idx < c.messages.len()
                     {
+                        // The turn is replaced when the edit is sent, so until then the chat
+                        // still shows it.
                         let text = c.messages[idx].content.clone();
                         let attachments = c.messages[idx].attachments.clone();
-                        c.messages.truncate(idx);
-                        c.save();
+                        self.editing = Some((conv, idx));
                         self.input = text;
                         self.pending_attachments = attachments;
                         self.errors.remove(&conv);
@@ -4193,8 +4285,6 @@ fn throttle(sent: &mut HashMap<Uuid, Instant>, id: Uuid, now: Instant) -> Option
     None
 }
 
-/// Drops the reply being regenerated and anything after the last user message, which is kept
-/// for the new reply. Nothing changes when there is no user message.
 /// Where a compaction marker goes so that `kept` messages (not counting cancelled prompts or
 /// earlier markers, which the agent never saw) follow it.
 fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
@@ -4208,16 +4298,6 @@ fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
         }
     }
     if seen == kept { 0 } else { messages.len() }
-}
-
-fn cut_for_regenerate(messages: &mut Vec<ChatMessage>) -> Result<(), String> {
-    let last_user = messages
-        .iter()
-        .rposition(|m| m.role == Role::User)
-        .ok_or("There is nothing to regenerate")?;
-    messages.truncate(last_user + 1);
-    messages[last_user].cancelled = false;
-    Ok(())
 }
 
 /// The model name a browser sent, trimmed. Names are limited to 200 characters.
@@ -4953,7 +5033,11 @@ mod remote_tests {
     #[test]
     fn regenerate_keeps_the_chat_when_there_is_no_user_message() {
         let mut messages = vec![ChatMessage::new(Role::Assistant, "hi")];
-        assert!(cut_for_regenerate(&mut messages).is_err());
+        let off = BranchSettings {
+            enabled: false,
+            ..BranchSettings::default()
+        };
+        assert!(branches::prepare_regenerate(&mut messages, &off).is_err());
         assert_eq!(messages.len(), 1);
     }
 
@@ -4967,7 +5051,11 @@ mod remote_tests {
             ChatMessage::new(Role::Tool, "result"),
         ];
         messages[2].cancelled = true;
-        cut_for_regenerate(&mut messages).unwrap();
+        let off = BranchSettings {
+            enabled: false,
+            ..BranchSettings::default()
+        };
+        branches::prepare_regenerate(&mut messages, &off).unwrap();
         let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(contents, ["first", "answer", "second"]);
         assert!(!messages[2].cancelled);
