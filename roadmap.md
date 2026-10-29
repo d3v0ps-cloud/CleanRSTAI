@@ -18,7 +18,8 @@ images and Dockerfiles, a custom network with host, protocol and port rules, and
 containers) in **v0.9.0**, and context compaction, project instructions, diffs and undo for
 file edits, web search, the live web page preview (macOS and Windows), sharing a chat as HTML,
 reasoning and sampling options per provider, model and chat, the Anthropic Messages and OpenAI
-Responses APIs, and per-chat permission modes in **v0.9.1**.
+Responses APIs, and per-chat permission modes in **v0.9.1**, and forking a chat, slash
+commands and reviewing changes in **v0.9.2-dev.1**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
