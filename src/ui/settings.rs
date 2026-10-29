@@ -3240,6 +3240,23 @@ impl SettingsUi {
                         });
                         ui.end_row();
 
+                        ui.label("Save as files");
+                        ui.vertical(|ui| {
+                            ui.checkbox(&mut g.save_as.docx, "Word document (.docx)");
+                            ui.checkbox(&mut g.save_as.pdf, "PDF (.pdf)");
+                            ui.checkbox(&mut g.save_as.xlsx, "Excel workbook (.xlsx)")
+                                .on_hover_text(
+                                    "Offered for replies with a table and for CSV or TSV \
+                                     artifacts",
+                                );
+                            weak_note(
+                                ui,
+                                "The Save as menu on a reply or artifact offers the checked \
+                                 formats.",
+                            );
+                        });
+                        ui.end_row();
+
                         ui.label("Tool calls");
                         ui.checkbox(
                             &mut g.auto_approve_tools,
@@ -3630,6 +3647,10 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Cloudflare Access sign in without the app password",
     ),
     (Tab::General, "General", "Show speed stats"),
+    (Tab::General, "General", "Save as Word document (.docx)"),
+    (Tab::General, "General", "Save as PDF"),
+    (Tab::General, "General", "Save as Excel workbook (.xlsx)"),
+    (Tab::General, "General", "Save reply as file"),
     (Tab::General, "General", "Load web images in replies"),
     (
         Tab::General,
@@ -3908,6 +3929,8 @@ mod tests {
         assert_eq!(search_settings("hooks")[0].0, Tab::Extensions);
         assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
+        assert_eq!(search_settings("save as pdf")[0].0, Tab::General);
+        assert_eq!(search_settings("excel workbook")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
         assert_eq!(search_settings("plan mode")[0].0, Tab::General);
         assert_eq!(search_settings("plan instructions")[0].0, Tab::General);

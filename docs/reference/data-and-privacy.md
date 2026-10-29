@@ -105,6 +105,8 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   ([Cloudflare Tunnel](../using/cloudflare-tunnel.html#privacy)).
   With Cloudflare Access on, the app also fetches the team's public signing keys from
   `https://<team>/cdn-cgi/access/certs`; that request carries no chat data.
+- **Replies and artifacts saved as Word, PDF or Excel files** are written to the place you pick in
+  the save dialog. Building the file happens on this computer; nothing is sent anywhere.
 - **Artifacts you open in your browser** are written to a `CleanRSTAI-artifacts` folder in the
   system's temporary folder and run in the browser, where a page can load anything it links to.
   The app only does this when you click **Open in browser**.

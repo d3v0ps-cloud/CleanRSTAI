@@ -140,6 +140,19 @@ contents in the image address.
 
 Links in a previewed page open in your browser, never in the panel.
 
+## Save as files
+
+Which formats the **Save as…** menu of a [reply or artifact](../using/chats.html#saving-as-files)
+offers. The menu lists only the checked formats that suit the content.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Word document (.docx)** | on | Replies and Markdown, code and CSV artifacts can be saved as Word documents. |
+| **PDF (.pdf)** | on | Replies and Markdown, code and CSV artifacts can be saved as PDF files on A4 pages. |
+| **Excel workbook (.xlsx)** | on | Replies with a table, and CSV and TSV artifacts, can be saved as Excel workbooks: one sheet per table. |
+
+With all three off, no reply or artifact offers **Save as…**.
+
 ## Tool calls
 
 **Run MCP tools and subagents without asking for approval** (default off).

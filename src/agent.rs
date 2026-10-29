@@ -144,6 +144,8 @@ pub enum AppEvent {
         /// Whether the user asked (Detect button) rather than it running alongside a fetch.
         explicit: bool,
     },
+    /// A "Save as…" file was written (its message), or why it wasn't.
+    SavedAs(Result<String, String>),
 }
 
 pub struct AgentRequest {

@@ -1020,6 +1020,31 @@ pub struct GeneralSettings {
     /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
     #[serde(default)]
     pub plan: crate::plan::PlanSettings,
+    /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
+    #[serde(default)]
+    pub save_as: SaveAsSettings,
+}
+
+/// Which file types "Save as…" offers for replies and artifacts (Settings → General).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SaveAsSettings {
+    /// Word documents (.docx).
+    pub docx: bool,
+    /// PDF files.
+    pub pdf: bool,
+    /// Excel workbooks (.xlsx), for replies with a table and CSV or TSV artifacts.
+    pub xlsx: bool,
+}
+
+impl Default for SaveAsSettings {
+    fn default() -> Self {
+        Self {
+            docx: true,
+            pdf: true,
+            xlsx: true,
+        }
+    }
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -1058,6 +1083,7 @@ impl Default for GeneralSettings {
             exec: Default::default(),
             hooks: Default::default(),
             schedules: Default::default(),
+            save_as: Default::default(),
             projects: Default::default(),
             plan: Default::default(),
         }

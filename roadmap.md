@@ -366,7 +366,7 @@ in them follows the same rule:
 - [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
-- [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
+- [x] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
 
 ## 25. Commands, skills and hooks
 
