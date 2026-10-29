@@ -232,7 +232,9 @@ cloudflared with backoff; `sync_remote`
 restarts the server only when `server_settings` (everything but the tunnel) changes. The
 tunnel's hostnames (`TunnelHosts`, shared with the server) are accepted as Host while it runs,
 and only on a loopback connection to such a host is `Cf-Connecting-IP` trusted for the login
-throttle, plus a tunnel-wide limit.
+throttle, plus a tunnel-wide limit. `remote/access.rs` checks Cloudflare Access JWTs (RS256 against
+the team's cached JWKS, from the `Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie)
+for a named tunnel's hostname; `server.rs`'s `access_guard` runs that before the session check.
 
 **Tray** (`tray.rs`, Settings → Background "keep running"): on macOS and Windows a `tray-icon`
 icon (menu bar / system tray) is created from `logic` once the setting is on, and dropped when it

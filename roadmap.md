@@ -230,7 +230,7 @@ Later, beyond the first version:
   with a token for a named tunnel, so the server is reachable from outside the network without
   opening a port on the router; show the public address, and keep the login required. Also
   quick tunnels (`trycloudflare.com`, no account, optional email check)
-- [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
+- [x] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
 
 ## 14. Docker sandbox for tools
 
