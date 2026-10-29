@@ -160,6 +160,7 @@ drop). Subagent tool calls never ask for approval. Progress streams back as
 `SubagentProgress` events.
 
 **Background replies** (`background.rs`): `ChatApp` starts a reply through `start_run_with`, which queues it (`RunQueue`, FIFO) when `background.max_parallel` replies already run or others wait; `logic()` starts queued ones, enforces `background.time_limit_mins` from each `Run::started`, and frees slots of tasks that ended without `Done`. A queued chat counts as busy (`ChatApp::busy`) and stopping it removes it from the queue. `should_notify` decides desktop notifications (`notify-rust`, sent on `spawn_blocking`, never in tests), and the `feature:notify` chat switch can override the setting per chat.
+**Scheduled tasks** (`schedule.rs`, UI in `ui/schedule_settings.rs`): `GeneralSettings.schedules` holds the tasks, with `Schedule` (interval, daily, weekly, local time), `Target` (new chat or a chat) and a last run. `logic()` calls `ChatApp::run_schedules` at most every `schedule::CHECK_EVERY`, which runs `schedule::check` (pure: `step` decides wait, run or skip for each task) and starts each due task through `run_task` and the reply queue (`enqueue_run`, which takes a `Queued.provider`). Run times are saved with the settings; a Settings draft gets them copied by `copy_run_state`.
 
 **MCP** (`mcp/`): stdio and Streamable HTTP transports, OAuth (PKCE, dynamic registration,
 loopback redirect) in `mcp/oauth.rs`, and `McpManager`, which keeps connections in sync with
