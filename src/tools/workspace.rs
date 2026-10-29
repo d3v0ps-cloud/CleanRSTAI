@@ -695,14 +695,23 @@ impl Workspace {
     }
 
     /// `git status` or `git diff` in the workspace. They only read, so they run on this computer
-    /// even when shell commands run in a sandbox. Every call goes through [`crate::git::command`],
-    /// which keeps the repository's own config from running programs.
+    /// even when shell commands run in a sandbox. Every call goes through
+    /// [`crate::git::safe_command`], which keeps the repository's own config from running
+    /// programs (filter drivers included).
     async fn git(&self, function: &str, args: &Value, timeout: Duration) -> Result<ToolOutput> {
-        let mut cmd = crate::git::command(&self.root);
+        let mut cmd = crate::git::safe_command(&self.root)
+            .await
+            .map_err(anyhow::Error::msg)?;
         if function == GIT_STATUS {
-            cmd.args(["status", "--short", "--branch"]);
+            cmd.args(["status", "--short", "--branch", "--ignore-submodules=all"]);
         } else {
-            let mut diff = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv"];
+            let mut diff = vec![
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=all",
+            ];
             if args["staged"].as_bool().unwrap_or(false) {
                 diff.push("--staged");
             }
@@ -1707,6 +1716,42 @@ mod tests {
         assert!(
             !marker.exists(),
             "git_status ran the repository's fsmonitor"
+        );
+    }
+
+    /// A repository's clean, process and smudge filters run on plain `git status` and
+    /// `git diff` (see `git::test_support`). The git tools must not run them. Each check first
+    /// proves plain git runs the filters for that state, so the check can't pass vacuously.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_tools_do_not_run_the_repositorys_filter_drivers() {
+        use crate::git::test_support::{assert_plain_git_runs_filters, dirty, setup_filter_repo};
+        if !git_available() {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let (d, ws) = temp_workspace();
+        let markers = tempdir::Dir::new();
+        let repo = setup_filter_repo(&d.0, &markers.0);
+
+        assert_plain_git_runs_filters(&d.0, &repo);
+        dirty(&d.0, 'c');
+        let status = call(&ws, GIT_STATUS, json!({})).await;
+        assert!(!status.is_error, "{}", status.text);
+        assert!(status.text.contains(" M a.txt"), "{}", status.text);
+        assert!(
+            !repo.any_marker(),
+            "git_status ran a filter driver of the repository"
+        );
+
+        assert_plain_git_runs_filters(&d.0, &repo);
+        dirty(&d.0, 'e');
+        let diff = call(&ws, GIT_DIFF, json!({})).await;
+        assert!(!diff.is_error, "{}", diff.text);
+        assert!(diff.text.contains("+eeeeeeee"), "{}", diff.text);
+        assert!(
+            !repo.any_marker(),
+            "git_diff ran a filter driver of the repository"
         );
     }
 }

@@ -50,7 +50,8 @@ are refused. Searches skip files ignored by `.gitignore`.
 
 `git_status` and `git_diff` only read, so they run on this computer even when the Docker sandbox
 is on. A repository's own config can't make them run programs: its fsmonitor hook, external diff
-drivers and textconv filters are switched off, and repository hooks never run.
+drivers, textconv filters and clean, smudge and process filters are switched off, submodules are
+left out, and repository hooks never run.
 
 Hover over the folder name to see the full path; click it to choose another folder, or click
 **×** to stop using it.
