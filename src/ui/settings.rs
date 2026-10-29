@@ -5,6 +5,7 @@ use eframe::egui;
 
 use super::theme::icon;
 use super::widgets::{code_block, icon_button, kv_editor, list_editor};
+use crate::approval::ApprovalMode;
 use crate::commands::SlashCommand;
 use crate::config::{
     DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
@@ -2551,6 +2552,17 @@ impl SettingsUi {
                         );
                         ui.end_row();
 
+                        ui.label("New chats start in");
+                        egui::ComboBox::from_id_salt("default-approval-mode")
+                            .selected_text(g.default_approval_mode.label())
+                            .show_ui(ui, |ui| {
+                                for m in ApprovalMode::ALL {
+                                    ui.selectable_value(&mut g.default_approval_mode, m, m.label())
+                                        .on_hover_text(m.description());
+                                }
+                            });
+                        ui.end_row();
+
                         ui.label("Max tool rounds");
                         ui.add(egui::DragValue::new(&mut g.max_tool_rounds).range(1..=200))
                             .on_hover_text(
@@ -2776,6 +2788,11 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Reasoning / thinking display (collapsed by default)",
     ),
     (Tab::General, "General", "Auto-approve tool calls"),
+    (
+        Tab::General,
+        "General",
+        "Default permission mode for new chats",
+    ),
     (Tab::General, "General", "Max tool rounds"),
     (Tab::General, "General", "Tool timeout"),
     (Tab::General, "General", "Export settings"),
@@ -2924,6 +2941,7 @@ mod tests {
         assert_eq!(search_settings("slash command")[0].0, Tab::Tools);
         assert_eq!(search_settings("saved prompts")[0].0, Tab::Tools);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
+        assert_eq!(search_settings("default permission")[0].0, Tab::General);
         assert!(search_settings("zzzz").is_empty());
     }
 }

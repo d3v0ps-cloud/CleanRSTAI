@@ -315,8 +315,8 @@ in them follows the same rule:
   workspace** (writes and sandboxed commands run freely, the rest asks) and **Full access**
 - [ ] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
   before it changes anything
-- [ ] Settings: the default mode and which modes are offered; per chat: pick the mode under
-  the message box (and with ⌘K)
+- [x] Settings: the default mode for new chats; per chat: pick the mode in the tools menu and
+  with ⌘K
 
 ## 21. Web search
 
