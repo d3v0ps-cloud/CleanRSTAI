@@ -151,6 +151,58 @@ pub struct AgentRequest {
     pub approval_mode: crate::approval::ApprovalMode,
 }
 
+impl AgentRequest {
+    /// The request for a reply in `conv`, built from the settings the way the app does: the
+    /// chat's tools and permissions, its messages after the latest compaction, and the provider
+    /// with the chat's model options. `review` uses the review provider; `compact_only` only
+    /// summarises. `sandbox` is the Docker sandbox, which a chat with `no_sandbox` skips.
+    pub fn for_chat(
+        settings: &crate::config::Settings,
+        conv: &crate::types::Conversation,
+        sandbox: Option<&crate::sandbox::Sandbox>,
+        review: bool,
+        compact_only: bool,
+    ) -> Self {
+        let permissions = &conv.permissions;
+        let selection =
+            ToolSelection::new(settings, &conv.tool_overrides).with_mode(permissions.mode);
+        // After a compaction only its summary and the messages since are sent.
+        let marker = crate::types::last_compaction(&conv.messages);
+        let summary = marker.map(|i| conv.messages[i].content.clone());
+        let from = marker.map_or(0, |i| i + 1);
+        let chat_provider = settings.provider().clone();
+        let provider = if review {
+            settings.review_provider(&chat_provider)
+        } else {
+            chat_provider
+        };
+        let compaction =
+            (compact_only || selection.feature_on(tools::COMPACTION)).then(|| Compaction {
+                settings: settings.general.compaction.clone(),
+                provider: settings.compaction_provider(&provider),
+                auto: selection.feature_on(tools::COMPACTION),
+            });
+        Self {
+            conv_id: conv.id,
+            provider: provider.with_chat_options(&conv.model_options),
+            general: settings.general.clone(),
+            history: conv.messages[from..]
+                .iter()
+                .filter(|m| !m.cancelled && m.compaction.is_none())
+                .cloned()
+                .collect(),
+            delegation: Delegation::new(settings, &selection),
+            selection,
+            workspace: conv.workspace.clone(),
+            sandbox: sandbox.filter(|_| !permissions.no_sandbox).cloned(),
+            summary,
+            compaction,
+            compact_only,
+            approval_mode: permissions.mode,
+        }
+    }
+}
+
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
 
 pub async fn run(

@@ -2303,7 +2303,8 @@ impl SettingsUi {
     }
 
     fn background_tab(&mut self, ui: &mut egui::Ui) {
-        let bg = &mut self.draft.general.background;
+        let general = &mut self.draft.general;
+        let (bg, ex) = (&mut general.background, &mut general.exec);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2362,6 +2363,81 @@ impl SettingsUi {
                         );
                         ui.end_row();
                     });
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("Command line").strong());
+                ui.checkbox(
+                    &mut ex.enabled,
+                    "Allow `cleanrstai exec` to run requests from a terminal or script",
+                );
+                ui.indent("exec-settings", |ui| {
+                    let on = ex.enabled;
+                    egui::Grid::new("exec-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.add_enabled(on, egui::Label::new("Approvals"));
+                            ui.add_enabled_ui(on, |ui| {
+                                egui::ComboBox::from_id_salt("exec-approval-mode")
+                                    .selected_text(ex.approval_mode.label())
+                                    .show_ui(ui, |ui| {
+                                        for m in ApprovalMode::ALL {
+                                            ui.selectable_value(
+                                                &mut ex.approval_mode,
+                                                m,
+                                                m.label(),
+                                            )
+                                            .on_hover_text(m.description());
+                                        }
+                                    });
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            weak_note(
+                                ui,
+                                "The mode of a command-line request; --mode overrides it. Calls \
+                                 it doesn't allow are denied, not asked, and the model is told.",
+                            );
+                            ui.end_row();
+
+                            ui.add_enabled(on, egui::Label::new("MCP servers"));
+                            ui.add_enabled(
+                                on,
+                                egui::Checkbox::new(&mut ex.mcp, "Start them for each request"),
+                            );
+                            ui.end_row();
+
+                            ui.add_enabled(on, egui::Label::new("Wait for them"));
+                            ui.add_enabled(
+                                on,
+                                egui::DragValue::new(&mut ex.mcp_wait_secs)
+                                    .range(0..=crate::exec::MAX_MCP_WAIT_SECS)
+                                    .suffix(" s"),
+                            );
+                            ui.end_row();
+
+                            ui.label("");
+                            weak_note(
+                                ui,
+                                "How long a request waits for servers to connect before it \
+                                 starts. --no-mcp skips them.",
+                            );
+                            ui.end_row();
+
+                            ui.add_enabled(on, egui::Label::new("Chats"));
+                            ui.add_enabled(
+                                on,
+                                egui::Checkbox::new(&mut ex.save_chats, "Save each run's chat"),
+                            );
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    weak_note(
+                        ui,
+                        "Example: git diff | cleanrstai exec --mode read-only \"review this\" -\n\
+                         Replies go to stdout and tool calls to stderr. Run \
+                         `cleanrstai exec --help` for every option.",
+                    );
+                });
             });
     }
 
@@ -3158,6 +3234,19 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     ),
     (Tab::Background, "Background", "Replies at once (queue)"),
     (Tab::Background, "Background", "Reply time limit (minutes)"),
+    (
+        Tab::Background,
+        "Background",
+        "Command line (cleanrstai exec)",
+    ),
+    (Tab::Background, "Background", "Command line approval mode"),
+    (Tab::Background, "Background", "Command line MCP servers"),
+    (
+        Tab::Background,
+        "Background",
+        "Command line MCP wait (seconds)",
+    ),
+    (Tab::Background, "Background", "Command line save chats"),
 ];
 
 fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
@@ -3198,6 +3287,11 @@ mod tests {
         assert_eq!(search_settings("notify")[0].0, Tab::Background);
         assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
+        assert_eq!(search_settings("command line")[0].0, Tab::Background);
+        assert_eq!(
+            search_settings("command line approval")[0].0,
+            Tab::Background
+        );
         assert!(search_settings("zzzz").is_empty());
     }
 }

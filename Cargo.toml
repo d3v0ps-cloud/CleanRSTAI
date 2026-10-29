@@ -55,6 +55,10 @@ notify-rust = { version = "4.18", default-features = false, features = ["z"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# `cleanrstai exec` attaches to the console that started it (the windows subsystem has none).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 # The live preview of web page artifacts: WKWebView on macOS, WebView2 on Windows. Linux has
 # no preview (WebKitGTK would need GTK's event loop and system libraries the release builds
 # don't link), so web pages open in the browser there.

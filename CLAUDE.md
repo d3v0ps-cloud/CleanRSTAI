@@ -161,6 +161,8 @@ drop). Subagent tool calls never ask for approval. Progress streams back as
 
 **Background replies** (`background.rs`): `ChatApp` starts a reply through `start_run_with`, which queues it (`RunQueue`, FIFO) when `background.max_parallel` replies already run or others wait; `logic()` starts queued ones, enforces `background.time_limit_mins` from each `Run::started`, and frees slots of tasks that ended without `Done`. A queued chat counts as busy (`ChatApp::busy`) and stopping it removes it from the queue. `should_notify` decides desktop notifications (`notify-rust`, sent on `spawn_blocking`, never in tests), and the `feature:notify` chat switch can override the setting per chat.
 
+**Command line** (`exec.rs`): `main` hands `exec …` to `exec::run` and answers `--version`, before the window opens. It parses the arguments by hand (`parse_args`), loads `Settings` as the app does, builds the request with `AgentRequest::for_chat` (the same builder `launch_run` uses), waits for MCP servers, and runs `drive`, which consumes the `agent::run` events on a task. `headless_allows` answers approvals: only what `ApprovalMode::runs_unasked` allows, everything else is denied. `ExecSettings` (`general.exec`) is on the Background tab. Windows attaches to the parent console with `AttachConsole`.
+
 **MCP** (`mcp/`): stdio and Streamable HTTP transports, OAuth (PKCE, dynamic registration,
 loopback redirect) in `mcp/oauth.rs`, and `McpManager`, which keeps connections in sync with
 settings, refreshes tools/resources/prompts on `list_changed`, and builds the `ToolRouter`.

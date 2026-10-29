@@ -13,6 +13,7 @@ mod compaction;
 mod config;
 mod documents;
 mod env_path;
+mod exec;
 mod export;
 mod git;
 mod instructions;
@@ -42,6 +43,16 @@ fn main() -> eframe::Result {
     // Must run before any threads exist (it mutates the process environment).
     env_path::fix_path();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // The command line never opens the window: `cleanrstai exec …` and `--version`.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("exec") => std::process::exit(exec::run(&args[1..])),
+        Some("--version") => {
+            println!("cleanrstai {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        _ => {}
+    }
     update::remove_leftovers();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

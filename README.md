@@ -123,6 +123,10 @@ too, as an installer and a portable `.exe`.
   when a reply finishes, fails or needs approval (each chat can turn its own off). **Settings →
   Background** sets those notifications, how many replies run at once (the rest wait in a
   queue) and a time limit per reply.
+- **Command line**: `cleanrstai exec "question"` runs one request with your saved settings and
+  prints the reply, for scripts and pipes (`git diff | cleanrstai exec --mode read-only "review this" -`).
+  Calls the approval mode doesn't allow are denied rather than asked. `--json` gives
+  one object with the reply, the tool calls and the stats. Turned on in **Settings → Background**.
 - **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools,
   the workspace tools when the chat has a folder, and every MCP server and tool, each with a
   switch for the current chat. Settings keeps the defaults for new chats.
@@ -333,7 +337,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 | Skills & hooks | Slash commands (saved prompts), and skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder |
 | Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
-| Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply |
+| Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
