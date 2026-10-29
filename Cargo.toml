@@ -60,6 +60,9 @@ libc = "0.2"
 # don't link), so web pages open in the browser there.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 wry = { version = "0.57", default-features = false }
+# The menu bar (macOS) or system tray (Windows) icon for "Keep running when the window is closed".
+# tray-icon needs GTK on Linux, which the release builds don't link, so Linux has no tray.
+tray-icon = "0.26.1"
 
 [profile.release]
 lto = "thin"
