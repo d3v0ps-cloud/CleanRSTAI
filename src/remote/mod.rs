@@ -2,10 +2,13 @@
 //! commands that `ChatApp` handles on the UI thread, exactly like a click. This module holds
 //! the types both sides share; the server itself lives in `server.rs`.
 
+mod access;
 mod auth;
 mod server;
 mod tls;
 mod tunnel;
+
+pub use access::{Gate as AccessGate, valid_team_domain};
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
@@ -254,13 +257,15 @@ impl Drop for RemoteHandle {
 /// Starts the server for `cfg` and returns once it is listening, so a busy port or a bad
 /// certificate is reported at once. The server runs as a task on `rt`. `tx` carries browser
 /// requests to the app; `repaint` wakes the UI thread for each one. `tunnel_hosts` are the
-/// public hostnames of a running Cloudflare Tunnel, which the server also answers.
+/// public hostnames of a running Cloudflare Tunnel, which the server also answers, and `access`
+/// checks the Cloudflare Access token on requests for them.
 pub fn start(
     rt: &tokio::runtime::Handle,
     cfg: &RemoteSettings,
     tx: EventSender,
     repaint: Arc<dyn Fn() + Send + Sync>,
     tunnel_hosts: TunnelHosts,
+    access: Arc<AccessGate>,
 ) -> Result<RemoteHandle, String> {
     if cfg.password.trim().is_empty() {
         return Err("Set a password to start the server".into());
@@ -296,6 +301,7 @@ pub fn start(
         events.clone(),
         hsts,
         tunnel_hosts,
+        access,
     ));
     Ok(RemoteHandle::new(cfg.clone(), urls, events, task))
 }

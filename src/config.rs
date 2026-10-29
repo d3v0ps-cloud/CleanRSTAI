@@ -889,6 +889,41 @@ pub struct TunnelSettings {
     pub hostname: String,
     /// Path to `cloudflared`; empty finds it on `PATH`.
     pub cloudflared: String,
+    /// Cloudflare Access in front of a named tunnel's hostname (see `remote::access`).
+    pub access: AccessSettings,
+}
+
+/// Cloudflare Access (Zero Trust) in front of a named tunnel's hostname. Access signs each
+/// request it lets through; the app checks that signature, so a request that skips Access is
+/// refused. Only named tunnels: a quick tunnel's address can't be put behind an application.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AccessSettings {
+    /// Require a valid Access token for requests that arrive through the tunnel's hostname.
+    pub enabled: bool,
+    /// The team domain, e.g. `myteam.cloudflareaccess.com`. A pasted `https://` is dropped.
+    pub team_domain: String,
+    /// The application's audience (AUD) tag from the Access application's overview.
+    pub audience: String,
+    /// A valid Access token also signs the browser in, so the app password is not asked for.
+    pub skip_password: bool,
+}
+
+/// The host name of a pasted team domain: trimmed, lowercase, without `https://` or a trailing
+/// `/`. `MyTeam.cloudflareaccess.com/` gives `myteam.cloudflareaccess.com`.
+pub fn team_host(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    let host = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    host.trim_end_matches('/').to_owned()
+}
+
+/// Trims the Access fields and keeps only the host name of a pasted team URL.
+fn normalize_access(access: &mut AccessSettings) {
+    access.team_domain = team_host(&access.team_domain);
+    access.audience = access.audience.trim().to_owned();
 }
 
 impl Default for RemoteSettings {
@@ -1392,6 +1427,7 @@ impl Settings {
             .min(crate::exec::MAX_MCP_WAIT_SECS);
         crate::hooks::normalize(&mut self.general.hooks);
         self.general.schedules.normalize();
+        normalize_access(&mut self.general.remote.tunnel.access);
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -2031,6 +2067,28 @@ mod tests {
         let s: GeneralSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.review, ReviewSettings::default());
         assert_eq!(s.review.scope, ReviewScope::Uncommitted);
+    }
+
+    #[test]
+    fn access_settings_load_from_older_files_and_normalize() {
+        let old: Settings = serde_json::from_str(
+            r#"{"general": {"remote": {"tunnel": {"enabled": true, "mode": "named"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.general.remote.tunnel.access, AccessSettings::default());
+
+        let mut s = Settings::default();
+        s.general.remote.tunnel.access = AccessSettings {
+            enabled: true,
+            team_domain: "  https://MyTeam.cloudflareaccess.com/ ".into(),
+            audience: " abc123 ".into(),
+            skip_password: true,
+        };
+        s.normalize();
+        let access = &s.general.remote.tunnel.access;
+        assert_eq!(access.team_domain, "myteam.cloudflareaccess.com");
+        assert_eq!(access.audience, "abc123");
+        assert!(access.enabled && access.skip_password);
     }
 
     #[test]

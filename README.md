@@ -214,6 +214,7 @@ too, as an installer and a portable `.exe`.
   from anywhere through a Cloudflare Tunnel that the app runs for you (a quick
   `trycloudflare.com` address, or your own domain with a tunnel you set up in Cloudflare). API
   keys and MCP secrets stay on this computer, and the app must stay open. See
+  A named tunnel can also require Cloudflare Access sign-in before the login.
   [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html) and
   [Cloudflare Tunnel](https://d3v0ps-cloud.github.io/CleanRSTAI/using/cloudflare-tunnel.html).
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
@@ -343,7 +344,7 @@ Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
+| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
