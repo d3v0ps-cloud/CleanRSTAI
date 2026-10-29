@@ -682,5 +682,16 @@ mod tests {
         follow("<!doctype html><p>changed</p>", &s);
         std::thread::sleep(Duration::from_millis(800));
         assert!(is_open(), "the window stays open while it follows");
+        // With CLEANRSTAI_PREVIEW_HOLD set, keep the window up so it can be screenshotted.
+        if let Some(secs) = std::env::var("CLEANRSTAI_PREVIEW_HOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+        {
+            follow(
+                "<!doctype html><h1 style='color:#c15f3c'>CleanRSTAI live preview</h1>",
+                &s,
+            );
+            std::thread::sleep(Duration::from_secs(secs));
+        }
     }
 }
