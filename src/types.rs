@@ -148,6 +148,10 @@ pub fn results_after(
 /// The messages a fork up to message `idx` keeps: everything through `idx`, and for an
 /// assistant message with tool calls, the tool results that directly follow it, so the
 /// fork never ends on a call without its results. Empty if `idx` is out of range.
+///
+/// The fork shares the original's workspace folder, so its copied file edits must not be
+/// undoable from the fork: their checkpoints are dropped (`checkpoint` false, `before` None)
+/// while the diff is kept for the tool card.
 pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
     let Some(msg) = messages.get(idx) else {
         return Vec::new();
@@ -159,7 +163,14 @@ pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
             .take_while(|m| m.role == Role::Tool)
             .count();
     }
-    messages[..end].to_vec()
+    let mut kept = messages[..end].to_vec();
+    for m in &mut kept {
+        if let Some(edit) = &mut m.edit {
+            edit.checkpoint = false;
+            edit.before = None;
+        }
+    }
+    kept
 }
 
 impl ChatMessage {
@@ -380,5 +391,35 @@ mod tests {
         ];
         assert_eq!(fork_messages(&messages, 1), messages);
         assert!(fork_messages(&messages, 2).is_empty());
+    }
+
+    #[test]
+    fn a_fork_keeps_file_edit_diffs_but_not_their_checkpoints() {
+        let mut call = ChatMessage::new(Role::Assistant, "");
+        call.tool_calls.push(ToolCall {
+            id: "c1".into(),
+            name: "write_file".into(),
+            arguments: "{}".into(),
+        });
+        let mut result = ChatMessage::new(Role::Tool, "Wrote a.txt");
+        result.tool_call_id = Some("c1".into());
+        result.edit = Some(FileEdit {
+            path: "a.txt".into(),
+            abs: PathBuf::from("/work/a.txt"),
+            diff: "-old\n+new\n".into(),
+            created: false,
+            before: Some("old\n".into()),
+            checkpoint: true,
+            after_sha256: "abc".into(),
+            undone: false,
+        });
+        let messages = vec![ChatMessage::new(Role::User, "edit it"), call, result];
+        let forked = fork_messages(&messages, 1);
+        let edit = forked[2].edit.as_ref().expect("the edit is copied");
+        assert!(!edit.checkpoint);
+        assert_eq!(edit.before, None);
+        assert_eq!(edit.diff, "-old\n+new\n");
+        // The original is untouched.
+        assert!(messages[2].edit.as_ref().unwrap().checkpoint);
     }
 }

@@ -178,8 +178,9 @@ Each message has small action icons:
 **Fork from here** copies the chat up to that message into a new chat, titled with
 "(fork)" after the original title. The new chat keeps the original's workspace folder, tool
 switches, model options and permissions, and the original is left as it was. The workspace
-folder is shared, not copied, so file edits made in either chat change the same files. Forking
-is not available while a reply is being generated in that chat.
+folder is shared, not copied, so file edits made in either chat change the same files. The
+file edits copied into the fork can't be undone from the fork, only from the original chat.
+Forking is not available while a reply is being generated in that chat.
 
 ## Replies
 
