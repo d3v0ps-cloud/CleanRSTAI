@@ -8,13 +8,15 @@ use super::widgets::{code_block, icon_button, kv_editor, list_editor};
 use crate::approval::ApprovalMode;
 use crate::commands::SlashCommand;
 use crate::config::{
-    DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
-    McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull,
-    SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode, import_mcp_json,
+    AccessSettings, DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES,
+    McpServerConfig, McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings,
+    RemoteTls, ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork,
+    SandboxPull, SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode,
+    import_mcp_json,
 };
 use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
+use crate::ocr::OcrEngine;
 use crate::remote::{RemoteStatus, TunnelStatus};
 use crate::schedule::ScheduledTask;
 use uuid::Uuid;
@@ -322,6 +324,8 @@ pub struct RemoteUiStatus<'a> {
     pub tunnel: &'a TunnelStatus,
     pub server_dirty: bool,
     pub tunnel_dirty: bool,
+    /// The last reason Cloudflare Access refused a tunnel request, or a failed key fetch.
+    pub access_error: Option<&'a str>,
 }
 
 /// The "Cloudflare Tunnel" rows, under the Remote access status.
@@ -498,6 +502,85 @@ fn tunnel_rows(
                 ));
             }
         }
+    });
+    ui.end_row();
+    access_rows(ui, &mut r.tunnel.access, r.tunnel.mode, status.access_error);
+}
+
+/// The "Cloudflare Access" rows of the tunnel: a login gate in front of a named tunnel's
+/// hostname, set up in the Cloudflare dashboard (see `remote::access`).
+fn access_rows(
+    ui: &mut egui::Ui,
+    access: &mut AccessSettings,
+    mode: TunnelMode,
+    error: Option<&str>,
+) {
+    ui.label("Cloudflare Access");
+    if mode == TunnelMode::Quick {
+        ui.weak("Only for named tunnels: a quick tunnel's address can't be put behind an Access application.");
+        ui.end_row();
+        return;
+    }
+    ui.checkbox(
+        &mut access.enabled,
+        "Require Cloudflare Access in front of the tunnel's hostname",
+    );
+    ui.end_row();
+    if !access.enabled {
+        return;
+    }
+
+    ui.label("Team domain");
+    ui.add(
+        egui::TextEdit::singleline(&mut access.team_domain)
+            .hint_text("myteam.cloudflareaccess.com")
+            .desired_width(FIELD_WIDTH - 100.0),
+    );
+    ui.end_row();
+
+    ui.label("Audience (AUD) tag");
+    ui.add(
+        egui::TextEdit::singleline(&mut access.audience)
+            .hint_text("from the Access application's overview")
+            .desired_width(FIELD_WIDTH - 100.0),
+    );
+    ui.end_row();
+
+    ui.label("Sign in with Access");
+    ui.checkbox(
+        &mut access.skip_password,
+        "A valid Access login also signs the browser in, so the app password is not asked",
+    );
+    ui.end_row();
+
+    ui.label("Access status");
+    ui.vertical(|ui| {
+        let warn = ui.visuals().warn_fg_color;
+        let team = crate::config::team_host(&access.team_domain);
+        if !crate::remote::valid_team_domain(&team) {
+            ui.colored_label(
+                warn,
+                "Enter the team domain, e.g. myteam.cloudflareaccess.com.",
+            );
+        }
+        if access.audience.trim().is_empty() {
+            ui.colored_label(warn, "Enter the application's audience (AUD) tag.");
+        }
+        match error {
+            Some(e) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            None => {
+                ui.weak("No Access errors so far.");
+            }
+        }
+        weak_note(
+            ui,
+            "In the Cloudflare Zero Trust dashboard, add a self-hosted application for the \
+             tunnel's public hostname, with a policy for who may sign in. Copy its Application \
+             Audience (AUD) tag here, and your team domain (the name.cloudflareaccess.com \
+             address your team signs in to). Requests that skip Access are refused.",
+        );
     });
     ui.end_row();
 }
@@ -715,6 +798,7 @@ impl SettingsUi {
     }
 
     /// Render the settings page into `ui` (it takes over the main area while open).
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -722,6 +806,7 @@ impl SettingsUi {
         servers: &[ServerView],
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
+        access_error: Option<&str>,
         chats: &[(Uuid, String)],
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
@@ -840,7 +925,7 @@ impl SettingsUi {
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
                 Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
-                Tab::Context => "Context compaction, project instructions from the workspace, diffs and undo for file edits, and code review.",
+                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
@@ -856,7 +941,9 @@ impl SettingsUi {
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::Background => self.background_tab(ui, chats, &mut actions),
-                Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
+                Tab::General => {
+                    self.general_tab(ui, live, remote, (tunnel, access_error), &mut actions)
+                }
             }
         });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
@@ -1579,6 +1666,31 @@ impl SettingsUi {
                     });
                     ui.add_space(8.0);
                 }
+                ui.add_enabled_ui(b.workspace, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut b.git_commit,
+                            egui::RichText::new(format!("{}  Commit (git_commit)", icon::CHECK_SQUARE))
+                                .strong(),
+                        );
+                    });
+                    ui.indent("git-commit", |ui| {
+                        ui.weak(
+                            "Lets the model commit the workspace's changes to its git repository as \
+                             one local commit. Every commit asks for approval, even in Auto in \
+                             workspace mode. Nothing is pushed, and git hooks don't run. Off by \
+                             default.",
+                        );
+                        ui.add_enabled_ui(b.git_commit, |ui| {
+                            ui.checkbox(&mut b.allow_signing, "Allow signed commits");
+                            ui.weak(
+                                "Off: commits are never signed. On: a repository set to sign its \
+                                 commits signs them, and gpg may ask for a passphrase.",
+                            );
+                        });
+                    });
+                    ui.add_space(8.0);
+                });
                 ui.add_enabled_ui(b.fetch, |ui| {
                     ui.checkbox(
                         &mut b.fetch_private_networks,
@@ -1962,6 +2074,103 @@ impl SettingsUi {
                     });
                 ui.add_space(16.0);
 
+                // ---- projects
+                let pr = &mut g.projects;
+                ui.checkbox(
+                    &mut pr.enabled,
+                    egui::RichText::new(format!("{}  Projects", icon::FOLDER)).strong(),
+                );
+                ui.indent("projects-help", |ui| {
+                    ui.weak(
+                        "Group chats into projects in the sidebar. A project's instructions and \
+                         files are added to the system prompt of each of its chats, and its \
+                         folder, provider, model, tool switches and permission mode are what a \
+                         new chat in it starts with. Off hides projects and stops adding their \
+                         context. Each chat can switch the project context off too.",
+                    );
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("projects-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Files size limit");
+                        ui.add(
+                            egui::DragValue::new(&mut pr.max_files_kb)
+                                .range(
+                                    crate::projects::MIN_FILES_KB..=crate::projects::MAX_FILES_KB,
+                                )
+                                .suffix(" KB"),
+                        )
+                        .on_hover_text(
+                            "The text of a project's files sent with each request, in all. \
+                             Longer files are cut.",
+                        );
+                        ui.end_row();
+
+                        ui.label("New projects: folder");
+                        ui.horizontal(|ui| {
+                            let shown = pr
+                                .default_workspace
+                                .as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| "None".into());
+                            ui.label(shown);
+                            if ui.small_button("Choose…").clicked()
+                                && let Some(dir) = rfd::FileDialog::new()
+                                    .set_title("Choose a default working folder")
+                                    .pick_folder()
+                            {
+                                pr.default_workspace = Some(dir);
+                            }
+                            if pr.default_workspace.is_some() && ui.small_button("Clear").clicked()
+                            {
+                                pr.default_workspace = None;
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("New projects: provider");
+                        let selected = match &pr.default_provider {
+                            None => "Settings' active provider".to_owned(),
+                            Some(id) => providers.iter().find(|(pid, ..)| pid == id).map_or(
+                                "A provider that no longer exists".into(),
+                                |(_, name, _)| name.clone(),
+                            ),
+                        };
+                        egui::ComboBox::from_id_salt("projects-default-provider")
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut pr.default_provider,
+                                    None,
+                                    "Settings' active provider",
+                                );
+                                for (id, name, _) in &providers {
+                                    ui.selectable_value(
+                                        &mut pr.default_provider,
+                                        Some(id.clone()),
+                                        name,
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("New projects: instructions");
+                    if !pr.default_instructions.is_empty() && ui.small_button("Clear").clicked() {
+                        pr.default_instructions.clear();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut pr.default_instructions)
+                        .hint_text("Nothing: a new project starts empty")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(16.0);
+
                 // ---- file edits
                 let fe = &mut g.file_edits;
                 ui.label(
@@ -2137,6 +2346,106 @@ impl SettingsUi {
                             .desired_rows(4)
                             .desired_width(f32::INFINITY),
                     );
+                });
+
+                ui.add_space(16.0);
+
+                // ---- OCR for scanned PDFs
+                let o = &mut g.ocr;
+                ui.checkbox(
+                    &mut o.enabled,
+                    egui::RichText::new(format!("{}  Read scanned PDFs (OCR)", icon::FILE))
+                        .strong(),
+                );
+                ui.indent("ocr-help", |ui| {
+                    ui.weak(
+                        "A PDF with no text layer (a scan or a photo of pages) has its page \
+                         images read. A vision model reads each page, and the page image is sent \
+                         to the provider chosen here; Tesseract runs on this computer. Pages past \
+                         the limit are not read. Without OCR, such a PDF is attached with a note.",
+                    );
+                });
+                ui.add_enabled_ui(o.enabled, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Read with");
+                        ui.radio_value(&mut o.engine, OcrEngine::VisionModel, "A vision model");
+                        ui.radio_value(&mut o.engine, OcrEngine::Tesseract, "Tesseract");
+                    });
+                    ui.add_space(6.0);
+                    egui::Grid::new("ocr-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            if o.engine == OcrEngine::VisionModel {
+                                ui.label("Vision model by");
+                                let current = o
+                                    .provider
+                                    .as_ref()
+                                    .and_then(|id| providers.iter().find(|(pid, ..)| pid == id))
+                                    .map_or("The chat's provider".to_owned(), |(_, n, _)| {
+                                        n.clone()
+                                    });
+                                egui::ComboBox::from_id_salt("ocr-provider")
+                                    .selected_text(current)
+                                    .width(FIELD_WIDTH)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut o.provider,
+                                            None,
+                                            "The chat's provider",
+                                        );
+                                        for (id, name, _) in &providers {
+                                            ui.selectable_value(
+                                                &mut o.provider,
+                                                Some(id.clone()),
+                                                name,
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+                            } else {
+                                ui.label("Tesseract program");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.tesseract_path)
+                                        .hint_text("tesseract")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text("A name on PATH, or the full path of the program");
+                                ui.end_row();
+
+                                ui.label("Languages");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.languages)
+                                        .hint_text("eng")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text(
+                                    "Tesseract language codes joined with +, e.g. eng+deu; \
+                                     each must be installed with Tesseract",
+                                );
+                                ui.end_row();
+                            }
+
+                            ui.label("Pages per PDF");
+                            ui.add(
+                                egui::DragValue::new(&mut o.max_pages)
+                                    .range(1..=200)
+                                    .suffix(" pages"),
+                            )
+                            .on_hover_text(
+                                "Pages past this are not read, and the model is told so",
+                            );
+                            ui.end_row();
+                        });
+                    if o.engine == OcrEngine::VisionModel {
+                        ui.add_space(4.0);
+                        weak_note(
+                            ui,
+                            "The model must accept images. Pages are sent one at a time, so a \
+                             long scan takes a while.",
+                        );
+                    }
                 });
             });
     }
@@ -2712,7 +3021,7 @@ impl SettingsUi {
         ui: &mut egui::Ui,
         live: &Settings,
         remote: &RemoteStatus,
-        tunnel: &TunnelStatus,
+        (tunnel, access_error): (&TunnelStatus, Option<&str>),
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
@@ -2723,6 +3032,7 @@ impl SettingsUi {
             server_dirty: crate::remote::server_settings(draft_remote)
                 != crate::remote::server_settings(live_remote),
             tunnel_dirty: draft_remote.tunnel != live_remote.tunnel,
+            access_error,
         };
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
@@ -2927,6 +3237,23 @@ impl SettingsUi {
                                      your browser.",
                                 );
                             }
+                        });
+                        ui.end_row();
+
+                        ui.label("Save as files");
+                        ui.vertical(|ui| {
+                            ui.checkbox(&mut g.save_as.docx, "Word document (.docx)");
+                            ui.checkbox(&mut g.save_as.pdf, "PDF (.pdf)");
+                            ui.checkbox(&mut g.save_as.xlsx, "Excel workbook (.xlsx)")
+                                .on_hover_text(
+                                    "Offered for replies with a table and for CSV or TSV \
+                                     artifacts",
+                                );
+                            weak_note(
+                                ui,
+                                "The Save as menu on a reply or artifact offers the checked \
+                                 formats.",
+                            );
                         });
                         ui.end_row();
 
@@ -3330,7 +3657,23 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Cloudflare quick tunnel (trycloudflare.com)",
     ),
     (Tab::General, "General", "cloudflared path"),
+    (Tab::General, "General", "Cloudflare Access"),
+    (Tab::General, "General", "Cloudflare Access team domain"),
+    (
+        Tab::General,
+        "General",
+        "Cloudflare Access audience (AUD) tag",
+    ),
+    (
+        Tab::General,
+        "General",
+        "Cloudflare Access sign in without the app password",
+    ),
     (Tab::General, "General", "Show speed stats"),
+    (Tab::General, "General", "Save as Word document (.docx)"),
+    (Tab::General, "General", "Save as PDF"),
+    (Tab::General, "General", "Save as Excel workbook (.xlsx)"),
+    (Tab::General, "General", "Save reply as file"),
     (Tab::General, "General", "Load web images in replies"),
     (
         Tab::General,
@@ -3445,6 +3788,23 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Context & files",
         "Project instructions (AGENTS.md, CLAUDE.md)",
     ),
+    (Tab::Context, "Context & files", "Projects (on / off)"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: files size limit",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: default instructions",
+    ),
+    (Tab::Context, "Context & files", "Projects: default folder"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: default provider",
+    ),
     (
         Tab::Context,
         "Context & files",
@@ -3454,6 +3814,17 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         Tab::Context,
         "Context & files",
         "Undo file edits (checkpoints)",
+    ),
+    (Tab::Context, "Context & files", "Read scanned PDFs (OCR)"),
+    (
+        Tab::Context,
+        "Context & files",
+        "OCR engine and vision model",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Tesseract program and languages",
     ),
     (
         Tab::General,
@@ -3465,6 +3836,8 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Tools",
         "Workspace tools (files, search, shell)",
     ),
+    (Tab::Tools, "Tools", "Commit changes (git_commit)"),
+    (Tab::Tools, "Tools", "Allow signed commits"),
     (
         Tab::Subagents,
         "Subagents",
@@ -3561,11 +3934,17 @@ mod tests {
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
+        assert_eq!(search_settings("scanned pdf")[0].0, Tab::Context);
+        assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
+        assert_eq!(search_settings("projects")[0].0, Tab::Context);
+        assert_eq!(search_settings("project files size")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
         assert_eq!(search_settings("review changes")[0].0, Tab::Context);
         assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("git commit")[0].0, Tab::Tools);
+        assert_eq!(search_settings("signed commits")[0].0, Tab::Tools);
         assert_eq!(search_settings("provider search")[0].0, Tab::Tools);
         assert_eq!(search_settings("searches per reply")[0].0, Tab::Tools);
         assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
@@ -3576,6 +3955,8 @@ mod tests {
         assert_eq!(search_settings("hooks")[0].0, Tab::Extensions);
         assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
+        assert_eq!(search_settings("save as pdf")[0].0, Tab::General);
+        assert_eq!(search_settings("excel workbook")[0].0, Tab::General);
         assert_eq!(search_settings("default permission")[0].0, Tab::General);
         assert_eq!(search_settings("plan mode")[0].0, Tab::General);
         assert_eq!(search_settings("plan instructions")[0].0, Tab::General);
@@ -3592,6 +3973,9 @@ mod tests {
         assert_eq!(search_settings("menu bar")[0].0, Tab::Background);
         assert_eq!(search_settings("system tray")[0].0, Tab::Background);
         assert_eq!(search_settings("scheduled tasks")[0].0, Tab::Background);
+        assert_eq!(search_settings("cloudflare access")[0].0, Tab::General);
+        assert_eq!(search_settings("team domain")[0].0, Tab::General);
+        assert_eq!(search_settings("AUD tag")[0].0, Tab::General);
         assert_eq!(search_settings("catch up")[0].0, Tab::Background);
         assert!(search_settings("zzzz").is_empty());
     }

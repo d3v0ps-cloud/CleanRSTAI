@@ -66,6 +66,8 @@ Options:
   --provider NAME     provider profile to use (default: the active one)
   --model MODEL       model to use instead of the provider's
   --workspace DIR     working folder for the file, search and shell tools
+  --project NAME      start the chat in this project (its folder, provider, model, tool
+                      switches, permission mode and instructions); a name or an id
   --mode MODE         read-only, default, auto, allow-all or plan
                       (default: the mode in Settings → Background)
   --json              print one JSON object at the end instead of streaming
@@ -92,6 +94,8 @@ pub struct ExecArgs {
     pub text: String,
     /// A `-` among the arguments: stdin is added to the prompt.
     pub read_stdin: bool,
+    /// The project the chat starts in, by name or id (see `projects`).
+    pub project: Option<String>,
 }
 
 /// Parses the arguments after `exec`. Flags may come before or after the prompt; `--` ends
@@ -135,7 +139,7 @@ pub fn parse_args(args: &[String]) -> Result<ExecArgs, String> {
                     _ => out.save = true,
                 }
             }
-            "--provider" | "--model" | "--workspace" | "--mode" => {
+            "--provider" | "--model" | "--workspace" | "--mode" | "--project" => {
                 let value = match inline {
                     Some(value) => value,
                     None => {
@@ -154,6 +158,7 @@ pub fn parse_args(args: &[String]) -> Result<ExecArgs, String> {
                     "--provider" => out.provider = Some(value),
                     "--model" => out.model = Some(value),
                     "--workspace" => out.workspace = Some(PathBuf::from(value)),
+                    "--project" => out.project = Some(value),
                     _ => out.mode = Some(parse_mode(&value)?),
                 }
             }
@@ -468,10 +473,38 @@ pub fn run(args: &[String]) -> i32 {
         },
     };
 
-    let mode = parsed.mode.unwrap_or(settings.general.exec.approval_mode);
+    let project = match &parsed.project {
+        None => None,
+        Some(key) => match crate::projects::find(&crate::projects::Project::load_all(), key) {
+            Some(project) => Some(project.clone()),
+            None => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "cleanrstai exec: there is no project called {key}"
+                );
+                return 2;
+            }
+        },
+    };
+    let mode = parsed
+        .mode
+        .or(project.as_ref().and_then(|p| p.approval_mode))
+        .unwrap_or(settings.general.exec.approval_mode);
     let mut conv = Conversation::new();
+    if let Some(project) = &project {
+        crate::projects::apply_to(project, &mut conv, mode);
+    }
+    // Flags win over the project's folder, provider and model.
     conv.permissions.mode = mode;
-    conv.workspace = workspace;
+    if workspace.is_some() {
+        conv.workspace = workspace;
+    }
+    if parsed.provider.is_some() {
+        conv.provider = None;
+    }
+    if parsed.model.is_some() {
+        conv.model = None;
+    }
     conv.messages.push(ChatMessage::new(Role::User, prompt));
     conv.auto_title();
     conv.updated_at = chrono::Utc::now();
@@ -506,7 +539,7 @@ pub fn run(args: &[String]) -> i32 {
             .sandbox
             .enabled
             .then(|| Sandbox::new(settings.sandbox.clone()));
-        let req = headless(AgentRequest::for_chat(
+        let mut req = headless(AgentRequest::for_chat(
             &settings,
             &conv,
             sandbox.as_ref(),
@@ -514,6 +547,9 @@ pub fn run(args: &[String]) -> i32 {
             false,
             None,
         ));
+        if let Some(project) = &project {
+            req.project = crate::projects::context_for(project, &settings.general.projects);
+        }
         drive(req, http, mcp, &mut conv, &mut sink).await
     });
     runtime.shutdown_timeout(Duration::from_millis(500));
@@ -828,6 +864,15 @@ mod tests {
         // The conversation keeps the prompt and the answer, ready to save.
         assert_eq!(conv.messages.len(), 2);
         assert_eq!(conv.messages[1].content, "Hello from the mock.");
+    }
+
+    #[test]
+    fn the_project_flag_takes_a_name_or_an_id() {
+        let p = parse_args(&words(&["--project", "Site", "hi"])).unwrap();
+        assert_eq!(p.project.as_deref(), Some("Site"));
+        let p = parse_args(&words(&["--project=Site", "hi"])).unwrap();
+        assert_eq!(p.project.as_deref(), Some("Site"));
+        assert!(parse_args(&words(&["--project"])).is_err());
     }
 
     #[test]

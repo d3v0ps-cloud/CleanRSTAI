@@ -11,25 +11,29 @@ use uuid::Uuid;
 
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::approval::{AlwaysAllow, Approval, PendingApproval};
-use crate::attach::Attachment;
+use crate::attach::{Attachment, Reading};
 use crate::background::{self, Outcome, Queued, RunQueue};
 use crate::branches::{self, BranchSettings, Hold};
 use crate::config::{RemoteTls, Settings, Theme};
 use crate::export;
 use crate::llm;
 use crate::mcp::manager::McpManager;
+use crate::projects::{self, Project};
 use crate::remote::{
     ApprovalView, AttachmentView, ChatSummary, ChatView, MessageView, ProviderView, RemoteCommand,
     RemoteEvent, RemoteStatus, StateView, ToolCallView,
 };
 use crate::schedule::{self, ScheduleSettings, ScheduledTask, Target};
+use crate::tools::workspace::Workspace;
 use crate::tools::{self, ToolOverrides, ToolSelection};
 use crate::tray;
 use crate::types::{ChatMessage, Conversation, Role, fork_messages};
 use crate::ui::artifact_panel::{self, ArtifactView};
 use crate::ui::attachments::{self as attach_ui, ImageCache};
 use crate::ui::chat_view::{self, centered};
+use crate::ui::commit_dialog::{CommitAction, CommitDialog};
 use crate::ui::palette::{Command, Entry, Palette};
+use crate::ui::project_editor::{self, EditorOutcome, ProjectEditor};
 use crate::ui::settings::{SettingsAction, SettingsUi, Tab};
 use crate::ui::theme::{self, icon};
 use crate::ui::widgets::icon_button;
@@ -73,6 +77,14 @@ pub(crate) enum Action {
     /// Show another version of the message's tail: chat, message index, version index (see
     /// `branches`).
     SwitchBranch(Uuid, usize, usize),
+    /// Save a reply or artifact as a Word, PDF or Excel file: the chat, the file's title (the
+    /// chat's when `None`), what to save and the format.
+    SaveAs {
+        conv: Uuid,
+        title: Option<String>,
+        content: crate::save_as::Content,
+        format: crate::save_as::Format,
+    },
     /// Approve the plan a Plan chat's latest reply proposed (see `plan`).
     ApprovePlan(Uuid),
     /// Keep planning: focus the message box.
@@ -135,6 +147,8 @@ pub struct ChatApp {
     pending_attachments: Vec<Attachment>,
     /// Files still being read for `pending_attachments`.
     reading_files: usize,
+    /// Of those, scanned PDFs being read with OCR.
+    reading_ocr: usize,
     images: ImageCache,
     /// MCP server state for the composer and top bar, re-read when the manager changes.
     mcp_views: (u64, Arc<Vec<crate::mcp::manager::ServerView>>),
@@ -142,6 +156,8 @@ pub struct ChatApp {
     prompt_form: Option<PromptForm>,
     /// The "Changed files" window is open.
     changed_files_open: bool,
+    /// The Commit dialog, while it is open.
+    commit_dialog: Option<crate::ui::commit_dialog::CommitDialog>,
     /// For background tasks to request a repaint when their results arrive.
     repaint_ctx: egui::Context,
     palette: Palette,
@@ -184,6 +200,8 @@ pub struct ChatApp {
     tunnel_error: Option<String>,
     /// The tunnel's public hostnames, shared with the server (which also answers them).
     tunnel_hosts: crate::remote::TunnelHosts,
+    /// Cloudflare Access checks, shared with the server; the settings page shows its last error.
+    access: Arc<crate::remote::AccessGate>,
     /// Fingerprints of each chat as last sent to the browsers (see `chat_fingerprint`).
     remote_seen: HashMap<Uuid, u64>,
     /// Fingerprint of the chat list and models as last sent (see `list_fingerprint`).
@@ -193,6 +211,14 @@ pub struct ChatApp {
     remote_sent: HashMap<Uuid, Instant>,
     /// When scheduled tasks were last checked (see `run_schedules`).
     schedule_checked: Option<Instant>,
+    /// The projects, by name (see `projects`).
+    projects: Vec<Project>,
+    /// Projects whose chats are folded away in the sidebar (remembered until the app quits).
+    collapsed_projects: HashSet<Uuid>,
+    /// The project editor, while a project is being created or edited.
+    project_editor: Option<ProjectEditor>,
+    /// A project waiting for the user to confirm its deletion.
+    project_to_delete: Option<Uuid>,
 }
 
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
@@ -286,9 +312,9 @@ enum FileSource {
 }
 
 impl FileSource {
-    fn read(self) -> anyhow::Result<Attachment> {
+    fn read(self) -> anyhow::Result<Reading> {
         match self {
-            Self::Path(p) => Attachment::from_path(&p),
+            Self::Path(p) => Attachment::read_path(&p),
             Self::Dropped(f) => {
                 let name = f
                     .path()
@@ -296,7 +322,7 @@ impl FileSource {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "file".into());
                 let bytes = f.bytes().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
-                Attachment::from_bytes(name, bytes)
+                Attachment::read_bytes(name, bytes)
             }
         }
     }
@@ -315,6 +341,39 @@ fn copy_run_state(live: &ScheduleSettings, draft: &mut ScheduleSettings, id: Uui
 }
 
 /// "aaron.bolton" or "aaron" → "Aaron", from the OS account; `None` for root or when unset.
+/// The sidebar's pending actions, applied after its list is drawn.
+#[derive(Default)]
+struct SidebarActs {
+    select: Option<Uuid>,
+    delete: Option<Uuid>,
+    export_md: Option<Uuid>,
+    export_html: Option<Uuid>,
+    toggle_pin: Option<Uuid>,
+    rename_commit: Option<(Uuid, String)>,
+    /// Move a chat into a project (`Some`), or out of its project (`None`).
+    move_to: Option<(Uuid, Option<Uuid>)>,
+    tools_to_project: Option<Uuid>,
+    new_in_project: Option<Uuid>,
+    toggle_project: Option<Uuid>,
+    edit_project: Option<Uuid>,
+    export_project: Option<Uuid>,
+    delete_project: Option<Uuid>,
+    new_project: bool,
+    import_project: bool,
+}
+
+/// A sidebar row: no outline, a soft fill when hovered or current.
+fn sidebar_row(text: RichText, current: bool, selected: egui::Color32) -> egui::Button<'static> {
+    egui::Button::new(text)
+        .frame_when_inactive(current)
+        .fill(if current {
+            selected
+        } else {
+            egui::Color32::TRANSPARENT
+        })
+        .stroke(egui::Stroke::NONE)
+}
+
 fn user_first_name() -> Option<String> {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
@@ -403,11 +462,13 @@ impl ChatApp {
             keychain_warned: false,
             pending_attachments: Vec::new(),
             reading_files: 0,
+            reading_ocr: 0,
             images: ImageCache::default(),
             mcp_views: (u64::MAX, Arc::default()),
             viewing: None,
             prompt_form: None,
             changed_files_open: false,
+            commit_dialog: None,
             repaint_ctx: cc.egui_ctx.clone(),
             palette: Palette::default(),
             sidebar_open: true,
@@ -429,10 +490,15 @@ impl ChatApp {
             tunnel: None,
             tunnel_error: None,
             tunnel_hosts: Default::default(),
+            access: Default::default(),
             remote_seen: HashMap::new(),
             remote_list_seen: 0,
             remote_sent: HashMap::new(),
             schedule_checked: None,
+            projects: Project::load_all(),
+            collapsed_projects: HashSet::new(),
+            project_editor: None,
+            project_to_delete: None,
         };
         if app.settings.general.check_for_updates {
             app.spawn_update_check(false, app.settings.general.update_url.clone());
@@ -470,8 +536,13 @@ impl ChatApp {
     /// A chat to write in, without selecting it: the first empty one, or a new one. The draft
     /// tool switches go to it.
     fn create_chat(&mut self) -> Uuid {
-        // Reuse an existing empty chat instead of piling them up.
-        let id = match self.conversations.iter().find(|c| c.messages.is_empty()) {
+        // Reuse an existing empty chat instead of piling them up (one outside a project: a
+        // project's empty chat has its own settings).
+        let id = match self
+            .conversations
+            .iter()
+            .find(|c| c.messages.is_empty() && c.project.is_none())
+        {
             Some(c) => c.id,
             None => {
                 let c =
@@ -673,6 +744,7 @@ impl ChatApp {
             .skill_cache
             .get(&self.settings.general.skills, workspace_dir.as_deref())
             .is_empty();
+        let in_project = self.in_listed_project_chat();
         let sel = ToolSelection::new(&self.settings, &overrides)
             .with_mode(permissions.mode)
             .with_skills(has_skills);
@@ -817,11 +889,16 @@ impl ChatApp {
                             ui.separator();
                             ui.label(RichText::new("Chat features").small().weak());
                             for (key, name, desc) in crate::tools::FEATURES {
+                                // The project switch only means something in a project's chat.
+                                if key == crate::tools::PROJECT && !in_project {
+                                    continue;
+                                }
                                 let mut on = sel.feature_on(key);
                                 let ic = match key {
                                     crate::tools::COMPACTION => icon::STACK,
                                     crate::tools::INSTRUCTIONS => icon::FILE,
                                     crate::tools::HOOKS => icon::TERMINAL,
+                                    crate::tools::PROJECT => icon::FOLDER,
                                     _ => icon::UNDO,
                                 };
                                 let mut hover = desc.to_owned();
@@ -1222,6 +1299,16 @@ impl ChatApp {
             compact_only,
             provider_id.as_deref(),
         );
+        // A chat in a project reads the project's files on the runtime, not on this thread.
+        let project = (self.settings.general.projects.enabled
+            && req.selection.feature_on(tools::PROJECT))
+        .then(|| {
+            conv.project
+                .and_then(|pid| self.projects.iter().find(|p| p.id == pid))
+        })
+        .flatten()
+        .cloned();
+        let project_settings = self.settings.general.projects.clone();
         let (http, mcp, tx, ctx) = (
             self.http.clone(),
             self.mcp.clone(),
@@ -1229,6 +1316,15 @@ impl ChatApp {
             ctx.clone(),
         );
         let task = self.rt.spawn(async move {
+            let mut req = req;
+            if let Some(project) = project {
+                req.project = tokio::task::spawn_blocking(move || {
+                    projects::context_for(&project, &project_settings)
+                })
+                .await
+                .ok()
+                .flatten();
+            }
             agent::run(req, http, mcp, tx, move || ctx.request_repaint()).await;
         });
         self.runs.insert(
@@ -1505,8 +1601,37 @@ impl ChatApp {
                         self.notice = Some(e);
                     }
                 }
-                AppEvent::FileAttached { result } => {
+                AppEvent::CommitListed { conv_id, result } => {
+                    if let Some(d) = self.commit_dialog.as_mut().filter(|d| d.conv == conv_id) {
+                        d.set_listing(result);
+                    }
+                }
+                AppEvent::Committed { conv_id, result } => {
+                    if self
+                        .commit_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.conv == conv_id)
+                    {
+                        match result {
+                            Ok(text) => {
+                                self.commit_dialog = None;
+                                self.notice = text.lines().next().map(str::to_owned);
+                            }
+                            Err(e) => {
+                                if let Some(d) = self.commit_dialog.as_mut() {
+                                    d.busy = false;
+                                    d.error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                AppEvent::OcrStarted => self.reading_ocr += 1,
+                AppEvent::FileAttached { result, ocr } => {
                     self.reading_files = self.reading_files.saturating_sub(1);
+                    if ocr {
+                        self.reading_ocr = self.reading_ocr.saturating_sub(1);
+                    }
                     match result {
                         Ok(a) => self.pending_attachments.push(a),
                         // Several files can fail in one drop; list them together.
@@ -1578,8 +1703,51 @@ impl ChatApp {
                     }
                 }
                 AppEvent::Chat { conv_id, event } => self.handle_chat_event(conv_id, event),
+                AppEvent::SavedAs(result) => {
+                    self.notice = Some(match result {
+                        Ok(msg) | Err(msg) => msg,
+                    });
+                }
             }
         }
+    }
+
+    /// "Save as…" for a reply or artifact: the file dialog here (as the other saves do, since
+    /// macOS wants it on the main thread), then the file is built and written off the UI
+    /// thread and its outcome comes back as `AppEvent::SavedAs`.
+    fn save_as(
+        &mut self,
+        conv: Uuid,
+        title: Option<String>,
+        content: crate::save_as::Content,
+        format: crate::save_as::Format,
+    ) {
+        let title = title.unwrap_or_else(|| {
+            self.conversations
+                .iter()
+                .find(|c| c.id == conv)
+                .map(|c| c.title.clone())
+                .unwrap_or_default()
+        });
+        let stem = crate::save_as::file_stem(&title);
+        let name = export::safe_file_name(stem, format.extension());
+        let Some(path) = export::pick_save_path_as(&name, format.label(), format.extension())
+        else {
+            return;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let result = content
+                .render(format)
+                .map_err(|e| format!("Couldn't save {}: {e:#}", path.display()))
+                .and_then(|bytes| {
+                    crate::config::write_private(&path, &bytes)
+                        .map_err(|e| format!("Couldn't save {}: {e:#}", path.display()))
+                })
+                .map(|()| format!("Saved {}", path.display()));
+            let _ = tx.send(AppEvent::SavedAs(result));
+            ctx.request_repaint();
+        });
     }
 
     fn handle_chat_event(&mut self, id: Uuid, event: ChatEvent) {
@@ -2214,6 +2382,77 @@ impl ChatApp {
         }
     }
 
+    /// Opens the Commit dialog on chat `id` and asks for its working folder's changes.
+    fn open_commit_dialog(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
+        let root = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("Chat not found")?
+            .workspace
+            .clone()
+            .ok_or("This chat has no working folder")?;
+        self.commit_dialog = Some(CommitDialog::new(id, root.clone()));
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = match Workspace::open(&root) {
+                Ok(ws) => ws.commit_changes_list().await,
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(AppEvent::CommitListed {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        Ok(())
+    }
+
+    /// Commits `paths` (as the Commit dialog checked them) in the dialog's working folder.
+    fn start_commit(&mut self, id: Uuid, message: String, paths: Vec<String>, ctx: &egui::Context) {
+        let Some(dialog) = self.commit_dialog.as_mut() else {
+            return;
+        };
+        dialog.busy = true;
+        dialog.error = None;
+        let root = dialog.root.clone();
+        // The user's click in the dialog is the approval; signing follows Settings.
+        let sign = self.settings.general.builtin_tools.allow_signing;
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.rt.spawn(async move {
+            let result = match Workspace::open(&root) {
+                Ok(ws) => {
+                    ws.with_commit_signing(sign)
+                        .commit_changes(&message, Some(&paths))
+                        .await
+                }
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(AppEvent::Committed {
+                conv_id: id,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Draws the Commit dialog and runs what the user asks for.
+    fn commit_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.commit_dialog.take() else {
+            return;
+        };
+        let idle = !self.busy(dialog.conv);
+        match crate::ui::commit_dialog::show(ctx, &mut dialog, idle) {
+            CommitAction::Keep => self.commit_dialog = Some(dialog),
+            CommitAction::Close => {}
+            CommitAction::Commit { message, paths } => {
+                let id = dialog.conv;
+                self.commit_dialog = Some(dialog);
+                self.start_commit(id, message, paths, ctx);
+            }
+        }
+    }
+
     /// The current chat's file edits, one collapsible section per file, with their diffs.
     fn changed_files_window(&mut self, ctx: &egui::Context) {
         if !self.changed_files_open {
@@ -2224,11 +2463,25 @@ impl ChatApp {
             .and_then(|id| self.conversations.iter().find(|c| c.id == id))
             .map(|c| crate::checkpoints::changed_files(&c.messages))
             .unwrap_or_default();
+        let has_workspace = self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some());
+        let mut commit = false;
         egui::Window::new("Changed files")
             .open(&mut self.changed_files_open)
             .resizable(true)
             .default_width(600.0)
             .show(ctx, |ui| {
+                let button = egui::Button::new("Commit…").small();
+                if ui
+                    .add_enabled(has_workspace, button)
+                    .on_hover_text("Commit the working folder's changes to its git repository")
+                    .clicked()
+                {
+                    commit = true;
+                }
+                ui.add_space(4.0);
                 if files.is_empty() {
                     ui.label(RichText::new("This chat hasn't changed any files.").weak());
                     return;
@@ -2281,6 +2534,12 @@ impl ChatApp {
                         });
                 }
             });
+        if commit
+            && let Some(id) = self.current
+            && let Err(e) = self.open_commit_dialog(id, ctx)
+        {
+            self.notice = Some(e);
+        }
     }
 
     fn prompt_form_window(&mut self, ctx: &egui::Context) {
@@ -2385,17 +2644,38 @@ impl ChatApp {
     }
 
     /// Read files into attachments off the UI thread, since extracting a large document's
-    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`.
+    /// text takes a moment. Each arrives as an `AppEvent::FileAttached`. A scanned PDF goes
+    /// through OCR when it is on (`ocr::attach`), which announces itself with `OcrStarted`.
     fn read_files(&mut self, files: Vec<FileSource>) {
         if files.is_empty() {
             return;
         }
         self.reading_files += files.len();
         let (tx, ctx) = (self.tx.clone(), self.repaint_ctx.clone());
-        self.rt.spawn_blocking(move || {
+        let ocr = crate::ocr::Job::from_settings(&self.settings, &self.http);
+        self.rt.spawn(async move {
             for file in files {
-                let result = file.read().map_err(|e| format!("{e:#}"));
-                let _ = tx.send(AppEvent::FileAttached { result });
+                let read = tokio::task::spawn_blocking(move || file.read()).await;
+                let (ocr_used, result) = match read {
+                    Ok(Ok(Reading::Done(a))) => (false, Ok(a)),
+                    Ok(Ok(Reading::Scanned(s))) => match &ocr {
+                        Some(job) => {
+                            let _ = tx.send(AppEvent::OcrStarted);
+                            let name = s.name.clone();
+                            let result = crate::ocr::attach(job, s.name, s.bytes)
+                                .await
+                                .map_err(|e| format!("{name} couldn't be read with OCR: {e:#}"));
+                            (true, result)
+                        }
+                        None => (false, Ok(Reading::Scanned(s).without_ocr())),
+                    },
+                    Ok(Err(e)) => (false, Err(format!("{e:#}"))),
+                    Err(e) => (false, Err(e.to_string())),
+                };
+                let _ = tx.send(AppEvent::FileAttached {
+                    result,
+                    ocr: ocr_used,
+                });
                 ctx.request_repaint();
             }
         });
@@ -2650,6 +2930,20 @@ impl ChatApp {
                 Command::CheckForUpdates,
             ),
         ];
+        if self.settings.general.projects.enabled {
+            e.push(Entry::new(
+                icon::FOLDER,
+                "New project",
+                "Project",
+                Command::NewProject,
+            ));
+            e.push(Entry::new(
+                icon::DOWNLOAD,
+                "Import project…",
+                "Project",
+                Command::ImportProject,
+            ));
+        }
         for task in &self.settings.general.schedules.tasks {
             e.push(Entry::new(
                 icon::CLOCK,
@@ -2688,6 +2982,18 @@ impl ChatApp {
                 "Review changes in the working folder",
                 "Chat",
                 Command::ReviewChanges,
+            ));
+        }
+        if self
+            .current
+            .and_then(|id| self.conversations.iter().find(|c| c.id == id))
+            .is_some_and(|c| c.workspace.is_some())
+        {
+            e.push(Entry::new(
+                icon::CHECK_SQUARE,
+                "Commit changes…",
+                "Chat",
+                Command::CommitChanges,
             ));
         }
         for c in &self.conversations {
@@ -2787,9 +3093,18 @@ impl ChatApp {
                 }
             }
             Command::ShowChangedFiles => self.changed_files_open = true,
+            Command::NewProject => self.open_project_editor(None),
+            Command::ImportProject => self.import_project(),
             Command::ReviewChanges => {
                 if let Some(id) = self.current
                     && let Err(e) = self.start_review(id, ctx)
+                {
+                    self.notice = Some(e);
+                }
+            }
+            Command::CommitChanges => {
+                if let Some(id) = self.current
+                    && let Err(e) = self.open_commit_dialog(id, ctx)
                 {
                     self.notice = Some(e);
                 }
@@ -3060,6 +3375,12 @@ impl ChatApp {
     /// Model and provider, under the composer: "model  Provider ⌄".
     fn model_picker(&mut self, ui: &mut egui::Ui) {
         use egui::containers::menu::{MenuButton, MenuConfig};
+        if let Some(id) = self.current
+            && self.chat_has_own_model(id)
+        {
+            self.chat_model_picker(ui, id);
+            return;
+        }
         let p = theme::palette(ui.visuals().dark_mode);
         let provider = self.settings.provider();
         let model = if provider.model.is_empty() {
@@ -3080,6 +3401,8 @@ impl ChatApp {
             .and_then(|s| s.router.clone());
         let mut load_changes: Vec<(String, bool)> = Vec::new();
         let mut changed = false;
+        let chat_id = self.current;
+        let mut pin_to_chat = false;
         MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
             .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
             .ui(ui, |ui| {
@@ -3152,9 +3475,34 @@ impl ChatApp {
                             }
                         });
                 }
+                if chat_id.is_some() {
+                    ui.separator();
+                    if ui
+                        .button("Use this model for this chat only")
+                        .on_hover_text(
+                            "The chat keeps this provider and model, whatever Settings change to",
+                        )
+                        .clicked()
+                    {
+                        pin_to_chat = true;
+                    }
+                }
             });
         if changed {
             self.save_settings();
+        }
+        if let (true, Some(id)) = (pin_to_chat, chat_id) {
+            let (pid, model) = (
+                self.settings.provider().id.clone(),
+                self.settings.provider().model.trim().to_owned(),
+            );
+            if let Some(conv) = self.conv_mut(id) {
+                conv.provider = Some(pid);
+                conv.model = Some(model).filter(|m| !m.is_empty());
+                if !conv.messages.is_empty() {
+                    conv.save();
+                }
+            }
         }
         for (model, load) in load_changes {
             let provider = self.settings.provider().clone();
@@ -3166,6 +3514,100 @@ impl ChatApp {
                 let _ = tx.send(AppEvent::ModelLoadChanged(result));
                 ctx.request_repaint();
             });
+        }
+    }
+
+    /// Whether a chat has a provider or model of its own (from its project, or picked for it).
+    fn chat_has_own_model(&self, id: Uuid) -> bool {
+        self.conversations
+            .iter()
+            .any(|c| c.id == id && (c.provider.is_some() || c.model.is_some()))
+    }
+
+    /// The model picker of a chat with its own provider or model, in place of the global one.
+    /// Picking a provider resets the model to that provider's; the last item goes back to
+    /// Settings' provider and model.
+    fn chat_model_picker(&mut self, ui: &mut egui::Ui, id: Uuid) {
+        use egui::containers::menu::{MenuButton, MenuConfig};
+        let p = theme::palette(ui.visuals().dark_mode);
+        let providers: Vec<(String, String)> = self
+            .settings
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let active = self.settings.provider();
+        let Some(conv) = self.conversations.iter_mut().find(|c| c.id == id) else {
+            return;
+        };
+        let provider = conv
+            .provider
+            .as_deref()
+            .and_then(|pid| self.settings.providers.iter().find(|p| p.id == pid))
+            .unwrap_or(active);
+        let shown_model = conv.model.clone().unwrap_or_else(|| provider.model.clone());
+        let provider_name = provider.name.clone();
+        let models = provider.models.clone();
+        let default_model = provider.model.clone();
+        let label = (
+            RichText::new(shown_model.clone()).color(p.ink2),
+            RichText::new(&provider_name).color(p.pencil),
+            RichText::new(icon::CARET_DOWN).size(11.0).color(p.pencil),
+        );
+        let mut changed = false;
+        MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
+            .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| {
+                ui.set_min_width(260.0);
+                ui.label(
+                    RichText::new("Provider for this chat")
+                        .small()
+                        .color(p.pencil),
+                );
+                for (pid, name) in &providers {
+                    let current = conv.provider.as_deref() == Some(pid.as_str());
+                    if ui.selectable_label(current, name).clicked() {
+                        conv.provider = Some(pid.clone());
+                        conv.model = None;
+                        changed = true;
+                    }
+                }
+                ui.separator();
+                ui.label(RichText::new("Model").small().color(p.pencil));
+                if models.is_empty() {
+                    let mut text = conv.model.clone().unwrap_or_default();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .hint_text(default_model.as_str())
+                                .desired_width(240.0),
+                        )
+                        .changed()
+                    {
+                        conv.model = Some(text).filter(|m| !m.trim().is_empty());
+                        changed = true;
+                    }
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for m in &models {
+                                if ui.selectable_label(*m == shown_model, m).clicked() {
+                                    conv.model = Some(m.clone());
+                                    changed = true;
+                                }
+                            }
+                        });
+                }
+                ui.separator();
+                if ui.button("Use Settings' provider and model").clicked() {
+                    conv.provider = None;
+                    conv.model = None;
+                    changed = true;
+                }
+            });
+        if changed && !conv.messages.is_empty() {
+            conv.save();
         }
     }
 
@@ -3349,22 +3791,12 @@ impl ChatApp {
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(6.0);
-        // Sidebar rows: no outline, a soft fill when hovered or current.
-        let row = |text: RichText, current: bool| {
-            egui::Button::new(text)
-                .frame_when_inactive(current)
-                .fill(if current {
-                    p.selected
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
-                .stroke(egui::Stroke::NONE)
-        };
         if ui
             .add(
-                row(
+                sidebar_row(
                     RichText::new(theme::labelled(icon::PLUS, "New chat")).color(p.ink),
                     true,
+                    p.selected,
                 )
                 .min_size(egui::vec2(ui.available_width(), 30.0)),
             )
@@ -3375,9 +3807,10 @@ impl ChatApp {
         }
         if ui
             .add(
-                row(
+                sidebar_row(
                     RichText::new(theme::labelled(icon::GEAR, "Settings")).color(p.ink2),
                     false,
+                    p.selected,
                 )
                 .min_size(egui::vec2(ui.available_width(), 30.0)),
             )
@@ -3387,38 +3820,47 @@ impl ChatApp {
         }
         ui.add_space(4.0);
 
-        let mut select = None;
-        let mut delete = None;
-        let mut export_md = None;
-        let mut export_html = None;
-        let mut toggle_pin = None;
-        let mut rename_commit = None;
+        let mut acts = SidebarActs::default();
         let needle = self.search.to_lowercase();
-        let mut rows: Vec<(bool, &Conversation)> = self
-            .conversations
-            .iter()
-            // An empty new chat isn't listed until it has a message.
-            .filter(|c| listed(c, &self.runs))
-            .filter(|c| {
-                needle.is_empty()
-                    || c.title.to_lowercase().contains(&needle)
-                    || c.messages
-                        .iter()
-                        .any(|m| m.content.to_lowercase().contains(&needle))
+        // Projects are listed (and their chats grouped under them) unless a search is typed:
+        // then every matching chat is listed together, as before.
+        let grouped = self.settings.general.projects.enabled && needle.is_empty();
+        let matching: Vec<usize> = (0..self.conversations.len())
+            .filter(|&i| {
+                let c = &self.conversations[i];
+                // An empty new chat isn't listed until it has a message.
+                listed(c, &self.runs)
+                    && (needle.is_empty()
+                        || c.title.to_lowercase().contains(&needle)
+                        || c.messages
+                            .iter()
+                            .any(|m| m.content.to_lowercase().contains(&needle)))
             })
-            .map(|c| (c.pinned, c))
             .collect();
-        // Pinned chats first, then everything else, newest first.
-        rows.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.updated_at.cmp(&a.1.updated_at)));
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if grouped {
+                    self.project_section(ui, &mut acts);
+                }
+                let mut rows: Vec<usize> = matching
+                    .into_iter()
+                    .filter(|&i| !(grouped && self.in_listed_project(i)))
+                    .collect();
+                // Pinned chats first, then everything else, newest first.
+                rows.sort_by(|&a, &b| {
+                    let (a, b) = (&self.conversations[a], &self.conversations[b]);
+                    b.pinned
+                        .cmp(&a.pinned)
+                        .then(b.updated_at.cmp(&a.updated_at))
+                });
                 if rows.is_empty() && !needle.is_empty() {
                     ui.label(RichText::new("No matching chats").small().color(p.pencil));
                 }
                 let mut last_group = None;
-                for (group, c) in rows {
+                for idx in rows {
+                    let group = self.conversations[idx].pinned;
                     if last_group != Some(group) {
                         ui.add_space(14.0);
                         ui.label(
@@ -3428,130 +3870,495 @@ impl ChatApp {
                         );
                         last_group = Some(group);
                     }
-                    if let Some((rid, text)) = &mut self.renaming
-                        && *rid == c.id
-                    {
-                        let resp =
-                            ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-                        resp.request_focus();
-                        if resp.lost_focus() {
-                            rename_commit = Some((c.id, text.clone()));
-                        }
-                        continue;
-                    }
-                    let selected = self.current == Some(c.id);
-                    let title =
-                        RichText::new(&c.title).color(if selected { p.ink } else { p.ink2 });
-                    // One state mark per row, the most urgent first.
-                    let (mark, state) = if self
-                        .runs
-                        .get(&c.id)
-                        .is_some_and(|r| !r.approvals.is_empty())
-                    {
-                        (
-                            RichText::new(icon::SHIELD).size(12.0).color(p.warn),
-                            "Waiting for approval",
-                        )
-                    } else if self.runs.contains_key(&c.id) {
-                        (
-                            RichText::new(icon::HOURGLASS).size(12.0).color(p.signal),
-                            "Replying…",
-                        )
-                    } else if self.queue.contains(c.id) {
-                        (
-                            RichText::new(icon::CLOCK).size(12.0).color(p.pencil),
-                            "Queued",
-                        )
-                    } else if self.unread.contains(&c.id) && !selected {
-                        (
-                            RichText::new(icon::OK).size(12.0).color(p.signal),
-                            "Reply ended, not read yet",
-                        )
-                    } else if c.pinned {
-                        (RichText::new(icon::PIN).size(12.0).color(p.pencil), "")
-                    } else {
-                        (RichText::new(""), "")
-                    };
-                    let resp = ui.add(
-                        row(title, selected)
-                            .truncate()
-                            .right_text(mark)
-                            .min_size(egui::vec2(ui.available_width(), 30.0)),
-                    );
-                    let resp = resp.on_hover_text(format!(
-                        "{}{}\n{}",
-                        c.title,
-                        if state.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n{state}")
-                        },
-                        c.updated_at
-                            .with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d %H:%M")
-                    ));
-                    if resp.clicked() {
-                        select = Some(c.id);
-                    }
-                    resp.context_menu(|ui| {
-                        let pin_label = if c.pinned {
-                            theme::labelled(icon::UNPIN, "Unpin")
-                        } else {
-                            theme::labelled(icon::PIN, "Pin")
-                        };
-                        if ui.button(pin_label).clicked() {
-                            toggle_pin = Some(c.id);
-                            ui.close();
-                        }
-                        if ui.button(theme::labelled(icon::EDIT, "Rename")).clicked() {
-                            self.renaming = Some((c.id, c.title.clone()));
-                            ui.close();
-                        }
-                        if ui
-                            .button(theme::labelled(icon::DOWNLOAD, "Export as Markdown…"))
-                            .clicked()
-                        {
-                            export_md = Some(c.id);
-                            ui.close();
-                        }
-                        if ui
-                            .button(theme::labelled(icon::ARROW_SQUARE_OUT, "Share as HTML…"))
-                            .clicked()
-                        {
-                            export_html = Some(c.id);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
-                            delete = Some(c.id);
-                            ui.close();
-                        }
-                    });
+                    self.chat_row(ui, idx, &mut acts);
                 }
             });
 
-        if let Some(id) = toggle_pin
+        if let Some(id) = acts.toggle_pin
             && let Some(pinned) = self.conv_mut(id).map(|c| !c.pinned)
         {
             let _ = self.set_pinned(id, pinned);
         }
-        if let Some(id) = export_md {
+        if let Some(id) = acts.export_md {
             self.export_markdown(id);
         }
-        if let Some(id) = export_html {
+        if let Some(id) = acts.export_html {
             self.export_html(id);
         }
-        if let Some(id) = select {
+        if let Some(id) = acts.select {
             self.current = Some(id);
         }
-        if let Some((id, title)) = rename_commit {
+        if let Some((id, title)) = acts.rename_commit {
             self.renaming = None;
             // An empty title keeps the old one.
             let _ = self.rename_chat(id, &title);
         }
-        if let Some(id) = delete {
+        if let Some(id) = acts.delete {
             self.delete_chat(id);
         }
+        if let Some((id, project)) = acts.move_to {
+            self.move_chat_to(id, project);
+        }
+        if let Some(id) = acts.tools_to_project {
+            self.save_tools_to_project(id);
+        }
+        if let Some(pid) = acts.new_in_project {
+            self.new_project_chat(pid);
+        }
+        if let Some(pid) = acts.toggle_project
+            && !self.collapsed_projects.remove(&pid)
+        {
+            self.collapsed_projects.insert(pid);
+        }
+        if let Some(pid) = acts.edit_project {
+            self.open_project_editor(Some(pid));
+        }
+        if let Some(pid) = acts.export_project {
+            self.export_project(pid);
+        }
+        if let Some(pid) = acts.delete_project {
+            self.project_to_delete = Some(pid);
+        }
+        if acts.new_project {
+            self.open_project_editor(None);
+        }
+        if acts.import_project {
+            self.import_project();
+        }
+    }
+
+    /// Whether chat `idx` belongs to a project that is listed.
+    fn in_listed_project(&self, idx: usize) -> bool {
+        self.conversations[idx]
+            .project
+            .is_some_and(|pid| self.projects.iter().any(|p| p.id == pid))
+    }
+
+    /// Whether the open chat belongs to a listed project.
+    fn in_listed_project_chat(&self) -> bool {
+        self.current
+            .and_then(|id| self.conversations.iter().position(|c| c.id == id))
+            .is_some_and(|i| self.in_listed_project(i))
+    }
+
+    /// The "Projects" part of the sidebar: a header with "+", then each project as a row that
+    /// folds its chats away, with "+" for a new chat in it.
+    fn project_section(&mut self, ui: &mut egui::Ui, acts: &mut SidebarActs) {
+        let p = theme::palette(ui.visuals().dark_mode);
+        ui.add_space(14.0);
+        let header = ui
+            .horizontal(|ui| {
+                ui.label(RichText::new("Projects").small().color(p.pencil));
+                if icon_button(ui, icon::PLUS, "New project").clicked() {
+                    acts.new_project = true;
+                }
+            })
+            .response;
+        header.context_menu(|ui| {
+            if ui
+                .button(theme::labelled(icon::PLUS, "New project"))
+                .clicked()
+            {
+                acts.new_project = true;
+                ui.close();
+            }
+            if ui
+                .button(theme::labelled(icon::DOWNLOAD, "Import project…"))
+                .clicked()
+            {
+                acts.import_project = true;
+                ui.close();
+            }
+        });
+        let projects: Vec<(Uuid, String)> = self
+            .projects
+            .iter()
+            .map(|p| (p.id, p.name.clone()))
+            .collect();
+        for (pid, name) in projects {
+            let collapsed = self.collapsed_projects.contains(&pid);
+            let caret = if collapsed {
+                icon::CARET_RIGHT
+            } else {
+                icon::CARET_DOWN
+            };
+            let name_resp = ui
+                .horizontal(|ui| {
+                    let resp = ui.add(
+                        sidebar_row(
+                            RichText::new(theme::labelled(caret, &name)).color(p.ink2),
+                            false,
+                            p.selected,
+                        )
+                        .truncate()
+                        .min_size(egui::vec2(ui.available_width() - 30.0, 30.0)),
+                    );
+                    if icon_button(ui, icon::PLUS, "New chat in this project").clicked() {
+                        acts.new_in_project = Some(pid);
+                    }
+                    resp
+                })
+                .inner;
+            if name_resp.clicked() {
+                acts.toggle_project = Some(pid);
+            }
+            name_resp.context_menu(|ui| {
+                if ui.button(theme::labelled(icon::PLUS, "New chat")).clicked() {
+                    acts.new_in_project = Some(pid);
+                    ui.close();
+                }
+                if ui.button(theme::labelled(icon::EDIT, "Edit…")).clicked() {
+                    acts.edit_project = Some(pid);
+                    ui.close();
+                }
+                if ui
+                    .button(theme::labelled(icon::EXPORT, "Export…"))
+                    .clicked()
+                {
+                    acts.export_project = Some(pid);
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
+                    acts.delete_project = Some(pid);
+                    ui.close();
+                }
+            });
+            if !collapsed {
+                let mut ids: Vec<usize> = (0..self.conversations.len())
+                    .filter(|&i| {
+                        self.conversations[i].project == Some(pid)
+                            && listed(&self.conversations[i], &self.runs)
+                    })
+                    .collect();
+                ids.sort_by_key(|&i| std::cmp::Reverse(self.conversations[i].updated_at));
+                ui.indent(("project-chats", pid), |ui| {
+                    for idx in ids {
+                        self.chat_row(ui, idx, acts);
+                    }
+                });
+            }
+        }
+        ui.add_space(14.0);
+    }
+
+    /// One chat's row in the sidebar: its title, state mark, and menu.
+    fn chat_row(&mut self, ui: &mut egui::Ui, idx: usize, acts: &mut SidebarActs) {
+        let p = theme::palette(ui.visuals().dark_mode);
+        let c = &self.conversations[idx];
+        if let Some((rid, text)) = &mut self.renaming
+            && *rid == c.id
+        {
+            let resp = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+            resp.request_focus();
+            if resp.lost_focus() {
+                acts.rename_commit = Some((c.id, text.clone()));
+            }
+            return;
+        }
+        let selected = self.current == Some(c.id);
+        let title = RichText::new(&c.title).color(if selected { p.ink } else { p.ink2 });
+        // One state mark per row, the most urgent first.
+        let (mark, state) = if self
+            .runs
+            .get(&c.id)
+            .is_some_and(|r| !r.approvals.is_empty())
+        {
+            (
+                RichText::new(icon::SHIELD).size(12.0).color(p.warn),
+                "Waiting for approval",
+            )
+        } else if self.runs.contains_key(&c.id) {
+            (
+                RichText::new(icon::HOURGLASS).size(12.0).color(p.signal),
+                "Replying…",
+            )
+        } else if self.queue.contains(c.id) {
+            (
+                RichText::new(icon::CLOCK).size(12.0).color(p.pencil),
+                "Queued",
+            )
+        } else if self.unread.contains(&c.id) && !selected {
+            (
+                RichText::new(icon::OK).size(12.0).color(p.signal),
+                "Reply ended, not read yet",
+            )
+        } else if c.pinned {
+            (RichText::new(icon::PIN).size(12.0).color(p.pencil), "")
+        } else {
+            (RichText::new(""), "")
+        };
+        let resp = ui.add(
+            sidebar_row(title, selected, p.selected)
+                .truncate()
+                .right_text(mark)
+                .min_size(egui::vec2(ui.available_width(), 30.0)),
+        );
+        let resp = resp.on_hover_text(format!(
+            "{}{}\n{}",
+            c.title,
+            if state.is_empty() {
+                String::new()
+            } else {
+                format!("\n{state}")
+            },
+            c.updated_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+        ));
+        if resp.clicked() {
+            acts.select = Some(c.id);
+        }
+        let projects_on = self.settings.general.projects.enabled;
+        resp.context_menu(|ui| {
+            let pin_label = if c.pinned {
+                theme::labelled(icon::UNPIN, "Unpin")
+            } else {
+                theme::labelled(icon::PIN, "Pin")
+            };
+            if ui.button(pin_label).clicked() {
+                acts.toggle_pin = Some(c.id);
+                ui.close();
+            }
+            if ui.button(theme::labelled(icon::EDIT, "Rename")).clicked() {
+                self.renaming = Some((c.id, c.title.clone()));
+                ui.close();
+            }
+            if ui
+                .button(theme::labelled(icon::DOWNLOAD, "Export as Markdown…"))
+                .clicked()
+            {
+                acts.export_md = Some(c.id);
+                ui.close();
+            }
+            if ui
+                .button(theme::labelled(icon::ARROW_SQUARE_OUT, "Share as HTML…"))
+                .clicked()
+            {
+                acts.export_html = Some(c.id);
+                ui.close();
+            }
+            if projects_on {
+                ui.separator();
+                if !self.projects.is_empty() {
+                    ui.menu_button(theme::labelled(icon::FOLDER, "Move to project"), |ui| {
+                        for project in &self.projects {
+                            let current = c.project == Some(project.id);
+                            if ui
+                                .add_enabled(!current, egui::Button::new(project.name.as_str()))
+                                .clicked()
+                            {
+                                acts.move_to = Some((c.id, Some(project.id)));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                if c.project.is_some() {
+                    if ui.button("Remove from project").clicked() {
+                        acts.move_to = Some((c.id, None));
+                        ui.close();
+                    }
+                    if ui
+                        .button("Use this chat's tool switches for its project")
+                        .clicked()
+                    {
+                        acts.tools_to_project = Some(c.id);
+                        ui.close();
+                    }
+                }
+            }
+            ui.separator();
+            if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
+                acts.delete = Some(c.id);
+                ui.close();
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------- projects
+
+    fn open_project_editor(&mut self, id: Option<Uuid>) {
+        let draft = match id.and_then(|id| self.projects.iter().find(|p| p.id == id)) {
+            Some(project) => project.clone(),
+            None => Project::new("", &self.settings.general.projects),
+        };
+        self.project_editor = Some(ProjectEditor {
+            is_new: id.is_none(),
+            draft,
+        });
+    }
+
+    /// The project editor and the delete confirmation, while they are open.
+    fn project_windows(&mut self, ctx: &egui::Context) {
+        if let Some(editor) = &mut self.project_editor {
+            let providers: Vec<(String, String)> = self
+                .settings
+                .providers
+                .iter()
+                .map(|p| (p.id.clone(), p.name.clone()))
+                .collect();
+            match project_editor::show(ctx, editor, &providers) {
+                EditorOutcome::Open => {}
+                EditorOutcome::Cancel => self.project_editor = None,
+                EditorOutcome::Save(project) => {
+                    self.project_editor = None;
+                    self.save_project(*project);
+                }
+            }
+        }
+        if let Some(id) = self.project_to_delete {
+            let name = self
+                .projects
+                .iter()
+                .find(|p| p.id == id)
+                .map_or(String::new(), |p| p.name.clone());
+            match project_editor::confirm_delete(ctx, &name) {
+                Some(true) => {
+                    self.project_to_delete = None;
+                    self.delete_project(id);
+                }
+                Some(false) => self.project_to_delete = None,
+                None => {}
+            }
+        }
+    }
+
+    /// Save a project to disk and in the list.
+    fn save_project(&mut self, mut project: Project) {
+        project.updated = chrono::Utc::now();
+        project.save();
+        match self.projects.iter_mut().find(|p| p.id == project.id) {
+            Some(existing) => *existing = project,
+            None => self.projects.push(project),
+        }
+        self.projects.sort_by_key(|p| p.name.to_lowercase());
+    }
+
+    /// Delete a project's file. Its chats stay, outside the project.
+    fn delete_project(&mut self, id: Uuid) {
+        Project::delete(id);
+        self.projects.retain(|p| p.id != id);
+        self.collapsed_projects.remove(&id);
+        let linked: Vec<Uuid> = self
+            .conversations
+            .iter()
+            .filter(|c| c.project == Some(id))
+            .map(|c| c.id)
+            .collect();
+        projects::unlink_chats(&mut self.conversations, id);
+        for c in self
+            .conversations
+            .iter()
+            .filter(|c| linked.contains(&c.id) && !c.messages.is_empty())
+        {
+            c.save();
+        }
+        self.notice = Some("Project deleted; its chats are kept.".into());
+    }
+
+    /// A new chat in a project, with the project's settings. An empty one of the project is
+    /// reused, as an empty chat is anywhere.
+    fn new_project_chat(&mut self, pid: Uuid) {
+        let Some(project) = self.projects.iter().find(|p| p.id == pid).cloned() else {
+            return;
+        };
+        let default_mode = self.settings.general.default_approval_mode;
+        self.collapsed_projects.remove(&pid);
+        let reuse = self
+            .conversations
+            .iter()
+            .find(|c| c.project == Some(pid) && c.messages.is_empty())
+            .map(|c| c.id);
+        let id = match reuse {
+            Some(id) => id,
+            None => {
+                let conv = projects::new_chat(&project, default_mode);
+                let id = conv.id;
+                self.conversations.insert(0, conv);
+                id
+            }
+        };
+        if let Some(conv) = self.conv_mut(id) {
+            projects::apply_to(&project, conv, default_mode);
+        }
+        self.current = Some(id);
+        self.input.clear();
+    }
+
+    /// Move a chat into a project (`Some`), or out of its project (`None`).
+    fn move_chat_to(&mut self, id: Uuid, project: Option<Uuid>) {
+        let target = match project {
+            None => None,
+            Some(pid) => match self.projects.iter().find(|p| p.id == pid).cloned() {
+                Some(p) => Some(p),
+                None => return,
+            },
+        };
+        if let Some(conv) = self.conv_mut(id) {
+            projects::move_chat(conv, target.as_ref());
+            if !conv.messages.is_empty() {
+                conv.save();
+            }
+        }
+    }
+
+    /// Make the project's tool switches those of the chat (from the chat's menu).
+    fn save_tools_to_project(&mut self, chat: Uuid) {
+        let Some(conv) = self.conversations.iter().find(|c| c.id == chat) else {
+            return;
+        };
+        let (overrides, Some(pid)) = (conv.tool_overrides.clone(), conv.project) else {
+            return;
+        };
+        let Some(mut project) = self.projects.iter().find(|p| p.id == pid).cloned() else {
+            return;
+        };
+        project.tool_overrides = overrides;
+        self.save_project(project);
+        self.notice = Some("The project's tool switches are now this chat's.".into());
+    }
+
+    /// Save a project and its chats to one file (see `projects::bundle`).
+    fn export_project(&mut self, id: Uuid) {
+        let Some(project) = self.projects.iter().find(|p| p.id == id) else {
+            return;
+        };
+        let Some(path) = projects::pick_export_path(&project.name) else {
+            return;
+        };
+        let doc = projects::bundle(project, &self.conversations);
+        self.notice = Some(match projects::write_bundle(&path, &doc) {
+            Ok(()) => format!("Exported \"{}\" to {}", project.name, path.display()),
+            Err(e) => format!("Export failed: {e:#}"),
+        });
+    }
+
+    /// Add a project and its chats from an export file, with new ids.
+    fn import_project(&mut self) {
+        let Some(path) = projects::pick_import_path() else {
+            return;
+        };
+        let parsed = std::fs::read(&path)
+            .map_err(|e| format!("Could not read {}: {e}", path.display()))
+            .and_then(|bytes| {
+                projects::parse_bundle(&bytes).map_err(|e| format!("Import failed: {e:#}"))
+            });
+        self.notice = Some(match parsed {
+            Ok(doc) => {
+                let (project, chats) = projects::unbundle(doc);
+                let (name, count) = (project.name.clone(), chats.len());
+                for c in chats.iter().filter(|c| !c.messages.is_empty()) {
+                    c.save();
+                }
+                self.conversations.extend(chats);
+                self.conversations
+                    .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+                self.save_project(project);
+                format!("Imported project \"{name}\" with {count} chat(s).")
+            }
+            Err(e) => e,
+        });
     }
 
     // ---------------------------------------------------------------- composer
@@ -3675,14 +4482,12 @@ impl ChatApp {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             let n = self.reading_files;
-                            ui.label(
-                                RichText::new(format!(
-                                    "Reading {n} file{}…",
-                                    if n == 1 { "" } else { "s" }
-                                ))
-                                .small()
-                                .weak(),
-                            );
+                            let text = if self.reading_ocr > 0 {
+                                "Reading scanned PDF… (OCR)".to_owned()
+                            } else {
+                                format!("Reading {n} file{}…", if n == 1 { "" } else { "s" })
+                            };
+                            ui.label(RichText::new(text).small().weak());
                         });
                     }
                     let hint = if fresh {
@@ -3849,6 +4654,7 @@ impl ChatApp {
                     .as_ref()
                     .filter(|v| v.conv == conv.id)
                     .map(|v| (v.message, v.index)),
+                save_as: self.settings.general.save_as,
                 plan_ready,
             },
         )
@@ -3904,6 +4710,12 @@ impl ChatApp {
                         Ok(msg) | Err(msg) => msg,
                     });
                 }
+                Action::SaveAs {
+                    conv,
+                    title,
+                    content,
+                    format,
+                } => self.save_as(conv, title, content, format),
                 Action::OpenArtifactInBrowser(a) => {
                     if let Err(e) = crate::artifacts::open_in_browser(&a) {
                         self.notice = Some(format!("Couldn't open it in the browser: {e}"));
@@ -3957,6 +4769,9 @@ impl ChatApp {
     /// the settings. A running server or tunnel with the same settings is left alone; a
     /// change to the tunnel alone doesn't restart the server.
     fn sync_remote(&mut self) {
+        // Access settings don't restart the server (they are not in `server_settings`), so
+        // the server's checks are updated here.
+        self.access.configure(&self.settings.general.remote.tunnel);
         self.sync_server();
         self.sync_tunnel();
     }
@@ -3982,7 +4797,8 @@ impl ChatApp {
         let ctx = self.repaint_ctx.clone();
         let repaint = Arc::new(move || ctx.request_repaint());
         let hosts = self.tunnel_hosts.clone();
-        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint, hosts) {
+        let access = self.access.clone();
+        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint, hosts, access) {
             Ok(handle) => {
                 self.remote_status = RemoteStatus::Running {
                     urls: handle.urls().to_vec(),
@@ -4150,7 +4966,7 @@ impl ChatApp {
         StateView {
             chats: chats
                 .into_iter()
-                .map(|c| chat_summary(c, &self.runs))
+                .map(|c| chat_summary(c, &self.runs, &self.projects))
                 .collect(),
             providers: self
                 .settings
@@ -4214,7 +5030,12 @@ impl ChatApp {
             .into_iter()
             .map(|id| RemoteEvent::Chat { id })
             .collect();
-        let list = list_fingerprint(&self.conversations, &self.runs, &self.settings);
+        let list = list_fingerprint(
+            &self.conversations,
+            &self.runs,
+            &self.settings,
+            &self.projects,
+        );
         if list != self.remote_list_seen {
             self.remote_list_seen = list;
             events.push(RemoteEvent::List);
@@ -4328,7 +5149,11 @@ fn theme_name(theme: &Theme) -> &'static str {
     }
 }
 
-fn chat_summary(conv: &Conversation, runs: &HashMap<Uuid, Run>) -> ChatSummary {
+fn chat_summary(
+    conv: &Conversation,
+    runs: &HashMap<Uuid, Run>,
+    projects: &[Project],
+) -> ChatSummary {
     ChatSummary {
         id: conv.id,
         title: conv.title.clone(),
@@ -4336,6 +5161,10 @@ fn chat_summary(conv: &Conversation, runs: &HashMap<Uuid, Run>) -> ChatSummary {
         updated_at: conv.updated_at,
         running: runs.contains_key(&conv.id),
         approvals: runs.get(&conv.id).map_or(0, |r| r.approvals.len()),
+        project: conv
+            .project
+            .and_then(|pid| projects.iter().find(|p| p.id == pid))
+            .map(|p| p.name.clone()),
     }
 }
 
@@ -4379,6 +5208,7 @@ fn approval_view(p: &PendingApproval) -> ApprovalView {
         label: tools::display_name(&p.call.name),
         arguments: p.call.arguments.clone(),
         server_name: p.server_name.clone(),
+        can_always_tool: !crate::approval::always_asks(&p.call.name),
         can_always_server: p.origin.is_some(),
     }
 }
@@ -4410,6 +5240,7 @@ fn list_fingerprint(
     conversations: &[Conversation],
     runs: &HashMap<Uuid, Run>,
     settings: &Settings,
+    projects: &[Project],
 ) -> u64 {
     let mut h = DefaultHasher::new();
     for conv in conversations.iter().filter(|c| listed(c, runs)) {
@@ -4417,9 +5248,14 @@ fn list_fingerprint(
         conv.title.hash(&mut h);
         conv.pinned.hash(&mut h);
         conv.updated_at.hash(&mut h);
+        conv.project.hash(&mut h);
         let run = runs.get(&conv.id);
         run.is_some().hash(&mut h);
         run.map_or(0, |r| r.approvals.len()).hash(&mut h);
+    }
+    for project in projects {
+        project.id.hash(&mut h);
+        project.name.hash(&mut h);
     }
     settings.active_provider.hash(&mut h);
     settings.general.send_with_enter.hash(&mut h);
@@ -4609,6 +5445,7 @@ impl eframe::App for ChatApp {
                             &self.artifacts.list,
                             remote_images,
                             live_html,
+                            self.settings.general.save_as,
                             &mut actions,
                         )
                     });
@@ -4634,7 +5471,9 @@ impl eframe::App for ChatApp {
         }
 
         self.prompt_form_window(&ctx);
+        self.project_windows(&ctx);
         self.changed_files_window(&ctx);
+        self.commit_dialog_window(&ctx);
         if let Some(image) = &self.viewing
             && !attach_ui::viewer(&ctx, image)
         {
@@ -4660,6 +5499,7 @@ impl eframe::App for ChatApp {
         if let Some(mut sui) = self.settings_ui.take() {
             let views = self.mcp.snapshot();
             let tunnel = self.tunnel_status();
+            let access_error = self.access.last_error();
             let chats: Vec<(Uuid, String)> = self
                 .conversations
                 .iter()
@@ -4677,6 +5517,7 @@ impl eframe::App for ChatApp {
                             &views,
                             &self.remote_status,
                             &tunnel,
+                            access_error.as_deref(),
                             &chats,
                         )
                     })
@@ -4952,9 +5793,21 @@ mod remote_tests {
         let settings = Settings::default();
         let mut conv = conv_with_reply("hi");
         let runs = HashMap::new();
-        let before = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings);
+        let before = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[]);
         conv.pinned = true;
-        let after = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings);
+        let after = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[]);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn list_fingerprint_changes_when_a_chat_moves_to_a_project() {
+        let settings = Settings::default();
+        let mut conv = conv_with_reply("hi");
+        let runs = HashMap::new();
+        let project = Project::new("Site", &settings.general.projects);
+        let before = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[]);
+        conv.project = Some(project.id);
+        let after = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[project]);
         assert_ne!(before, after);
     }
 

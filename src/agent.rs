@@ -84,6 +84,16 @@ pub enum AppEvent {
         conv_id: Uuid,
         result: Result<crate::review::ReviewDiff, String>,
     },
+    /// The working folder's changes for the Commit dialog, or why they couldn't be read.
+    CommitListed {
+        conv_id: Uuid,
+        result: Result<Vec<crate::tools::commit::Change>, String>,
+    },
+    /// A commit from the Commit dialog: what it recorded, or why it failed.
+    Committed {
+        conv_id: Uuid,
+        result: Result<String, String>,
+    },
     /// Result of a GitHub Releases check. `explicit` when the user asked for it.
     UpdateChecked {
         result: Result<crate::update::UpdateCheck, String>,
@@ -111,10 +121,14 @@ pub enum AppEvent {
         name: String,
         result: Result<Vec<crate::attach::Attachment>, String>,
     },
-    /// A file read (and, for documents, its text extracted) for the next message.
+    /// A file read (and, for documents, its text extracted) for the next message. `ocr` is
+    /// set when the file was a scanned PDF read by OCR (after an `OcrStarted`).
     FileAttached {
         result: Result<crate::attach::Attachment, String>,
+        ocr: bool,
     },
+    /// A scanned PDF has started to be read with OCR.
+    OcrStarted,
     /// Messages from an MCP prompt, to insert into the chat.
     McpPromptReady {
         name: String,
@@ -130,6 +144,8 @@ pub enum AppEvent {
         /// Whether the user asked (Detect button) rather than it running alongside a fetch.
         explicit: bool,
     },
+    /// A "Save as…" file was written (its message), or why it wasn't.
+    SavedAs(Result<String, String>),
 }
 
 pub struct AgentRequest {
@@ -153,6 +169,10 @@ pub struct AgentRequest {
     pub compact_only: bool,
     /// The chat's permission mode: which calls run without asking.
     pub approval_mode: crate::approval::ApprovalMode,
+    /// The chat's project instructions and files, read by the caller (see
+    /// `projects::load_context`) for a chat in a project. Added to the system prompt while
+    /// the Projects setting and the chat's "Project context" switch are on.
+    pub project: Option<crate::projects::ProjectContext>,
 }
 
 impl AgentRequest {
@@ -176,11 +196,20 @@ impl AgentRequest {
         let marker = crate::types::last_compaction(&conv.messages);
         let summary = marker.map(|i| conv.messages[i].content.clone());
         let from = marker.map_or(0, |i| i + 1);
-        // A scheduled task may name the provider profile it runs on.
+        // A scheduled task may name the provider profile it runs on; otherwise the chat's own
+        // (from its project, or picked for it), then the active one.
         let chat_provider = provider_id
+            .or(conv.provider.as_deref())
             .and_then(|pid| settings.providers.iter().find(|p| p.id == pid))
             .unwrap_or_else(|| settings.provider())
             .clone();
+        let chat_provider = match conv.model.as_deref().map(str::trim) {
+            Some(model) if !model.is_empty() => ProviderConfig {
+                model: model.to_owned(),
+                ..chat_provider
+            },
+            _ => chat_provider,
+        };
         let provider = if review {
             settings.review_provider(&chat_provider)
         } else {
@@ -216,6 +245,7 @@ impl AgentRequest {
             compaction,
             compact_only,
             approval_mode: mode,
+            project: None,
         }
     }
 }
@@ -257,6 +287,7 @@ pub async fn run(
             checkpoint: req.selection.feature_on(tools::CHECKPOINTS),
             max_checkpoint_bytes: u64::from(edits.max_file_kb) * 1024,
         })
+        .with_commit_signing(req.general.builtin_tools.allow_signing)
     });
     // Shell commands run in the chat's sandbox container, when the sandbox is on.
     let workspace = match (workspace, &req.sandbox) {
@@ -318,6 +349,14 @@ pub async fn run(
             system_prompt.trim_end(),
             crate::skills::prompt_section(&skills)
         );
+    }
+    // A chat in a project: the project's instructions and files (Settings → Context & files,
+    // and the chat's own switch).
+    if let Some(project) = &req.project
+        && req.general.projects.enabled
+        && selection.feature_on(tools::PROJECT)
+    {
+        system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), project.prompt());
     }
     // A Plan chat is told to investigate and propose a plan, not to change anything.
     if req.approval_mode == crate::approval::ApprovalMode::Plan {
@@ -535,7 +574,8 @@ pub async fn run(
         }
 
         for call in &calls {
-            let approved = if req.general.auto_approve_tools
+            let approved = if (req.general.auto_approve_tools
+                && !crate::approval::always_asks(&call.name))
                 || !toolbox.asks(&call.name)
                 || req
                     .approval_mode
@@ -544,6 +584,11 @@ pub async fn run(
                 true
             } else {
                 let preview = match &workspace {
+                    Some(ws) if call.name == tools::workspace::GIT_COMMIT => {
+                        let args = serde_json::from_str(&call.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        ws.commit_preview(&args).await
+                    }
                     Some(ws) if req.general.file_edits.diff_preview => {
                         let (ws, name, args) =
                             (ws.clone(), call.name.clone(), call.arguments.clone());
@@ -758,6 +803,7 @@ mod tests {
             compaction: None,
             compact_only: false,
             approval_mode: Default::default(),
+            project: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -841,6 +887,7 @@ mod tests {
             compaction: None,
             compact_only: false,
             approval_mode: Default::default(),
+            project: None,
         }
     }
 
@@ -907,6 +954,134 @@ mod tests {
             std::fs::read_to_string(dir.join("out/hello.txt")).unwrap(),
             "hi"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One chat turn in the git repository `dir` where the mock model calls `git_commit` (with
+    /// the switch on). Returns the approval prompts asked, their previews, the tool result and
+    /// the tool names offered to the model.
+    async fn commit_turn(
+        dir: &std::path::Path,
+        mode: crate::approval::ApprovalMode,
+        auto_approve: bool,
+    ) -> (usize, Vec<String>, ChatMessage, Vec<String>) {
+        let mut settings = crate::config::Settings::default();
+        settings.general.builtin_tools.git_commit = true;
+        settings.general.auto_approve_tools = auto_approve;
+        let http = reqwest::Client::new();
+        let (base, log) = tool_calling_llm(
+            tools::workspace::GIT_COMMIT,
+            r#"{"message": "Agent commit"}"#,
+        )
+        .await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.to_path_buf());
+        req.approval_mode = mode;
+        req.selection = req.selection.clone().with_mode(mode);
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+        let (mut approvals, mut previews, mut result) = (0, Vec::new(), None);
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            match event {
+                ChatEvent::ToolApproval {
+                    respond, preview, ..
+                } => {
+                    approvals += 1;
+                    previews.extend(preview);
+                    respond.send(true).unwrap();
+                }
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                ChatEvent::Done => break,
+                _ => {}
+            }
+        }
+        agent.await.unwrap();
+        let first = log.lock().unwrap()[0].json();
+        let names = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        (approvals, previews, result.unwrap(), names)
+    }
+
+    /// A commit always asks, in every mode but Allow all (not even Auto in workspace, nor the
+    /// "run all tools" setting), and Read only doesn't offer it at all.
+    #[tokio::test]
+    async fn a_commit_asks_in_every_mode_but_allow_all() {
+        use crate::approval::ApprovalMode;
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-commit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        // Each case starts from a changed file, so the commit has something to record.
+        let reset = |dir: &std::path::Path| {
+            std::fs::write(dir.join("a.txt"), format!("{}\n", Uuid::new_v4())).unwrap();
+        };
+        for (mode, auto) in [
+            (ApprovalMode::Default, false),
+            (ApprovalMode::AutoWorkspace, false),
+            (ApprovalMode::Default, true),
+        ] {
+            reset(&dir);
+            let (approvals, previews, result, names) = commit_turn(&dir, mode, auto).await;
+            assert!(names.contains(&"git_commit".to_owned()), "{names:?}");
+            assert!(!result.is_error, "{mode:?}: {}", result.content);
+            assert_eq!(approvals, 1, "{mode:?} auto={auto} did not ask");
+            assert!(previews[0].contains("Agent commit"), "{}", previews[0]);
+            assert!(previews[0].contains(" M a.txt"), "{}", previews[0]);
+        }
+
+        // Allow all runs it without asking.
+        reset(&dir);
+        let (approvals, _, result, _) = commit_turn(&dir, ApprovalMode::AllowAll, false).await;
+        assert_eq!(approvals, 0);
+        assert!(
+            result.content.starts_with("Committed "),
+            "{}",
+            result.content
+        );
+
+        // Read only doesn't offer the tool, so the call fails and nothing is committed. (The
+        // agent still asks before an unoffered call, as it does for any tool; a Run answer
+        // can't commit, because the call is refused.)
+        reset(&dir);
+        let (_, _, result, names) = commit_turn(&dir, ApprovalMode::ReadOnly, false).await;
+        assert!(!names.contains(&"git_commit".to_owned()), "{names:?}");
+        assert!(result.is_error, "{}", result.content);
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let subjects = String::from_utf8_lossy(&log.stdout).into_owned();
+        // Four commits from the turns above, then the initial one.
+        assert_eq!(subjects.lines().count(), 5, "{subjects}");
+        assert!(subjects.ends_with("init\n"), "{subjects}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1326,6 +1501,103 @@ mod tests {
             .to_owned();
         assert!(!system.contains("cargo fmt"), "{system}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A project with instructions and a text file, loaded the way the app loads it.
+    fn project_with_file(dir: &std::path::Path) -> crate::projects::ProjectContext {
+        let notes = dir.join("units.txt");
+        std::fs::write(&notes, "Use metric units.").unwrap();
+        let mut project =
+            crate::projects::Project::new("Site", &crate::projects::ProjectSettings::default());
+        project.instructions = "Answer in French.".into();
+        project.files = vec![notes];
+        crate::projects::load_context(&project, 256)
+    }
+
+    #[tokio::test]
+    async fn project_instructions_and_files_join_the_system_prompt_unless_switched_off() {
+        let dir = temp_dir("agent-project");
+        let context = project_with_file(&dir);
+        let settings = crate::config::Settings::default();
+
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.project = Some(context.clone());
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(system.contains("Project: Site"), "{system}");
+        assert!(system.contains("Answer in French."), "{system}");
+        assert!(system.contains("Use metric units."), "{system}");
+
+        // The chat's own switch leaves the project out.
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::feature_key(tools::PROJECT),
+            false,
+            true,
+        );
+        let mut req = request(&base, &settings, &ov);
+        req.project = Some(context.clone());
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("Project: Site"), "{system}");
+
+        // So does turning projects off in Settings, even when the chat asks for them.
+        let mut off = settings.clone();
+        off.general.projects.enabled = false;
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &off, &Default::default());
+        req.project = Some(context);
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("Project"), "{system}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chat_uses_its_own_provider_and_model_over_the_active_one() {
+        let mut settings = crate::config::Settings::default();
+        let other = ProviderConfig {
+            id: "other".into(),
+            name: "Other".into(),
+            base_url: "http://other.example/v1".into(),
+            model: "other-model".into(),
+            ..Default::default()
+        };
+        settings.providers.push(other);
+        let mut conv = crate::types::Conversation::new();
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.base_url, settings.provider().base_url);
+
+        conv.provider = Some("other".into());
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.base_url, "http://other.example/v1");
+        assert_eq!(req.provider.model, "other-model");
+
+        // The chat's model replaces its provider's; a scheduled task's provider still wins.
+        conv.model = Some(" chat-model ".into());
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.model, "chat-model");
+        let req = AgentRequest::for_chat(
+            &settings,
+            &conv,
+            None,
+            false,
+            false,
+            Some(&settings.providers[0].id),
+        );
+        assert_eq!(req.provider.base_url, settings.providers[0].base_url);
+        assert_eq!(req.provider.model, "chat-model");
     }
 
     #[tokio::test]

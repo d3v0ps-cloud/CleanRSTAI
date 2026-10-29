@@ -35,6 +35,7 @@ prompt, after the words.
 | `--model MODEL` | The model to use instead of the provider's. |
 | `--workspace DIR` | The working folder for the file, search, git and shell tools, as a chat's folder. Without it, no workspace tools are offered. |
 | `--mode MODE` | The approval mode: `read-only`, `plan`, `default`, `auto` or `allow-all`. Default: the mode set in Settings. |
+| `--project NAME` | Start the run in a [project](projects.html) (by name, or its id): its folder, provider, model, tool switches, permission mode and instructions. The flags above replace the project's. |
 | `--json` | Print nothing until the end, then one JSON object. |
 | `--no-mcp` | Don't start the MCP servers for this request. |
 | `--save` | Save the chat, so it shows in the app's chat list. |

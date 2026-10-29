@@ -103,7 +103,11 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
   app makes goes through `git::safe_command` (`git.rs`), which switches off the repository's own
   fsmonitor, external diff, textconv and pager programs, blanks its clean/smudge/process filter
   drivers (git runs them on `status` and `diff`), and leaves submodules out
-  (`--ignore-submodules=all`); `review.rs` uses it too;
+  (`--ignore-submodules=all`); `review.rs` uses it too. `git_commit` (`tools/commit.rs`, switch `builtin_tools.git_commit`, off by
+  default) stages the chosen paths and runs `git commit -- <paths>` (hooks off, signing off unless
+  `allow_signing`), never pushes; `approval::always_asks` makes it ask in every mode but AllowAll
+  and keeps it out of "Always allow". Read only drops it, subagents never get it, and the Commit
+  dialog (`ui/commit_dialog.rs`) runs the same functions on the user's click;
 - MCP tools routed as `<server>__<tool>` by `mcp::manager::ToolRouter`.
 
 `ToolSelection` resolves what is on: Settings defaults plus per-chat `ToolOverrides` keyed
@@ -154,6 +158,16 @@ per folder in `SkillCache`, cleared when settings are applied.
 
 **Hooks** (`hooks.rs`): commands from `general.hooks` (Settings only, never the workspace or the model) run around tool calls in `agent::run`: `Runner::before_tool` after approval (a failure becomes the call's error, `Blocked by hook …`), `after_tool` appends `[hook name]` output to the result, and `reply_done` gives `ChatEvent::HookNotice` once a reply ends without `ChatEvent::Error`. `Runner::run` uses `workspace::shell_command` in the workspace folder (home without one), or `Place::exec_env` in the chat's sandbox container when the workspace's commands run there (`docker exec -e` passes the `CLEANRSTAI_*` variables). The `feature:hooks` chat switch gates them, and subagents and compact-only runs never reach them. `hooks::matches` takes the comma-separated glob list.
 
+**Projects** (`projects.rs`; sidebar in `app.rs`, editor in `ui/project_editor.rs`): a project
+is one JSON file in `projects/`, and its chats link to it by `Conversation.project`. `apply_to`
+and `new_chat` copy its folder, provider, model, tool switches and permission mode into a chat
+(`Conversation.provider` and `model` override the active provider and its model in
+`AgentRequest::for_chat`). The caller loads the text of the instructions and files as a
+`ProjectContext` (`load_context`, on the runtime in `ChatApp::launch_run`, or in `exec`), and
+`agent::run` adds it to the system prompt while `general.projects.enabled` and the chat's
+`feature:project` switch are on. `bundle` and `unbundle` export a project with its chats, with
+new ids on import.
+
 **Approvals** (`approval.rs`): the agent sends `ChatEvent::ToolApproval` with a oneshot
 sender and the call's MCP origin; the app holds `PendingApproval`s on the `Run` and answers
 them. "Always allow this tool/server" is an in-memory per-chat `AlwaysAllow` list keyed by
@@ -190,7 +204,13 @@ content (not extension) and extracts their text: `pdf-extract` for PDF, `zip` + 
 for docx/pptx/odt/odp, `calamine` for all spreadsheets, `cfb` plus small parsers for legacy
 `.doc`/`.ppt`, and its own RTF reader. Its tests use the LibreOffice-made samples in
 `tests/fixtures/documents/`. The app reads files on a blocking task and gets them back as
-`AppEvent::FileAttached`.
+`AppEvent::FileAttached`. `attach::read_bytes` returns `Reading::Scanned` for a PDF whose text
+is (nearly) empty (`documents::extract_or_scanned`, `ocr::is_scanned`); `ocr.rs` then reads it
+when `general.ocr` is on: `lopdf` gives each page's image XObjects (JPEG as is, 8-bit Flate
+RGB/grey as PNG), sent to a vision model through `llm::chat_completion` or run through
+`tesseract`, and the text comes back as `Attachment::ocr_text`. `read_files` runs it on the
+tokio runtime and sends `AppEvent::OcrStarted` first; with OCR off the note
+`attach::NO_TEXT_LAYER_NOTE` is attached instead.
 
 **Docker sandbox** (`sandbox/`): only `exec_shell_command` is sandboxed. `docker.rs` talks to
 Docker only through the `docker` CLI; its argument builders (`run_args`, `exec_args`) are pure, and
@@ -226,7 +246,9 @@ cloudflared with backoff; `sync_remote`
 restarts the server only when `server_settings` (everything but the tunnel) changes. The
 tunnel's hostnames (`TunnelHosts`, shared with the server) are accepted as Host while it runs,
 and only on a loopback connection to such a host is `Cf-Connecting-IP` trusted for the login
-throttle, plus a tunnel-wide limit.
+throttle, plus a tunnel-wide limit. `remote/access.rs` checks Cloudflare Access JWTs (RS256 against
+the team's cached JWKS, from the `Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie)
+for a named tunnel's hostname; `server.rs`'s `access_guard` runs that before the session check.
 
 **Tray** (`tray.rs`, Settings → Background "keep running"): on macOS and Windows a `tray-icon`
 icon (menu bar / system tray) is created from `logic` once the setting is on, and dropped when it
@@ -246,6 +268,13 @@ plain-text fallback when the keychain is off or unavailable.
 **Share as HTML** (`export.rs`, `render_body`) renders the chat's Markdown with pulldown-cmark,
 drops all raw HTML except the app's own `<details>` wrapper, and allow-lists link (http/https/mailto)
 and image (raster `data:`) destinations, so the shared file loads nothing.
+
+**Save as files** (`save_as.rs`): "Save as…" on a reply or a Markdown, code or CSV artifact
+(`ui/chat_view.rs`, `save_as_menu`) reads the Markdown into a block model (`blocks`) that the
+Word, PDF and Excel writers share. Word and Excel are hand-written OOXML over the `zip` crate;
+PDF is `genpdf` with the static Instrument Sans and IBM Plex Mono in `assets/fonts`. The dialog
+runs on the UI thread, the rendering on a blocking task (`AppEvent::SavedAs`). Formats come from
+`GeneralSettings.save_as`; Excel only where there is a table or CSV.
 
 **Providers**: `ProviderKind` (generic OpenAI-compatible, llama.cpp, LiteLLM, Ollama,
 LM Studio, vLLM, OpenRouter) is detected by `llm::detect_kind` and decides which stats are

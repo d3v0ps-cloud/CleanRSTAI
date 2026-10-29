@@ -3,6 +3,7 @@
 //! plus MCP tools, filtered by what the user switched on for the current chat.
 
 pub mod calc;
+pub mod commit;
 pub mod fetch;
 pub mod search;
 pub mod workspace;
@@ -107,10 +108,11 @@ pub const INSTRUCTIONS: &str = "instructions";
 pub const CHECKPOINTS: &str = "checkpoints";
 pub const NOTIFY: &str = "notify";
 pub const HOOKS: &str = "hooks";
+pub const PROJECT: &str = "project";
 pub const BRANCHES: &str = "branches";
 
 /// Chat features with a per-chat switch, in display order: (key, label, description).
-pub const FEATURES: [(&str, &str, &str); 6] = [
+pub const FEATURES: [(&str, &str, &str); 7] = [
     (
         COMPACTION,
         "Context compaction",
@@ -138,6 +140,12 @@ pub const FEATURES: [(&str, &str, &str); 6] = [
          Hooks run commands on your computer (or in the sandbox, when it's on)",
     ),
     (
+        PROJECT,
+        "Project context",
+        "Add the project's instructions and files to this chat's system prompt (chats in a \
+         project only)",
+    ),
+    (
         BRANCHES,
         "Branches",
         "Keep the replaced reply when regenerating, or the old turn when editing, as a version \
@@ -154,7 +162,7 @@ pub struct ToolSelection {
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
-    features: [bool; 6],
+    features: [bool; 7],
     /// The chat has skills to offer (see [`ToolSelection::with_skills`]).
     skills_available: bool,
     /// The provider's own web search replaces the built-in `web_search` tool this request.
@@ -179,6 +187,7 @@ impl ToolSelection {
                 g.file_edits.checkpoints,
                 g.background.notify,
                 g.hooks.enabled,
+                g.projects.enabled,
                 g.branching.enabled,
             ],
             skills_available: false,
@@ -260,6 +269,8 @@ impl ToolSelection {
             "tasks" => self.builtins.tasks,
             "fetch" => self.builtins.fetch,
             "web_search" => self.builtins.web_search,
+            // Commits are off unless Settings turn them on, unlike the other workspace tools.
+            workspace::GIT_COMMIT => self.builtins.git_commit,
             ws if workspace::TOOLS.iter().any(|(name, _)| *name == ws) => self.builtins.workspace,
             "subagents" => self.subagents,
             "skills" => self.skills_available,
@@ -808,6 +819,51 @@ mod tests {
         assert!(Toolbox::needs_approval(FETCH));
         assert!(!Toolbox::needs_approval(CALCULATE));
         assert!(Toolbox::needs_approval("server__tool"));
+    }
+
+    #[test]
+    fn git_commit_is_off_by_default_and_not_offered_in_read_only() {
+        use crate::approval::ApprovalMode;
+        let mut settings = Settings::default();
+        let off = ToolSelection::new(&settings, &ToolOverrides::default());
+        assert!(!off.builtin_on(workspace::GIT_COMMIT));
+        assert!(off.builtin_on(workspace::GIT_DIFF));
+
+        settings.general.builtin_tools.git_commit = true;
+        let on = ToolSelection::new(&settings, &ToolOverrides::default());
+        assert!(on.builtin_on(workspace::GIT_COMMIT));
+        assert!(
+            !on.clone()
+                .with_mode(ApprovalMode::ReadOnly)
+                .builtin_on(workspace::GIT_COMMIT)
+        );
+        assert!(
+            !on.clone()
+                .with_mode(ApprovalMode::Plan)
+                .builtin_on(workspace::GIT_COMMIT)
+        );
+        assert!(
+            on.clone()
+                .with_mode(ApprovalMode::AutoWorkspace)
+                .builtin_on(workspace::GIT_COMMIT)
+        );
+
+        // A chat can switch it off again, and the switch is per chat.
+        let mut ov = ToolOverrides::default();
+        ov.set(
+            ToolOverrides::builtin_key(workspace::GIT_COMMIT),
+            false,
+            true,
+        );
+        assert!(!ToolSelection::new(&settings, &ov).builtin_on(workspace::GIT_COMMIT));
+
+        assert!(Toolbox::needs_approval(workspace::GIT_COMMIT));
+        let ws = workspace::Workspace::open(&std::env::temp_dir()).unwrap();
+        let offered =
+            Toolbox::new(ToolRouter::default(), &on, None).with_workspace(ws.clone(), &on);
+        assert!(offered.has(workspace::GIT_COMMIT));
+        let quiet = Toolbox::new(ToolRouter::default(), &off, None).with_workspace(ws, &off);
+        assert!(!quiet.has(workspace::GIT_COMMIT));
     }
 
     #[tokio::test]

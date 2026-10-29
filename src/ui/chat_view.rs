@@ -14,7 +14,8 @@ use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::artifacts::Artifact;
 use crate::branches;
-use crate::config::ReasoningDisplay;
+use crate::config::{ReasoningDisplay, SaveAsSettings};
+use crate::save_as::Content;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall, results_after};
@@ -62,6 +63,8 @@ pub struct View<'a> {
     /// Every artifact in the chat, and the one open in the panel.
     pub artifacts: &'a [Artifact],
     pub open_artifact: Option<(usize, usize)>,
+    /// The file types "Save as…" offers (Settings → General).
+    pub save_as: SaveAsSettings,
     /// A Plan chat's latest reply is a finished plan: show Approve plan under it.
     pub plan_ready: bool,
 }
@@ -178,6 +181,7 @@ pub fn show(
                                     undo: undo_at.get(&i).copied(),
                                     versions: branches::count(&conv.messages, i),
                                     switchable,
+                                    save_as: v.save_as,
                                 },
                                 msg,
                                 &mut actions,
@@ -356,6 +360,7 @@ struct AssistantCtx<'a> {
     versions: (usize, usize),
     /// The message's other versions can be switched to now (no reply runs or waits).
     switchable: bool,
+    save_as: SaveAsSettings,
 }
 
 fn assistant_message(
@@ -470,6 +475,16 @@ fn assistant_body(
                 _ => {}
             }
             branch_arrows(ui, cx.conv, cx.idx, cx.versions, cx.switchable, actions);
+            if !msg.content.is_empty() {
+                save_as_menu(
+                    ui,
+                    cx.conv,
+                    None,
+                    Content::Markdown(msg.content.clone()),
+                    cx.save_as,
+                    actions,
+                );
+            }
             if let Some(n) = cx.undo {
                 let label = if n == 1 {
                     "Undo file edit".to_owned()
@@ -496,6 +511,41 @@ fn assistant_body(
             }
         });
     }
+}
+
+/// The "Save as…" menu: the formats enabled in Settings that `content` supports, each saving
+/// through `Action::SaveAs`. `title` names the file (the chat's when `None`).
+pub fn save_as_menu(
+    ui: &mut egui::Ui,
+    conv: Uuid,
+    title: Option<String>,
+    content: Content,
+    settings: SaveAsSettings,
+    actions: &mut Vec<Action>,
+) {
+    let formats = content.formats(&settings);
+    if formats.is_empty() {
+        return;
+    }
+    let pencil = theme::palette(ui.visuals().dark_mode).pencil;
+    ui.menu_button(
+        RichText::new(icon::DOWNLOAD).size(15.0).color(pencil),
+        |ui| {
+            for format in formats {
+                if ui.button(format.label()).clicked() {
+                    actions.push(Action::SaveAs {
+                        conv,
+                        title: title.clone(),
+                        content: content.clone(),
+                        format,
+                    });
+                    ui.close();
+                }
+            }
+        },
+    )
+    .response
+    .on_hover_text("Save as…");
 }
 
 /// What the provider's own web search cited for a reply: a small expander with the links
@@ -812,10 +862,12 @@ fn approval_prompt(
         if ui.add(theme::primary_button("Run", dark)).clicked() {
             answer = Some(Approval::Once);
         }
-        if ui
-            .button("Always allow this tool")
-            .on_hover_text("Run this tool without asking for the rest of this chat")
-            .clicked()
+        // A commit asks every time (see `approval::always_asks`), so it has no "always" choice.
+        if !crate::approval::always_asks(&pending.call.name)
+            && ui
+                .button("Always allow this tool")
+                .on_hover_text("Run this tool without asking for the rest of this chat")
+                .clicked()
         {
             answer = Some(Approval::AlwaysTool);
         }
