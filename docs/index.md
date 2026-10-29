@@ -26,6 +26,8 @@ too, as an installer and a portable `.exe`.
   it, asking before anything that writes.
 - **MCP client**: stdio and Streamable HTTP servers, OAuth sign-in, resources and prompts.
 - **Subagents**: the model can hand independent tasks to agents that work in parallel.
+- **Background replies**: keep working in other chats while one replies; desktop notifications
+  when a reply finishes or needs approval; a limit on replies at once, and a time limit.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code from a
   reply open in a side panel, with a link in the chat.
 - **Attachments**: images for vision models; PDF, Office, OpenDocument, RTF and text files as

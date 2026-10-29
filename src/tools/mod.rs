@@ -101,9 +101,10 @@ impl ToolOverrides {
 pub const COMPACTION: &str = "compaction";
 pub const INSTRUCTIONS: &str = "instructions";
 pub const CHECKPOINTS: &str = "checkpoints";
+pub const NOTIFY: &str = "notify";
 
 /// Chat features with a per-chat switch, in display order: (key, label, description).
-pub const FEATURES: [(&str, &str, &str); 3] = [
+pub const FEATURES: [(&str, &str, &str); 4] = [
     (
         COMPACTION,
         "Context compaction",
@@ -119,6 +120,11 @@ pub const FEATURES: [(&str, &str, &str); 3] = [
         "Undo for file edits",
         "Keep files' previous content so a turn's edits can be undone",
     ),
+    (
+        NOTIFY,
+        "Notifications",
+        "Send a desktop notification when this chat's reply finishes, fails or needs approval",
+    ),
 ];
 
 /// What one chat may use: Settings defaults plus that chat's overrides.
@@ -130,7 +136,7 @@ pub struct ToolSelection {
     /// Tools switched off in Settings, per server id.
     disabled: HashMap<String, Vec<String>>,
     /// Defaults of the [`FEATURES`], from Settings.
-    features: [bool; 3],
+    features: [bool; 4],
 }
 
 impl ToolSelection {
@@ -149,6 +155,7 @@ impl ToolSelection {
                 g.compaction.enabled,
                 g.instructions.enabled,
                 g.file_edits.checkpoints,
+                g.background.notify,
             ],
         }
     }

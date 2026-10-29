@@ -259,6 +259,22 @@ attached; text beyond a million characters is cut, with a note saying so.
 Documents are recognised by their content, not their extension. Password-protected files
 can't be read.
 
+## Running chats in the background
+
+A reply keeps running when you open another chat, so you can start several and come back to them.
+The sidebar row shows what each one is doing:
+
+- a spinning hourglass: the reply is running;
+- a shield: the reply is waiting for your approval of a tool;
+- a clock: the reply is **queued**, because the limit on replies at once is reached;
+- a check mark: the reply ended while you were in another chat, until you open it.
+
+The chat shows **Queued** with how many replies are ahead of it. Stop cancels a queued reply.
+When the window is in the background, or another chat is open, a desktop notification says when a
+reply finishes, fails or needs approval. Each chat can switch its notifications off from the tools
+menu. How many run at once, the notifications and a time limit are set in
+[Background](../settings/background.html) settings.
+
 ## Managing chats
 
 Chats are saved automatically. In the sidebar:

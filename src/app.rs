@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::agent::{self, AgentRequest, AppEvent, ChatEvent, EventSender};
 use crate::approval::{AlwaysAllow, Approval, PendingApproval};
 use crate::attach::Attachment;
+use crate::background::{self, Outcome, Queued, RunQueue};
 use crate::config::{RemoteTls, Settings, Theme};
 use crate::export;
 use crate::llm;
@@ -44,6 +45,10 @@ pub(crate) struct Run {
     pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
     /// Older messages are being summarised.
     pub(crate) compacting: bool,
+    /// A "Compact now" run rather than a reply.
+    pub(crate) compact_only: bool,
+    /// When the run started, for the time limit (Settings → Background).
+    pub(crate) started: Instant,
 }
 
 pub(crate) enum Action {
@@ -76,6 +81,12 @@ pub struct ChatApp {
     current: Option<Uuid>,
     input: String,
     runs: HashMap<Uuid, Run>,
+    /// Replies waiting for a free slot (Settings → Background), first come first served.
+    queue: RunQueue,
+    /// Chats whose reply ended while another chat was open, until they are opened.
+    unread: HashSet<Uuid>,
+    /// Whether the window has focus, as of the last frame (for notifications).
+    window_focused: bool,
     errors: HashMap<Uuid, String>,
     /// First name for the greeting, from the OS account.
     user_name: Option<String>,
@@ -325,6 +336,9 @@ impl ChatApp {
             current,
             input: String::new(),
             runs: HashMap::new(),
+            queue: RunQueue::default(),
+            unread: HashSet::new(),
+            window_focused: true,
             errors: HashMap::new(),
             user_name: user_first_name(),
             always_allow: HashMap::new(),
@@ -765,7 +779,7 @@ impl ChatApp {
                             }
                             if ui
                                 .add_enabled(
-                                    self.current.is_some_and(|id| !self.runs.contains_key(&id)),
+                                    self.current.is_some_and(|id| !self.busy(id)),
                                     egui::Button::new(format!("{}  Compact now", icon::STACK))
                                         .small(),
                                 )
@@ -778,8 +792,7 @@ impl ChatApp {
                                 compact = true;
                             }
                             if self.settings.general.review.enabled {
-                                let idle =
-                                    self.current.is_some_and(|id| !self.runs.contains_key(&id));
+                                let idle = self.current.is_some_and(|id| !self.busy(id));
                                 if ui
                                     .add_enabled(
                                         idle && has_workspace,
@@ -912,6 +925,7 @@ impl ChatApp {
         }
         self.conversations.retain(|c| c.id != id);
         self.errors.remove(&id);
+        self.unread.remove(&id);
         self.always_allow.remove(&id);
         if self.current == Some(id) {
             self.current = self.conversations.first().map(|c| c.id);
@@ -931,7 +945,7 @@ impl ChatApp {
             self.new_chat();
         }
         let id = self.current.unwrap();
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return;
         }
         let text = self.expand_command(id, text);
@@ -987,7 +1001,7 @@ impl ChatApp {
         ctx: &egui::Context,
         review: bool,
     ) -> Result<(), String> {
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
@@ -1010,7 +1024,7 @@ impl ChatApp {
         if !self.settings.general.review.enabled {
             return Err("Code review is off (Settings → Context & files)".into());
         }
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
         let conv = self
@@ -1048,9 +1062,50 @@ impl ChatApp {
         self.send_message_with(id, text, vec![crate::review::attachment(&diff)], &ctx, true)
     }
 
+    /// Whether a chat has a reply running, or waiting for a free slot.
+    fn busy(&self, id: Uuid) -> bool {
+        self.runs.contains_key(&id) || self.queue.contains(id)
+    }
+
     /// Starts a reply in a chat, or with `compact_only` only summarises its older messages.
-    /// With `review` the reply uses the review provider.
+    /// With `review` the reply uses the review provider. When `max_parallel` replies are already
+    /// running, or others are waiting, the chat joins the queue; `start_queued` starts it later.
     fn start_run_with(&mut self, id: Uuid, ctx: &egui::Context, compact_only: bool, review: bool) {
+        if self.busy(id) {
+            return;
+        }
+        let limit = self.settings.general.background.max_parallel as usize;
+        let item = Queued {
+            conv: id,
+            compact_only,
+            review,
+        };
+        if !self.queue.is_empty() || self.runs.len() >= limit.max(1) {
+            // The last reply's error would read as this one's while it waits.
+            self.errors.remove(&id);
+            self.queue.push(item);
+            return;
+        }
+        self.launch_run(item, ctx);
+    }
+
+    /// Starts queued replies while there are free slots.
+    fn start_queued(&mut self, ctx: &egui::Context) {
+        let limit = self.settings.general.background.max_parallel as usize;
+        while let Some(item) = self.queue.pop_ready(self.runs.len(), limit) {
+            if !self.runs.contains_key(&item.conv) {
+                self.launch_run(item, ctx);
+            }
+        }
+    }
+
+    /// Starts a reply now, reading the chat as it is at this moment.
+    fn launch_run(&mut self, item: Queued, ctx: &egui::Context) {
+        let Queued {
+            conv: id,
+            compact_only,
+            review,
+        } = item;
         let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
             return;
         };
@@ -1111,13 +1166,15 @@ impl ChatApp {
                 live_stats: None,
                 subagents: HashMap::new(),
                 compacting: false,
+                compact_only,
+                started: Instant::now(),
             },
         );
     }
 
     /// Summarise a chat's older messages now.
     fn compact_now(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
         let conv = self
@@ -1143,7 +1200,7 @@ impl ChatApp {
 
     /// Copy chat `id` up to message `idx` into a new chat, which becomes the current one.
     fn fork_chat(&mut self, id: Uuid, idx: usize) -> Result<Uuid, String> {
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return Err("Wait for the reply to finish before forking this chat.".into());
         }
         let orig = self
@@ -1170,7 +1227,7 @@ impl ChatApp {
 
     /// Undo the file edits of the turn holding message `idx`.
     fn undo_turn(&mut self, id: Uuid, idx: usize) -> Result<String, String> {
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return Err("Wait for the reply to finish first".into());
         }
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
@@ -1191,10 +1248,20 @@ impl ChatApp {
     /// it can be edited and resent; it and any partial reply are left out of what the next
     /// prompt sends to the model.
     fn stop(&mut self, id: Uuid) {
-        let Some(run) = self.runs.remove(&id) else {
-            return;
+        let queued = self.queue.remove(id);
+        let run = self.runs.remove(&id);
+        let compact_only = match (&run, queued) {
+            (Some(run), _) => run.compact_only,
+            (None, Some(item)) => item.compact_only,
+            (None, None) => return,
         };
-        run.task.abort();
+        if let Some(run) = run {
+            run.task.abort();
+        }
+        // A compaction has no prompt of its own to take back.
+        if compact_only {
+            return;
+        }
         let Some(conv) = self.conv_mut(id) else {
             return;
         };
@@ -1207,7 +1274,7 @@ impl ChatApp {
     }
 
     fn regenerate(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
-        if self.runs.contains_key(&id) {
+        if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
@@ -1428,6 +1495,7 @@ impl ChatApp {
                         .find(|s| &s.id == server)
                         .map(|s| s.name.clone())
                 });
+                let tool = call.name.clone();
                 let pending =
                     PendingApproval::new(call, origin, server_name, respond).with_preview(preview);
                 if self
@@ -1438,6 +1506,7 @@ impl ChatApp {
                     pending.answer(true);
                 } else {
                     self.runs.get_mut(&id).unwrap().approvals.push(pending);
+                    self.notify_chat(id, Outcome::NeedsApproval(tool));
                 }
                 return;
             }
@@ -1540,8 +1609,18 @@ impl ChatApp {
             _ => {}
         }
         if done {
+            let compact_only = self.runs.get(&id).is_some_and(|r| r.compact_only);
+            let failed = self.errors.contains_key(&id);
             self.open_new_artifact(id);
             self.runs.remove(&id);
+            if !compact_only {
+                let outcome = if failed {
+                    Outcome::Failed
+                } else {
+                    Outcome::Finished
+                };
+                self.reply_ended(id, outcome);
+            }
             self.conversations
                 .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
         } else {
@@ -1552,6 +1631,79 @@ impl ChatApp {
             if is_tool_result && let Some(run) = self.runs.get_mut(&id) {
                 run.running_tool = None;
             }
+        }
+    }
+
+    /// A reply ended: marks its chat unread when another chat is open, and notifies.
+    fn reply_ended(&mut self, id: Uuid, outcome: Outcome) {
+        if self.current != Some(id) {
+            self.unread.insert(id);
+        }
+        self.notify_chat(id, outcome);
+    }
+
+    /// Sends a desktop notification about a chat, when Settings → Background and the chat's
+    /// `notify` switch ask for one at this moment.
+    fn notify_chat(&self, id: Uuid, outcome: Outcome) {
+        let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let mut bg = self.settings.general.background.clone();
+        bg.notify =
+            ToolSelection::new(&self.settings, &conv.tool_overrides).feature_on(tools::NOTIFY);
+        if background::should_notify(&bg, self.current == Some(id), self.window_focused) {
+            background::notify(&self.rt, background::message(&conv.title, &outcome));
+        }
+    }
+
+    /// Frees the slot of a reply whose task ended without its `Done` event (a panic, say), so
+    /// a stuck run can't hold back the queue. The events a finished task sent are drained first.
+    fn reap_finished_runs(&mut self) {
+        if !self.runs.values().any(|r| r.task.is_finished()) {
+            return;
+        }
+        self.handle_events();
+        let stuck: Vec<Uuid> = self
+            .runs
+            .iter()
+            .filter(|(_, r)| r.task.is_finished())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stuck {
+            self.runs.remove(&id);
+            self.errors
+                .entry(id)
+                .or_insert_with(|| "The reply stopped unexpectedly.".into());
+            self.reply_ended(id, Outcome::Failed);
+        }
+    }
+
+    /// Stops replies that have run past the time limit (Settings → Background), recording why,
+    /// and asks for a repaint when the next one is due, so this also runs while idle.
+    fn check_time_limits(&mut self, ctx: &egui::Context) {
+        let Some(limit) = background::time_limit(&self.settings.general.background) else {
+            return;
+        };
+        let now = Instant::now();
+        let expired: Vec<Uuid> = self
+            .runs
+            .iter()
+            .filter(|(_, r)| now.duration_since(r.started) >= limit)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.stop(id);
+            let mins = self.settings.general.background.time_limit_mins;
+            self.errors.insert(id, background::time_limit_message(mins));
+            self.reply_ended(id, Outcome::Failed);
+        }
+        let next = self
+            .runs
+            .values()
+            .map(|r| background::time_left(r.started, limit, now))
+            .min();
+        if let Some(next) = next {
+            ctx.request_repaint_after(next);
         }
     }
 
@@ -1745,7 +1897,7 @@ impl ChatApp {
         // Messages before the last go straight into the chat, which can't change mid-run.
         let adds_history =
             messages.len() > 1 || messages.last().is_some_and(|m| m.role != Role::User);
-        if adds_history && self.current.is_some_and(|id| self.runs.contains_key(&id)) {
+        if adds_history && self.current.is_some_and(|id| self.busy(id)) {
             self.notice = Some("Wait for the current response to finish.".into());
             return;
         }
@@ -2973,14 +3125,38 @@ impl ChatApp {
                         }
                         continue;
                     }
-                    let running = self.runs.contains_key(&c.id);
                     let selected = self.current == Some(c.id);
                     let title =
                         RichText::new(&c.title).color(if selected { p.ink } else { p.ink2 });
-                    let mark = match (running, c.pinned) {
-                        (true, _) => RichText::new(icon::HOURGLASS).size(12.0).color(p.signal),
-                        (false, true) => RichText::new(icon::PIN).size(12.0).color(p.pencil),
-                        _ => RichText::new(""),
+                    // One state mark per row, the most urgent first.
+                    let (mark, state) = if self
+                        .runs
+                        .get(&c.id)
+                        .is_some_and(|r| !r.approvals.is_empty())
+                    {
+                        (
+                            RichText::new(icon::SHIELD).size(12.0).color(p.warn),
+                            "Waiting for approval",
+                        )
+                    } else if self.runs.contains_key(&c.id) {
+                        (
+                            RichText::new(icon::HOURGLASS).size(12.0).color(p.signal),
+                            "Replying…",
+                        )
+                    } else if self.queue.contains(c.id) {
+                        (
+                            RichText::new(icon::CLOCK).size(12.0).color(p.pencil),
+                            "Queued",
+                        )
+                    } else if self.unread.contains(&c.id) && !selected {
+                        (
+                            RichText::new(icon::OK).size(12.0).color(p.signal),
+                            "Reply ended, not read yet",
+                        )
+                    } else if c.pinned {
+                        (RichText::new(icon::PIN).size(12.0).color(p.pencil), "")
+                    } else {
+                        (RichText::new(""), "")
                     };
                     let resp = ui.add(
                         row(title, selected)
@@ -2989,8 +3165,13 @@ impl ChatApp {
                             .min_size(egui::vec2(ui.available_width(), 30.0)),
                     );
                     let resp = resp.on_hover_text(format!(
-                        "{}\n{}",
+                        "{}{}\n{}",
                         c.title,
+                        if state.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{state}")
+                        },
                         c.updated_at
                             .with_timezone(&chrono::Local)
                             .format("%Y-%m-%d %H:%M")
@@ -3065,7 +3246,7 @@ impl ChatApp {
         let dark = ui.visuals().dark_mode;
         let p = theme::palette(dark);
         let id = egui::Id::unique(INPUT_ID);
-        let running = self.current.is_some_and(|c| self.runs.contains_key(&c));
+        let running = self.current.is_some_and(|c| self.busy(c));
         let fresh = self
             .current
             .and_then(|c| self.conversations.iter().find(|x| x.id == c))
@@ -3340,6 +3521,7 @@ impl ChatApp {
             chat_view::View {
                 conv,
                 run: self.runs.get(&conv.id),
+                queued: self.queue.position(conv.id),
                 error: self.errors.get(&conv.id),
                 show_stats: self.settings.general.show_stats,
                 reasoning: self.settings.general.reasoning_display,
@@ -3412,7 +3594,7 @@ impl ChatApp {
                     });
                 }
                 Action::EditFrom(conv, idx) => {
-                    if self.runs.contains_key(&conv) {
+                    if self.busy(conv) {
                         continue;
                     }
                     if let Some(c) = self.conv_mut(conv)
@@ -3948,7 +4130,14 @@ fn run_export(kind: &str, doc: &serde_json::Value) -> Option<Result<String, Stri
 
 impl eframe::App for ChatApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window_focused = ctx.input(|i| i.focused);
         self.handle_events();
+        self.reap_finished_runs();
+        self.check_time_limits(ctx);
+        self.start_queued(ctx);
+        if let Some(id) = self.current {
+            self.unread.remove(&id);
+        }
         self.publish_remote();
         self.handle_shortcuts(ctx);
         self.handle_dropped_files(ctx);
@@ -4332,6 +4521,8 @@ mod remote_tests {
             live_stats: None,
             subagents: HashMap::new(),
             compacting: false,
+            compact_only: false,
+            started: Instant::now(),
         }
     }
 

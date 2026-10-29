@@ -21,7 +21,9 @@ reasoning and sampling options per provider, model and chat, the Anthropic Messa
 Responses APIs, and per-chat permission modes in **v0.9.1**, and forking a chat, slash
 commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's stats, review
 strictness, a context size per provider, a default permission mode, Kagi search, the changed
-files list and read-only git tools in **v0.9.2-dev.2**.
+files list and read-only git tools in **v0.9.2-dev.2**, and background replies (a limit on
+replies at once with a queue, a time limit, desktop notifications, and the Background settings)
+in **v0.9.2**.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -375,10 +377,12 @@ in them follows the same rule:
   approval mode (read only by default)
 - [ ] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and
   Windows/Linux system-tray icons to reopen the window or quit
-- [ ] Background tasks: start a request that keeps running when the chat is closed, and notify
-  when it finishes or needs approval
+- [x] Background tasks: a request keeps running when another chat is open, and notifies when
+  it finishes, fails or needs approval
 - [ ] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
-- [ ] Settings: on/off for each, and limits (how many at once, time limit)
+- [x] Settings and limits for background replies: notifications on or off, how many run at once
+  (the rest queue) and a time limit. Settings for the command-line mode, the tray icon and
+  scheduled tasks are still to come.
 
 ## 27. Code review
 

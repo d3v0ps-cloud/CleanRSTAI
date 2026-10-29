@@ -655,6 +655,39 @@ impl Default for HtmlPreviewSettings {
     }
 }
 
+/// Replies running in the background: notifications, how many run at once, and a time limit
+/// (Settings → Background).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BackgroundSettings {
+    /// Send a desktop notification when a reply finishes, fails or needs approval (per chat
+    /// too: `feature:notify`).
+    pub notify: bool,
+    /// Notify only while the CleanRSTAI window is in the background.
+    pub notify_only_unfocused: bool,
+    /// Replies that run at once; more wait in a queue (1–32).
+    pub max_parallel: u32,
+    /// Stop a reply after this many minutes, counted from when it starts; 0 for no limit
+    /// (0–1440).
+    pub time_limit_mins: u32,
+}
+
+/// Most replies that run at once.
+pub const MAX_PARALLEL_RUNS: u32 = 32;
+/// Longest time limit for a reply, in minutes (a day).
+pub const MAX_TIME_LIMIT_MINS: u32 = 1440;
+
+impl Default for BackgroundSettings {
+    fn default() -> Self {
+        Self {
+            notify: true,
+            notify_only_unfocused: true,
+            max_parallel: 4,
+            time_limit_mins: 0,
+        }
+    }
+}
+
 /// The `delegate` tool: hands tasks to subagents that work on their own and report back.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -852,6 +885,9 @@ pub struct GeneralSettings {
     pub slash_commands: SlashCommandSettings,
     /// Browser remote access (see `remote`).
     pub remote: RemoteSettings,
+    /// Replies running in the background: notifications, parallel limit and time limit.
+    #[serde(default)]
+    pub background: BackgroundSettings,
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -884,6 +920,7 @@ impl Default for GeneralSettings {
             file_edits: FileEditSettings::default(),
             slash_commands: SlashCommandSettings::default(),
             remote: RemoteSettings::default(),
+            background: BackgroundSettings::default(),
         }
     }
 }
@@ -1240,6 +1277,9 @@ impl Settings {
         sa.max_tasks = sa.max_tasks.clamp(1, 32);
         sa.max_rounds = sa.max_rounds.clamp(1, 100);
         sa.timeout_secs = sa.timeout_secs.clamp(10, 3600);
+        let bg = &mut self.general.background;
+        bg.max_parallel = bg.max_parallel.clamp(1, MAX_PARALLEL_RUNS);
+        bg.time_limit_mins = bg.time_limit_mins.min(MAX_TIME_LIMIT_MINS);
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -1837,6 +1877,33 @@ mod tests {
         s.general.remote.port = 0;
         s.normalize();
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn background_settings_load_from_older_files_and_normalise() {
+        // Settings written before Background existed load with the defaults.
+        let s: Settings = serde_json::from_str(r#"{"general": {"zoom": 1.5}}"#).unwrap();
+        assert_eq!(s.general.background, BackgroundSettings::default());
+        assert!(s.general.background.notify);
+        assert!(s.general.background.notify_only_unfocused);
+        assert_eq!(s.general.background.max_parallel, 4);
+        assert_eq!(s.general.background.time_limit_mins, 0);
+
+        // A partial block keeps the rest at their defaults.
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"background": {"max_parallel": 2}}}"#).unwrap();
+        assert_eq!(s.general.background.max_parallel, 2);
+        assert!(s.general.background.notify);
+
+        let mut s = Settings::default();
+        s.general.background.max_parallel = 0;
+        s.general.background.time_limit_mins = 5000;
+        s.normalize();
+        assert_eq!(s.general.background.max_parallel, 1);
+        assert_eq!(s.general.background.time_limit_mins, MAX_TIME_LIMIT_MINS);
+        s.general.background.max_parallel = 100;
+        s.normalize();
+        assert_eq!(s.general.background.max_parallel, MAX_PARALLEL_RUNS);
     }
 
     #[test]
