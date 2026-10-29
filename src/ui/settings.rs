@@ -15,6 +15,8 @@ use crate::config::{
 };
 use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::remote::{RemoteStatus, TunnelStatus};
+use crate::schedule::ScheduledTask;
+use uuid::Uuid;
 
 /// The rows of a custom sandbox network: host, protocol, ports and a remove button, with
 /// each rule's error under it.
@@ -137,6 +139,8 @@ pub enum SettingsAction {
     CheckSandbox(SandboxSettings),
     /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
     PrepareSandbox(SandboxSettings),
+    /// Run a scheduled task now, as the draft has it (Settings → Background "Run now").
+    RunScheduledTask(Box<ScheduledTask>),
 }
 
 pub struct SettingsUi {
@@ -674,6 +678,7 @@ impl SettingsUi {
         servers: &[ServerView],
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
+        chats: &[(Uuid, String)],
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
@@ -806,7 +811,7 @@ impl SettingsUi {
                 Tab::Context => self.context_tab(ui),
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
-                Tab::Background => self.background_tab(ui),
+                Tab::Background => self.background_tab(ui, chats, &mut actions),
                 Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
             }
         });
@@ -2302,7 +2307,19 @@ impl SettingsUi {
             });
     }
 
-    fn background_tab(&mut self, ui: &mut egui::Ui) {
+    fn background_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        chats: &[(Uuid, String)],
+        actions: &mut Vec<SettingsAction>,
+    ) {
+        let providers: Vec<(String, String)> = self
+            .draft
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let schedules = &mut self.draft.general.schedules;
         let bg = &mut self.draft.general.background;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -2379,6 +2396,7 @@ impl SettingsUi {
                         );
                         ui.end_row();
                     });
+                super::schedule_settings::section(ui, schedules, &providers, chats, actions);
             });
     }
 
@@ -3180,6 +3198,16 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Background",
         "Keep running in the menu bar or system tray when the window is closed",
     ),
+    (Tab::Background, "Background", "Run scheduled tasks"),
+    (Tab::Background, "Background", "Scheduled task prompt"),
+    (
+        Tab::Background,
+        "Background",
+        "Scheduled task repeats every (minutes)",
+    ),
+    (Tab::Background, "Background", "Scheduled task approvals"),
+    (Tab::Background, "Background", "Scheduled task folder"),
+    (Tab::Background, "Background", "Scheduled task catch up"),
 ];
 
 fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
@@ -3222,6 +3250,8 @@ mod tests {
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
         assert_eq!(search_settings("menu bar")[0].0, Tab::Background);
         assert_eq!(search_settings("system tray")[0].0, Tab::Background);
+        assert_eq!(search_settings("scheduled tasks")[0].0, Tab::Background);
+        assert_eq!(search_settings("catch up")[0].0, Tab::Background);
         assert!(search_settings("zzzz").is_empty());
     }
 }

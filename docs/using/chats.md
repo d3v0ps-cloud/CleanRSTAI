@@ -269,6 +269,9 @@ The sidebar row shows what each one is doing:
 - a clock: the reply is **queued**, because the limit on replies at once is reached;
 - a check mark: the reply ended while you were in another chat, until you open it.
 
+A [scheduled](#scheduled-tasks) run that starts when the limit is reached waits in the queue the
+same way, and a run whose chat is still replying is skipped that time.
+
 The chat shows **Queued** with how many replies are ahead of it. Stop cancels a queued reply.
 When the window is in the background, or another chat is open, a desktop notification says when a
 reply finishes, fails or needs approval. Each chat can switch its notifications off from the tools
@@ -278,6 +281,18 @@ menu. How many run at once, the notifications and a time limit are set in
 With **Keep running in the menu bar or system tray when the window is closed** on (macOS and
 Windows), closing the window hides it and replies keep running. Show the window again from the
 icon's menu (on Windows, a left click on the icon also works); Quit there ends the app.
+
+## Scheduled tasks
+
+A scheduled task is a saved prompt that CleanRSTAI sends at set times: every so many minutes, every
+day, or every week. Each run opens a new chat titled with the task's name and the time (or adds the
+prompt to a chat you picked), and the reply starts like any other. Tasks run only while the app is
+open; a run that was due while it was closed is skipped unless the task catches up.
+
+Tasks are made in [Background](../settings/background.html#scheduled-tasks) settings, which lists
+each task's prompt, schedule, approval mode, folder and provider. **Run scheduled task: …** in the
+command palette starts one at once. Runs share the queue and the limits of background replies, and
+a new chat starts read only unless the task says otherwise.
 
 ## Managing chats
 
@@ -298,6 +313,6 @@ once, use **Export conversations…** in [General](../settings/general.html#expo
 compact this chat, undo the last turn's file edits, show files changed in this chat, fork this
 chat, set this chat's permissions (one entry per [mode](tools.html#permissions)), share this chat
 as HTML, toggle the sidebar, change theme, open each settings page, export and import, check for
-updates, switch provider or model, and open any chat.
+updates, switch provider or model, run a scheduled task now, and open any chat.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.html) for the rest.

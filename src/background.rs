@@ -9,13 +9,15 @@ use uuid::Uuid;
 
 /// A reply waiting for a free slot. It is built when it starts, so it reads the chat as it is
 /// then.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Queued {
     pub conv: Uuid,
     /// A "Compact now" run rather than a reply.
     pub compact_only: bool,
     /// The reply comes from the review provider.
     pub review: bool,
+    /// The provider's id for this reply (a scheduled task's); `None` for the active provider.
+    pub provider: Option<String>,
 }
 
 /// Replies waiting for a slot, first come first served. A chat is in it at most once.
@@ -144,6 +146,7 @@ mod tests {
             conv,
             compact_only: false,
             review: false,
+            provider: None,
         }
     }
 
