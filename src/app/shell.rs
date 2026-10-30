@@ -354,7 +354,10 @@ impl ChatApp {
     /// for the macOS traffic lights.
     fn title_controls(&mut self, ui: &mut egui::Ui, leading: bool) {
         ui.add_space(if leading { TRAFFIC_LIGHTS } else { 0.0 });
+        // Compact buttons, so the row fits beside the macOS traffic lights in the sidebar's
+        // 238px: 72 + 3 × 28 + the 62px switch, with small gaps.
         ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 4.0);
         let tip = if self.sidebar_open {
             "Hide sidebar (⌘B)"
         } else {

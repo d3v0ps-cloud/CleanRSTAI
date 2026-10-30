@@ -206,7 +206,7 @@ pub fn ghost_icon(ui: &mut egui::Ui, icon: &str, hover: &str, on: bool) -> egui:
             egui::Button::new(RichText::new(icon).size(17.0).color(color))
                 .frame_when_inactive(on)
                 .fill(if on { p.active } else { Color32::TRANSPARENT })
-                .min_size(vec2(30.0, 30.0)),
+                .min_size(vec2(28.0, 28.0)),
         )
         .on_hover_text(hover);
     let label = hover.to_owned();
@@ -243,7 +243,7 @@ pub fn segmented<T: PartialEq + Copy>(
                             .fill(if on { p.active } else { Color32::TRANSPARENT })
                             .stroke(Stroke::NONE)
                             .corner_radius(6)
-                            .min_size(vec2(30.0, 24.0)),
+                            .min_size(vec2(28.0, 24.0)),
                         )
                         .on_hover_text(*tip);
                     let label = (*tip).to_owned();
