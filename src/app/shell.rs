@@ -34,6 +34,8 @@ pub(super) enum Page {
     Chat,
     Projects,
     Artifacts,
+    /// Scheduled agents: prompts that run on a schedule.
+    Scheduled,
 }
 
 /// One stop in the back/forward history.
@@ -185,7 +187,7 @@ pub(super) fn short_model(model: &str) -> String {
 }
 
 /// The last part of a folder's path, for labels.
-fn folder_name(path: &std::path::Path) -> String {
+pub(super) fn folder_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
@@ -263,7 +265,7 @@ impl ChatApp {
     }
 
     /// The folder of the most recently used chat that has one.
-    fn last_folder(&self) -> Option<std::path::PathBuf> {
+    pub(super) fn last_folder(&self) -> Option<std::path::PathBuf> {
         self.conversations
             .iter()
             .filter(|c| !c.messages.is_empty() && c.workspace.is_some())
@@ -497,7 +499,6 @@ impl ChatApp {
             (icon::FOLDERS, "Projects"),
             (icon::SHAPES, "Artifacts"),
             (icon::CALENDAR, "Scheduled"),
-            (icon::PALETTE, "Design"),
             (icon::SLIDERS_H, "Customize"),
         ];
         for (glyph, label) in items {
@@ -505,14 +506,14 @@ impl ChatApp {
                 "Search" => self.searching,
                 "Projects" => self.page == Page::Projects,
                 "Artifacts" => self.page == Page::Artifacts,
+                "Scheduled" => self.page == Page::Scheduled,
                 _ => false,
             };
             let hover = match label {
                 "Search" => "Search chats by title and text",
                 "Projects" => "Groups of chats with shared instructions, files and settings",
                 "Artifacts" => "Web pages, drawings and code from your chats",
-                "Scheduled" => "Tasks that run on a schedule (Settings → Background)",
-                "Design" => "Theme, size and motion (Settings → Appearance)",
+                "Scheduled" => "Agents that run a prompt on a schedule",
                 _ => "Skills, hooks and slash commands (Settings → Skills & hooks)",
             };
             if chrome::nav_row(ui, glyph, label, active, false)
@@ -528,8 +529,7 @@ impl ChatApp {
                     }
                     "Projects" => self.page = Page::Projects,
                     "Artifacts" => self.page = Page::Artifacts,
-                    "Scheduled" => self.open_settings(Tab::Background),
-                    "Design" => self.open_settings(Tab::Appearance),
+                    "Scheduled" => self.page = Page::Scheduled,
                     _ => self.open_settings(Tab::Extensions),
                 }
             }
@@ -885,7 +885,7 @@ impl ChatApp {
     // ------------------------------------------------------------------ pages
 
     /// A page's serif heading, with buttons on the right.
-    fn page_heading(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
+    pub(super) fn page_heading(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
         let p = theme::palette(ui.visuals().dark_mode);
         ui.horizontal(|ui| {
             ui.label(RichText::new(title).font(theme::serif(30.0)).color(p.ink));
@@ -895,7 +895,7 @@ impl ChatApp {
     }
 
     /// An empty page's serif line and a muted explanation.
-    fn empty_state(ui: &mut egui::Ui, headline: &str, text: &str) {
+    pub(super) fn empty_state(ui: &mut egui::Ui, headline: &str, text: &str) {
         let p = theme::palette(ui.visuals().dark_mode);
         ui.add_space(48.0);
         ui.vertical_centered(|ui| {

@@ -39,6 +39,7 @@ use crate::ui::theme::{self, icon};
 use crate::ui::widgets::icon_button;
 use egui::RichText;
 
+mod scheduled;
 mod shell;
 
 use shell::{ArtifactIndex, History, Page};
@@ -251,6 +252,8 @@ pub struct ChatApp {
     mic_devices: Option<Vec<String>>,
     /// When Settings opened, for its fade and zoom in.
     settings_opened: Option<Instant>,
+    /// The scheduled agent being edited on the Scheduled page, and whether it is new.
+    schedule_edit: Option<(ScheduledTask, bool)>,
 }
 
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
@@ -505,6 +508,7 @@ impl ChatApp {
             voice_mode: false,
             mic_devices: None,
             settings_opened: None,
+            schedule_edit: None,
             draft_tool_overrides: ToolOverrides::default(),
             draft_model_options: Default::default(),
             draft_permissions: None,
@@ -2260,6 +2264,7 @@ impl ChatApp {
                 let mut conv = Conversation::with_permission_mode(task.approval_mode);
                 conv.title = schedule::chat_title(&task.name, chrono::Local::now());
                 conv.workspace = task.workspace.clone();
+                conv.scheduled_task = Some(task.id);
                 let id = conv.id;
                 self.conversations.insert(0, conv);
                 id
@@ -3108,6 +3113,12 @@ impl ChatApp {
             Entry::new(icon::PAPERCLIP, "Attach files…", "Chat", Command::Attach),
             Entry::new(icon::FOLDERS, "Projects", "Go to", Command::ShowProjects),
             Entry::new(icon::SHAPES, "Artifacts", "Go to", Command::ShowArtifacts),
+            Entry::new(
+                icon::CALENDAR,
+                "Scheduled agents",
+                "Go to",
+                Command::ShowScheduled,
+            ),
             Entry::new(icon::CARET_LEFT, "Back  ⌘[", "Go to", Command::GoBack),
             Entry::new(
                 icon::CARET_RIGHT,
@@ -3349,6 +3360,7 @@ impl ChatApp {
             Command::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             Command::ShowProjects => self.page = Page::Projects,
             Command::ShowArtifacts => self.page = Page::Artifacts,
+            Command::ShowScheduled => self.page = Page::Scheduled,
             Command::GoBack => self.go_back(),
             Command::GoForward => self.go_forward(),
             Command::SetMode(mode) => self.set_mode(mode),
@@ -5602,6 +5614,10 @@ impl eframe::App for ChatApp {
             egui::CentralPanel::no_frame()
                 .frame(egui::Frame::new().fill(p.paper))
                 .show(ui, |ui| self.artifacts_page(ui));
+        } else if self.page == Page::Scheduled {
+            egui::CentralPanel::no_frame()
+                .frame(egui::Frame::new().fill(p.paper))
+                .show(ui, |ui| self.scheduled_page(ui));
         } else {
             let remote_images = self.settings.general.load_remote_images;
             let preview = &self.settings.general.html_preview;

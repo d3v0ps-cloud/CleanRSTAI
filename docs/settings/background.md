@@ -10,7 +10,7 @@ nav_order: 9
 How replies that keep running in the background are notified, how many run at once, how long
 they may run, and the scheduled tasks that send a prompt at set times. See
 [Using the App → Running chats in the background](../using/chats.html#running-chats-in-the-background)
-for how it looks in a chat, and [Scheduled tasks](../using/chats.html#scheduled-tasks) for how the
+for how it looks in a chat, and [Scheduled agents](../using/chats.html#scheduled-agents) for how the
 tasks behave.
 
 | Setting | Default | Description |
@@ -36,7 +36,9 @@ refuses the icon, closing the window quits as usual.
 ## Scheduled tasks
 
 A scheduled task sends a saved prompt into a chat at set times. Tasks run only while CleanRSTAI is
-open. **Run scheduled tasks** is the master switch; each task has its own **On** switch.
+open. **Run scheduled tasks** is the master switch; each task has its own **On** switch. The
+**Scheduled** page in the sidebar shows the same tasks as agents, with their recent runs (see
+[Scheduled agents](../using/chats.html#scheduled-agents)).
 
 | Setting | Default | Description |
 |---|---|---|

@@ -144,10 +144,12 @@ too, as an installer and a portable `.exe`.
   Background** sets those notifications, how many replies run at once (the rest wait in a
   queue) and a time limit per reply. On macOS and Windows, closing the window can keep the app
   running in the menu bar or system tray (not on Linux yet).
-- **Scheduled tasks**: a saved prompt sent at set times (every so many minutes, daily or
-  weekly) into a new chat or a chat you pick, while the app is open. Each task sets its approval
-  mode (read only by default), folder, provider and whether a missed run catches up. Settings →
-  Background lists them, and the command palette runs one at once.
+- **Scheduled agents**: a saved prompt sent at set times (every so many minutes, daily or
+  weekly) into a new chat or a chat you pick, while the app is open. Each agent sets its approval
+  mode (read only by default), folder, provider and whether a missed run catches up. The
+  **Scheduled** page lists them as cards with their next and last run, **Run now**, an editor,
+  their recent runs and templates to start from; Settings → Background lists them too, and the
+  command palette runs one at once.
 - **Command line**: `cleanrstai exec "question"` runs one request with your saved settings and
   prints the reply, for scripts and pipes (`git diff | cleanrstai exec --mode read-only "review this" -`).
   Calls the approval mode doesn't allow are denied rather than asked. `--json` gives
@@ -182,7 +184,7 @@ too, as an installer and a portable `.exe`.
 - **Interface**: dark first, flat and quiet: near-black neutral greys (or near-white ones),
   hairline borders and one warm orange accent for the brand mark; Instrument Sans for the
   interface and replies, Newsreader (a serif) for the greeting. A fixed sidebar (New, Search,
-  Projects, Artifacts, Scheduled, Design, Customize, Recents and your name) with a title row for
+  Projects, Artifacts, Scheduled, Customize, Recents and your name) with a title row for
   back/forward (⌘[ and ⌘]) and a **Chat / Code** switch (Code lists the chats with a working
   folder); on macOS the window has no title bar and the traffic lights sit in the sidebar. A new
   chat opens on a greeting with the message box in the middle, a strip under it for the project

@@ -405,6 +405,9 @@ in them follows the same rule:
 - [x] Background tasks: a request keeps running when another chat is open, and notifies when
   it finishes, fails or needs approval
 - [x] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
+- [x] A **Scheduled** page for scheduled agents: cards with their schedule, next and last run,
+  **Run now**, an editor, duplicate and delete, each agent's recent runs with their state, a
+  switch to pause them all, and templates to start from
 - [x] Settings and limits for background replies: notifications on or off, how many run at once
   (the rest queue) and a time limit.
 

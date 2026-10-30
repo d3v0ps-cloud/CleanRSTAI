@@ -70,6 +70,41 @@ impl Default for Schedule {
     }
 }
 
+/// A schedule in words: "Every 30 minutes", "Every 2 hours", "Every day at 09:00",
+/// "Every Monday at 09:30".
+pub fn describe(schedule: Schedule) -> String {
+    const DAYS: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    let plural = |n: u32, unit: &str| {
+        if n == 1 {
+            format!("Every {unit}")
+        } else {
+            format!("Every {n} {unit}s")
+        }
+    };
+    match schedule {
+        Schedule::Interval { minutes } if minutes % 1440 == 0 => plural(minutes / 1440, "day"),
+        Schedule::Interval { minutes } if minutes % 60 == 0 => plural(minutes / 60, "hour"),
+        Schedule::Interval { minutes } => plural(minutes, "minute"),
+        Schedule::Daily { hour, minute } => format!("Every day at {hour:02}:{minute:02}"),
+        Schedule::Weekly {
+            weekday,
+            hour,
+            minute,
+        } => format!(
+            "Every {} at {hour:02}:{minute:02}",
+            DAYS[usize::from(weekday.min(6))]
+        ),
+    }
+}
+
 /// The kinds of schedule, for the settings' choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -809,5 +844,34 @@ mod tests {
         // Unset optional fields are left out of the file.
         let plain = serde_json::to_string(&ScheduledTask::default()).unwrap();
         assert!(!plain.contains("last_run") && !plain.contains("workspace"));
+    }
+
+    #[test]
+    fn schedules_read_as_words() {
+        assert_eq!(
+            describe(Schedule::Interval { minutes: 30 }),
+            "Every 30 minutes"
+        );
+        assert_eq!(describe(Schedule::Interval { minutes: 60 }), "Every hour");
+        assert_eq!(
+            describe(Schedule::Interval { minutes: 120 }),
+            "Every 2 hours"
+        );
+        assert_eq!(
+            describe(Schedule::Interval { minutes: 2880 }),
+            "Every 2 days"
+        );
+        assert_eq!(
+            describe(Schedule::Daily { hour: 9, minute: 5 }),
+            "Every day at 09:05"
+        );
+        assert_eq!(
+            describe(Schedule::Weekly {
+                weekday: 0,
+                hour: 10,
+                minute: 30
+            }),
+            "Every Monday at 10:30"
+        );
     }
 }

@@ -38,6 +38,7 @@ pub enum Command {
     ImportProject,
     ShowProjects,
     ShowArtifacts,
+    ShowScheduled,
     GoBack,
     GoForward,
     SetMode(AppMode),

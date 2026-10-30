@@ -100,7 +100,7 @@ pub fn section(
 }
 
 /// The grid of a task's schedule, target, approval, folder, provider and catch-up settings.
-fn task_fields(
+pub fn task_fields(
     ui: &mut egui::Ui,
     task: &mut ScheduledTask,
     providers: &[(String, String)],

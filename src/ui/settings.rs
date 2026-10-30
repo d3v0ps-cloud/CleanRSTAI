@@ -3325,7 +3325,7 @@ impl SettingsUi {
                     "Reduce motion",
                     "No fades, sliding sidebar or zooming dialogs",
                     |ui| {
-                        toggle(ui, &mut g.reduce_motion);
+                        super::chrome::toggle(ui, &mut g.reduce_motion);
                     },
                 );
                 setting_row(
@@ -3351,7 +3351,7 @@ impl SettingsUi {
                     "Speed stats",
                     "Prefill/decode speed and token counts under responses",
                     |ui| {
-                        toggle(ui, &mut g.show_stats);
+                        super::chrome::toggle(ui, &mut g.show_stats);
                     },
                 );
                 setting_row(
@@ -3359,7 +3359,7 @@ impl SettingsUi {
                     "Load web images in replies",
                     "Off: they show as links. Loading one tells its server the chat was opened.",
                     |ui| {
-                        toggle(ui, &mut g.load_remote_images);
+                        super::chrome::toggle(ui, &mut g.load_remote_images);
                     },
                 );
                 setting_row(
@@ -3367,7 +3367,7 @@ impl SettingsUi {
                     "Artifacts in a side panel",
                     "Open web pages, drawings and long code beside the chat as they arrive",
                     |ui| {
-                        toggle(ui, &mut g.open_artifacts);
+                        super::chrome::toggle(ui, &mut g.open_artifacts);
                     },
                 );
             });
@@ -4200,29 +4200,6 @@ fn search_pill(ui: &mut egui::Ui, text: &mut String) {
                 );
             });
         });
-}
-
-/// An on/off switch, drawn as a small pill with a knob.
-fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    let p = super::theme::palette(ui.visuals().dark_mode);
-    let size = egui::vec2(34.0, 20.0);
-    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    if resp.clicked() {
-        *on = !*on;
-        resp.mark_changed();
-    }
-    let value = *on;
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, value, ""));
-    let t = ui.ctx().animate_bool(resp.id, *on);
-    let track = p.selected.lerp_to_gamma(p.signal, t);
-    ui.painter().rect_filled(rect, 10, track);
-    let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
-    ui.painter().circle_filled(
-        egui::pos2(x, rect.center().y),
-        7.0,
-        p.ink.lerp_to_gamma(egui::Color32::WHITE, t),
-    );
-    resp
 }
 
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[

@@ -6,8 +6,8 @@ nav_order: 4
 # Settings
 
 Open **Settings** from the menu on your name at the bottom of the sidebar, or press
-**⌘/Ctrl + ,**. It opens over the window (which dims behind it) on **General**; **Scheduled**,
-**Design** and **Customize** in the sidebar open it on Background, Appearance and Skills & hooks.
+**⌘/Ctrl + ,**. It opens over the window (which dims behind it) on **General**; **Customize** in
+the sidebar opens it on Skills & hooks.
 The pages are grouped on the left: **Preferences** (General, Appearance, Voice), **This
 computer** (Docker sandbox, Background) and **Customize** (Providers, MCP servers, Built-in tools,
 Skills & hooks, Context & files, Subagents).

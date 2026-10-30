@@ -277,6 +277,9 @@ pub struct Conversation {
     /// The model this chat uses instead of its provider's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The scheduled task whose run started this chat (see `schedule`), for its run list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_task: Option<Uuid>,
 }
 
 impl Conversation {
@@ -296,6 +299,7 @@ impl Conversation {
             project: None,
             provider: None,
             model: None,
+            scheduled_task: None,
         }
     }
 

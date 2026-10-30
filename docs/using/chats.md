@@ -24,9 +24,8 @@ row*) moves the window when dragged and zooms it on a double click.
   [artifact panel](#artifacts) button beside it in a chat that has artifacts, an **Update to …**
   link when a new version is out, and the MCP status when servers are set up.
 - **Sidebar**: **New** (a new chat), then **Search** (a box that filters chats by title and text,
-  in both modes), **Projects** and **Artifacts** (pages in the canvas, below), **Scheduled**
-  ([Background](../settings/background.html#scheduled-tasks) settings), **Design**
-  ([Appearance](../settings/appearance.html)) and **Customize**
+  in both modes), **Projects**, **Artifacts** and **Scheduled** (pages in the canvas, below)
+  and **Customize**
   ([Skills & hooks](../settings/skills-and-hooks.html)). **Recents** (click the label to fold it
   away) lists the chats, pinned ones first; a long title fades out on the right, and a mark at the
   right edge shows a chat's state ([below](#running-chats-in-the-background)) or, with a document
@@ -377,17 +376,35 @@ With **Keep running in the menu bar or system tray when the window is closed** o
 Windows), closing the window hides it and replies keep running. Show the window again from the
 icon's menu (on Windows, a left click on the icon also works); Quit there ends the app.
 
-## Scheduled tasks
+## Scheduled agents
 
-A scheduled task is a saved prompt that CleanRSTAI sends at set times: every so many minutes, every
-day, or every week. Each run opens a new chat titled with the task's name and the time (or adds the
-prompt to a chat you picked), and the reply starts like any other. Tasks run only while the app is
-open; a run that was due while it was closed is skipped unless the task catches up.
+A scheduled agent (a *scheduled task*) is a saved prompt that CleanRSTAI sends at set times: every
+so many minutes, every day, or every week. Each run opens a new chat titled with the agent's name
+and the time (or adds the prompt to a chat you picked), and the reply runs like any other, with the
+tools the chat has: the defaults from Settings, plus the folder's tools when the agent has a
+folder. Agents run only while the app is open; a run that was due while it was closed is skipped
+unless the agent catches up.
 
-Tasks are made in [Background](../settings/background.html#scheduled-tasks) settings, which lists
-each task's prompt, schedule, approval mode, folder and provider. **Run scheduled task: …** in the
-command palette starts one at once. Runs share the queue and the limits of background replies, and
-a new chat starts read only unless the task says otherwise.
+**Scheduled** in the sidebar opens the agents' page:
+
+- **New agent** opens the editor: a name, the prompt, **Repeats** (an interval, every day or
+  every week, and the time), **Runs in** (a new chat each time, or a chat you pick), **Approvals**
+  (read only by default), a **Folder**, a **Provider**, and whether a missed run catches up.
+  **Create agent** saves it. With no agents yet, three templates start one for you: a morning
+  news briefing, a daily check of a repository and a weekly review of its dependencies (the last
+  two in the folder you used last).
+- Each agent is a card: its switch, name, **Run now**, **Edit**, and a menu to **Duplicate** (the
+  copy starts switched off) or **Delete** it. Under the name: the schedule, the next and last run,
+  its permissions, where it runs, its folder and provider, and the start of its prompt.
+- **Recent runs** lists the chats the agent's newest runs made, with a mark for running, waiting
+  for approval, queued, failed or finished; click one to open it.
+- **Run agents** at the top pauses or resumes all of them.
+
+Nobody watches a run, so a tool that asks for approval waits for you (with a notification). Give
+an agent the permission mode it needs and no more. Changes on this page are saved at once; the
+same agents are also listed in [Background](../settings/background.html#scheduled-tasks) settings.
+**Run scheduled task: …** in the command palette starts one at once. Runs share the queue and the
+limits of background replies.
 
 ## Managing chats
 

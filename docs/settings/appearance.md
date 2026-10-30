@@ -8,7 +8,7 @@ nav_order: 1.5
 {: .no_toc }
 
 Theme, size, motion, your name, and how replies look. Each setting is one row, with its control
-on the right. **Design** in the sidebar opens this page.
+on the right.
 
 1. TOC
 {:toc}

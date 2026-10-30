@@ -342,3 +342,26 @@ pub fn paint_brand_mark(painter: &egui::Painter, rect: Rect, color: Color32) {
         }
     }
 }
+
+/// An on/off switch, drawn as a small pill with a knob.
+pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let p = theme::palette(ui.visuals().dark_mode);
+    let size = egui::vec2(34.0, 20.0);
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let value = *on;
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, value, ""));
+    let t = ui.ctx().animate_bool(resp.id, *on);
+    let track = p.selected.lerp_to_gamma(p.signal, t);
+    ui.painter().rect_filled(rect, 10, track);
+    let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
+    ui.painter().circle_filled(
+        egui::pos2(x, rect.center().y),
+        7.0,
+        p.ink.lerp_to_gamma(egui::Color32::WHITE, t),
+    );
+    resp
+}
