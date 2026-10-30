@@ -7,7 +7,10 @@ nav_order: 3
 
 How to work with CleanRSTAI day to day.
 
-- [Chats](chats.html): the chat window, sending, editing, attachments, search and export.
+- [Chats](chats.html): the window (sidebar, home screen, Chat and Code modes, the Projects,
+  Artifacts and Scheduled pages), sending, editing, attachments, search and export.
+- [Scheduled agents](chats.html#scheduled-agents): prompts that run on a schedule, and their
+  recent runs.
 - [Tools and approvals](tools.html): built-in tools, the workspace folder, per-chat tool
   switches and approving tool calls.
 - [MCP servers](mcp.html): connecting Model Context Protocol servers, signing in, resources
@@ -21,7 +24,8 @@ How to work with CleanRSTAI day to day.
   with network rules.
 - [Command line](command-line.html): running one request from a terminal or a script with
   `cleanrstai exec`.
-- [Voice](voice.html): dictating into the message box and having replies read aloud.
+- [Voice](voice.html): dictating into the message box, choosing the microphone, having replies
+  read aloud, and voice mode.
 - [Updates](updates.html): checking for and installing new versions.
 - [Remote access](remote-access.html): using your chats from a browser on a phone or another
   computer, and its security.

@@ -387,6 +387,8 @@ unless the agent catches up.
 
 **Scheduled** in the sidebar opens the agents' page:
 
+![The Scheduled page with two agents and their recent runs]({{ '/scheduled.png' | relative_url }})
+
 - **New agent** opens the editor: a name, the prompt, **Repeats** (an interval, every day or
   every week, and the time), **Runs in** (a new chat each time, or a chat you pick), **Approvals**
   (read only by default), a **Folder**, a **Provider**, and whether a missed run catches up.

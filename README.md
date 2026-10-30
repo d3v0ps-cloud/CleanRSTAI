@@ -21,7 +21,7 @@ endpoint and gives the model tools through **MCP servers** (stdio and Streamable
 macOS is the primary platform and Linux is fully supported. Windows builds are released
 too, as an installer and a portable `.exe`.
 
-![A chat working in a project folder: the model searches the code, reads a file and suggests a fix](docs/screenshot.png)
+![A chat in Code mode: the model searches the code, reads a file and suggests a fix](docs/screenshot.png)
 
 ## Features
 
@@ -251,10 +251,10 @@ too, as an installer and a portable `.exe`.
 
 | | |
 |---|---|
-| ![A new chat: greeting, message box and model picker](docs/new-chat.png) | ![The tools menu with built-in, workspace and MCP tools](docs/tools-menu.png) |
-| A new chat | Per-chat tool switches |
-| ![Subagents, the calculator and the task list in a chat](docs/tools-subagents.png) | ![MCP server settings](docs/settings-mcp.png) |
-| Subagents, calculator and task list | MCP server settings |
+| ![The home screen: greeting, message box and recent artifacts](docs/new-chat.png) | ![The + menu with this chat's tools](docs/tools-menu.png) |
+| The home screen | Per-chat tool switches |
+| ![The Scheduled page with two agents and their recent runs](docs/scheduled.png) | ![MCP server settings](docs/settings-mcp.png) |
+| Scheduled agents | MCP server settings |
 
 ## Build & run
 

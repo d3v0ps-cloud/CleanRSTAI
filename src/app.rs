@@ -823,6 +823,7 @@ impl ChatApp {
             .get(&self.settings.general.skills, workspace_dir.as_deref())
             .is_empty();
         let in_project = self.in_listed_project_chat();
+        let memory_on = self.settings.general.memory.enabled;
         let sel = ToolSelection::new(&self.settings, &overrides)
             .with_mode(permissions.mode)
             .with_skills(has_skills);
@@ -897,7 +898,9 @@ impl ChatApp {
                         .small()
                         .weak(),
                 );
-                if !sel.feature_on(crate::tools::MEMORY) {
+                // Only a chat that switched memory off is incognito, not every chat while
+                // memory is off in Settings.
+                if memory_on && !sel.feature_on(crate::tools::MEMORY) {
                     ui.label(
                         RichText::new(format!(
                             "{}  Incognito: no memories for this chat",

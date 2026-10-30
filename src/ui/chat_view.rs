@@ -1097,18 +1097,21 @@ pub fn greeting_text(
     }
 }
 
-/// A short date for cards: "Today", "Yesterday", "Mon", "Oct 28" or "Oct 28, 2025".
+/// A short date for cards and run times: "Today", "Yesterday", "Tomorrow", a weekday within a
+/// week either way, "Oct 28" or "Oct 28, 2025".
 pub fn short_date(
     when: chrono::DateTime<chrono::Local>,
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
     let (day, today) = (when.date_naive(), now.date_naive());
     let days = (today - day).num_days();
-    if days <= 0 {
+    if days == 0 {
         "Today".to_owned()
     } else if days == 1 {
         "Yesterday".to_owned()
-    } else if days < 7 {
+    } else if days == -1 {
+        "Tomorrow".to_owned()
+    } else if (-6..7).contains(&days) {
         when.format("%a").to_string()
     } else if chrono::Datelike::year(&day) == chrono::Datelike::year(&today) {
         when.format("%b %-d").to_string()
@@ -1187,6 +1190,10 @@ mod tests {
         assert_eq!(short_date(at(9, 2), now), "Sep 2");
         let old = chrono::Local.with_ymd_and_hms(2025, 1, 5, 9, 0, 0).unwrap();
         assert_eq!(short_date(old, now), "Jan 5, 2025");
+        // Upcoming runs, on the Scheduled page.
+        assert_eq!(short_date(at(10, 31), now), "Tomorrow");
+        assert_eq!(short_date(at(11, 3), now), "Tue");
+        assert_eq!(short_date(at(11, 20), now), "Nov 20");
     }
 
     #[test]
