@@ -34,7 +34,8 @@ installed) in **v0.9.2-dev.5**, and the new desktop design (a dark-first neutral
 sidebar with pages and a title row with back/forward and a Chat/Code switch, the home screen with
 a serif greeting and recent artifacts, the strip of pickers under the message box, skills in the
 slash menu, voice mode and a microphone picker, Settings as a modal with an Appearance page, and
-reduce motion) in **v0.9.2-dev.6**. Signed builds are not planned.
+reduce motion) in **v0.9.2-dev.6**, and the Scheduled page for scheduled agents in
+**v0.9.2-dev.7**. Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -405,7 +406,7 @@ in them follows the same rule:
 - [x] Background tasks: a request keeps running when another chat is open, and notifies when
   it finishes, fails or needs approval
 - [x] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
-- [x] A **Scheduled** page for scheduled agents: cards with their schedule, next and last run,
+- [x] A **Scheduled** page for scheduled agents in **v0.9.2-dev.7**: cards with their schedule, next and last run,
   **Run now**, an editor, duplicate and delete, each agent's recent runs with their state, a
   switch to pause them all, and templates to start from
 - [x] Settings and limits for background replies: notifications on or off, how many run at once
