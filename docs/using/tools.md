@@ -31,7 +31,8 @@ computer and private networks* in [Built-in Tools](../settings/built-in-tools.ht
 
 ## Workspace
 
-Click **Set working directory** under the message box and choose a folder. The model then gets
+Click **Project or folder** under the message box and pick a recent folder or **Choose a
+folder…** (in [Code mode](chats.html#chat-and-code) a new chat starts in the last folder used). The model then gets
 these tools for that chat:
 
 | Tool | What it does | Asks first? |
@@ -135,7 +136,7 @@ your computer.
 
 ## Per-chat tool switches
 
-The tools menu (sliders icon) next to the message box lists the built-in tools, the workspace
+The tools menu (**Tools** in the message box's **+** menu) lists the built-in tools, the workspace
 tools when the chat has a folder, and every MCP server and its tools, each with a switch. The
 switches apply to the current chat from the next message. Defaults for new chats are in
 [Settings → Built-in Tools](../settings/built-in-tools.html) and

@@ -7,7 +7,8 @@ nav_order: 1
 # General
 {: .no_toc }
 
-Appearance, behaviour, secrets and data.
+Behaviour, secrets, remote access, updates and data. Theme, size, motion and how replies look
+are on the [Appearance](appearance.html) page.
 
 1. TOC
 {:toc}
@@ -15,15 +16,6 @@ Appearance, behaviour, secrets and data.
 ## System prompt
 
 The instructions sent at the start of every chat. Default: *You are a helpful assistant.*
-
-## Theme
-
-**System** (default) follows your operating system; **Light** and **Dark** fix it. You can
-also switch from the command palette.
-
-## UI scale
-
-Scales the whole interface from 0.5× to 2.5× (default 1.0×).
 
 ## Sending
 
@@ -106,29 +98,9 @@ logs browsers out; a change to the tunnel settings alone restarts only the tunne
 
 See [Updates](../using/updates.html).
 
-## Reasoning
-
-How a reasoning model's **Thought process** section starts out:
-
-- **Collapsed** (default)
-- **Expanded**
-- **Expanded while thinking**: open while the model reasons, collapsed once it answers.
-
-## Stats
-
-**Show prefill/decode speed and token counts under responses** (default on).
-
-## Images
-
-**Load web images in replies** (default off). When off, images from the web show as links.
-Loading them tells the image's server that the chat was opened, and a reply could put chat
-contents in the image address.
-
 ## Artifacts
 
-**Open web pages, drawings and long code in a side panel** (default on). When a reply makes an
-[artifact](../using/chats.html#artifacts), the panel opens beside the chat. When off, open it with
-**Open in panel** by its link in the reply, or the panel button in the top bar.
+How the artifact panel opens is on the [Appearance](appearance.html) page.
 
 ### Web page preview
 

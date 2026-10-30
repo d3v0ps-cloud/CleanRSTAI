@@ -55,8 +55,9 @@ menu shows which files the latest request read.
 
 ## Projects
 
-**Projects** (default on) groups chats in the sidebar, with the instructions and files each
-project adds to its chats. Off hides the projects from the sidebar and stops adding their
+**Projects** (default on) groups chats on the **Projects** page, with the instructions and files
+each project adds to its chats. Off hides the projects (the page offers to turn them on) and stops
+adding their
 context to requests; a chat can also leave the project context out from the tools menu. See
 [Projects](../using/projects.html).
 

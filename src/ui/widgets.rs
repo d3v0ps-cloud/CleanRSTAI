@@ -363,14 +363,6 @@ pub fn permissions_picker(
     plan_on: bool,
 ) {
     use super::theme::icon;
-    use crate::approval::ApprovalMode;
-    let mode_icon = |m: ApprovalMode| match m {
-        ApprovalMode::Default => icon::SHIELD,
-        ApprovalMode::AutoWorkspace => icon::SHIELD_CHECK,
-        ApprovalMode::AllowAll => icon::LIGHTNING,
-        ApprovalMode::ReadOnly => icon::EYE,
-        ApprovalMode::Plan => icon::LIST_CHECKS,
-    };
     let current = permissions.mode.effective(plan_on);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Permissions").small().weak());
@@ -381,52 +373,74 @@ pub fn permissions_picker(
                 current.label(),
                 icon::CARET_DOWN
             ),
-            |ui| {
-                ui.set_min_width(300.0);
-                let body = ui.style().text_styles[&egui::TextStyle::Body].clone();
-                let small = ui.style().text_styles[&egui::TextStyle::Small].clone();
-                let strong = ui.visuals().strong_text_color();
-                let weak = ui.visuals().weak_text_color();
-                for m in ApprovalMode::offered(plan_on) {
-                    let mut job = egui::text::LayoutJob::default();
-                    job.append(
-                        &format!("{}  {}\n", mode_icon(m), m.label()),
-                        0.0,
-                        egui::TextFormat::simple(body.clone(), strong),
-                    );
-                    job.append(
-                        m.description(),
-                        24.0,
-                        egui::TextFormat::simple(small.clone(), weak),
-                    );
-                    if ui.selectable_label(current == m, job).clicked() {
-                        permissions.mode = m;
-                    }
-                }
-                ui.separator();
-                let mut sandboxed = sandbox_on && !permissions.no_sandbox;
-                let resp = ui.add_enabled(
-                    sandbox_on,
-                    egui::Checkbox::new(&mut sandboxed, "Sandboxing for terminal"),
-                );
-                let resp = if sandbox_on {
-                    resp.on_hover_text(
-                        "Run this chat's commands in the Docker sandbox. Off runs them on this \
-                         computer (and Auto in workspace then asks before each one).",
-                    )
-                } else {
-                    resp.on_disabled_hover_text(
-                        "Turn on the Docker sandbox in Settings → Docker first",
-                    )
-                };
-                if resp.changed() {
-                    permissions.no_sandbox = !sandboxed;
-                }
-            },
+            |ui| permissions_list(ui, permissions, sandbox_on, plan_on),
         )
         .response
         .on_hover_text(current.description());
     });
+}
+
+/// The icon for a permission mode.
+pub fn mode_icon(m: crate::approval::ApprovalMode) -> &'static str {
+    use super::theme::icon;
+    use crate::approval::ApprovalMode;
+    match m {
+        ApprovalMode::Default => icon::SHIELD,
+        ApprovalMode::AutoWorkspace => icon::SHIELD_CHECK,
+        ApprovalMode::AllowAll => icon::LIGHTNING,
+        ApprovalMode::ReadOnly => icon::EYE,
+        ApprovalMode::Plan => icon::LIST_CHECKS,
+    }
+}
+
+/// The permission modes to pick from, each with its description, and the sandbox switch: the
+/// body of the permissions menu.
+pub fn permissions_list(
+    ui: &mut egui::Ui,
+    permissions: &mut crate::approval::ChatPermissions,
+    sandbox_on: bool,
+    plan_on: bool,
+) {
+    use crate::approval::ApprovalMode;
+    let current = permissions.mode.effective(plan_on);
+    ui.set_min_width(300.0);
+    let body = ui.style().text_styles[&egui::TextStyle::Body].clone();
+    let small = ui.style().text_styles[&egui::TextStyle::Small].clone();
+    let strong = ui.visuals().strong_text_color();
+    let weak = ui.visuals().weak_text_color();
+    for m in ApprovalMode::offered(plan_on) {
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &format!("{}  {}\n", mode_icon(m), m.label()),
+            0.0,
+            egui::TextFormat::simple(body.clone(), strong),
+        );
+        job.append(
+            m.description(),
+            24.0,
+            egui::TextFormat::simple(small.clone(), weak),
+        );
+        if ui.selectable_label(current == m, job).clicked() {
+            permissions.mode = m;
+        }
+    }
+    ui.separator();
+    let mut sandboxed = sandbox_on && !permissions.no_sandbox;
+    let resp = ui.add_enabled(
+        sandbox_on,
+        egui::Checkbox::new(&mut sandboxed, "Sandboxing for terminal"),
+    );
+    let resp = if sandbox_on {
+        resp.on_hover_text(
+            "Run this chat's commands in the Docker sandbox. Off runs them on this \
+                 computer (and Auto in workspace then asks before each one).",
+        )
+    } else {
+        resp.on_disabled_hover_text("Turn on the Docker sandbox in Settings → Docker first")
+    };
+    if resp.changed() {
+        permissions.no_sandbox = !sandboxed;
+    }
 }
 
 #[cfg(test)]

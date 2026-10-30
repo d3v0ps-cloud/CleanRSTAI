@@ -294,6 +294,16 @@ pub enum Theme {
     Dark,
 }
 
+/// The window's two modes, from the switch in the title bar: Chat lists chats without a working
+/// folder, Code lists those with one (and a new chat there starts in the last folder used).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppMode {
+    #[default]
+    Chat,
+    Code,
+}
+
 /// How the model's reasoning ("Thinking") is shown in the chat.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -958,6 +968,14 @@ pub struct GeneralSettings {
     pub system_prompt: String,
     pub theme: Theme,
     pub zoom: f32,
+    /// The name the greeting and the sidebar's footer use; empty takes it from the system's
+    /// user name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub display_name: String,
+    /// No hover fades, sliding sidebar or modal zoom.
+    pub reduce_motion: bool,
+    /// Chat or Code, from the title bar's switch.
+    pub mode: AppMode,
     /// Enter sends, Shift+Enter inserts a newline. When false, Ctrl/Cmd+Enter sends.
     pub send_with_enter: bool,
     /// Run MCP tool calls without asking first.
@@ -1067,6 +1085,9 @@ impl Default for GeneralSettings {
             system_prompt: "You are a helpful assistant.".into(),
             theme: Theme::System,
             zoom: 1.0,
+            display_name: String::new(),
+            reduce_motion: false,
+            mode: AppMode::Chat,
             send_with_enter: true,
             auto_approve_tools: false,
             default_approval_mode: Default::default(),

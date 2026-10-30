@@ -72,14 +72,22 @@ fn main() -> eframe::Result {
         .expect("failed to start async runtime");
     let handle = runtime.handle().clone();
 
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("CleanRSTAI")
+        .with_app_id("cleanrstai")
+        .with_inner_size([1180.0, 780.0])
+        .with_min_inner_size([640.0, 420.0])
+        // Light until the first frame knows the theme; the app swaps it to match.
+        .with_icon(ui::theme::window_icon(false));
+    // macOS: no title bar of its own. The content runs to the top edge and the app's title row
+    // (the sidebar's top) holds the traffic lights, leaving room for them.
+    #[cfg(target_os = "macos")]
+    let viewport = viewport
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("CleanRSTAI")
-            .with_app_id("cleanrstai")
-            .with_inner_size([1180.0, 780.0])
-            .with_min_inner_size([640.0, 420.0])
-            // Light until the first frame knows the theme; the app swaps it to match.
-            .with_icon(ui::theme::window_icon(false)),
+        viewport,
         ..Default::default()
     };
 

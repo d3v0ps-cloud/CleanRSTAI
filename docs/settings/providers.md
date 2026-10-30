@@ -140,7 +140,7 @@ default applies; tick an option's box to set it.
 Models that don't reason may reject a reasoning effort or budget: leave them unset for those.
 
 **Only for *model*** sets options for the provider's current model alone; they win over the
-provider's. Each chat can change them again from the sparkle menu under the message box (see
+provider's. Each chat can change them again from the effort label (**· Default**) under the message box (see
 [Model options](../using/chats.html#model-options)). Subagents and compaction use the provider
 and model options, not a chat's.
 

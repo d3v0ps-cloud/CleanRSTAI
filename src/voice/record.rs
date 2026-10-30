@@ -96,11 +96,16 @@ pub fn pick_recorder(has: impl Fn(&str) -> bool) -> Option<LinuxRecorder> {
     .map(|(_, r)| r)
 }
 
-/// The program and arguments that record 16 kHz mono 16-bit WAV into `path`.
+/// The program and arguments that record 16 kHz mono 16-bit WAV into `path`, from `device`
+/// (a name from [`input_devices`]) or, when it is empty, the default input.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn recorder_args(recorder: LinuxRecorder, path: &str) -> (&'static str, Vec<String>) {
+pub fn recorder_args(
+    recorder: LinuxRecorder,
+    path: &str,
+    device: &str,
+) -> (&'static str, Vec<String>) {
     let s = |v: &str| v.to_owned();
-    match recorder {
+    let (program, mut args) = match recorder {
         LinuxRecorder::PwRecord => (
             "pw-record",
             vec![
@@ -110,7 +115,6 @@ pub fn recorder_args(recorder: LinuxRecorder, path: &str) -> (&'static str, Vec<
                 s("1"),
                 s("--format"),
                 s("s16"),
-                s(path),
             ],
         ),
         LinuxRecorder::Parecord => (
@@ -120,7 +124,6 @@ pub fn recorder_args(recorder: LinuxRecorder, path: &str) -> (&'static str, Vec<
                 s("--channels=1"),
                 s("--format=s16le"),
                 s("--file-format=wav"),
-                s(path),
             ],
         ),
         LinuxRecorder::Arecord => (
@@ -135,9 +138,81 @@ pub fn recorder_args(recorder: LinuxRecorder, path: &str) -> (&'static str, Vec<
                 s("16000"),
                 s("-c"),
                 s("1"),
-                s(path),
             ],
         ),
+    };
+    if !device.is_empty() {
+        match recorder {
+            LinuxRecorder::PwRecord => args.extend([s("--target"), s(device)]),
+            LinuxRecorder::Parecord => args.push(format!("--device={device}")),
+            LinuxRecorder::Arecord => args.extend([s("-D"), s(device)]),
+        }
+    }
+    args.push(s(path));
+    (program, args)
+}
+
+/// The capture sources in `pactl list short sources` output, without the monitors of outputs.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn parse_pactl_sources(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|line| line.split('\t').nth(1))
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.ends_with(".monitor"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The PCM names in `arecord -L` output: the unindented lines, without `null`.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn parse_arecord_list(out: &str) -> Vec<String> {
+    out.lines()
+        .filter(|line| !line.is_empty() && !line.starts_with(char::is_whitespace))
+        .map(str::trim)
+        .filter(|name| *name != "null")
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The microphones that can be picked for voice input, by name. Empty when they can't be
+/// listed; recording then uses the default input. Runs a short command on Linux, so call it
+/// off the UI thread or rarely.
+pub fn input_devices() -> Vec<String> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        cpal::default_host()
+            .input_devices()
+            .map(|devices| {
+                devices
+                    .filter_map(|d| d.description().ok().map(|d| d.name().to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let run = |program: &str, args: &[&str]| {
+            std::process::Command::new(program)
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        };
+        match pick_recorder(|name| which::which(name).is_ok()) {
+            Some(LinuxRecorder::PwRecord | LinuxRecorder::Parecord) => {
+                run("pactl", &["list", "short", "sources"])
+                    .map(|out| parse_pactl_sources(&out))
+                    .unwrap_or_default()
+            }
+            Some(LinuxRecorder::Arecord) => run("arecord", &["-L"])
+                .map(|out| parse_arecord_list(&out))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -146,6 +221,7 @@ pub fn recorder_args(recorder: LinuxRecorder, path: &str) -> (&'static str, Vec<
 /// tool on Linux) are returned here instead.
 pub fn start(
     max_secs: u32,
+    device: String,
     stop: Arc<AtomicBool>,
     done: impl FnOnce(Result<Vec<u8>, String>) + Send + 'static,
 ) -> Result<(), String> {
@@ -156,7 +232,7 @@ pub fn start(
             super::Reporter::<Vec<u8>, _>::new("The recording stopped unexpectedly", done);
         std::thread::Builder::new()
             .name("voice-record".into())
-            .spawn(move || reporter.finish(capture_cpal(max, &stop)))
+            .spawn(move || reporter.finish(capture_cpal(max, &device, &stop)))
             .map(|_| ())
             .map_err(|e| format!("Couldn't start recording: {e}"))
     }
@@ -166,7 +242,7 @@ pub fn start(
             .ok_or_else(|| "Install PipeWire, PulseAudio or ALSA utils to record".to_owned())?;
         let path =
             std::env::temp_dir().join(format!("cleanrstai-voice-{}.wav", uuid::Uuid::new_v4()));
-        let (program, args) = recorder_args(recorder, &path.to_string_lossy());
+        let (program, args) = recorder_args(recorder, &path.to_string_lossy(), &device);
         let child = std::process::Command::new(program)
             .args(&args)
             .stdin(std::process::Stdio::null())
@@ -218,14 +294,22 @@ fn finish_process(
     }
 }
 
-/// Captures the default input device until `stop` or `max`, then encodes it as 16 kHz WAV.
+/// Captures the named input device (the default one when `name` is empty or no longer there)
+/// until `stop` or `max`, then encodes it as 16 kHz WAV.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn capture_cpal(max: Duration, stop: &AtomicBool) -> Result<Vec<u8>, String> {
+fn capture_cpal(max: Duration, name: &str, stop: &AtomicBool) -> Result<Vec<u8>, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::sync::Mutex;
 
-    let device = cpal::default_host()
-        .default_input_device()
+    let host = cpal::default_host();
+    let named = (!name.is_empty())
+        .then(|| host.input_devices().ok())
+        .flatten()
+        .and_then(|mut devices| {
+            devices.find(|d| d.description().is_ok_and(|desc| desc.name() == name))
+        });
+    let device = named
+        .or_else(|| host.default_input_device())
         .ok_or("No microphone found")?;
     let config = device
         .default_input_config()
@@ -366,7 +450,7 @@ mod tests {
             LinuxRecorder::Parecord,
             LinuxRecorder::Arecord,
         ] {
-            let (program, args) = recorder_args(r, "/tmp/x.wav");
+            let (program, args) = recorder_args(r, "/tmp/x.wav", "");
             let joined = args.join(" ");
             assert!(joined.contains("16000"), "{program}: {joined}");
             assert!(
@@ -376,5 +460,30 @@ mod tests {
             assert!(joined.contains('1'), "{program}: mono");
             assert_eq!(args.last().map(String::as_str), Some("/tmp/x.wav"));
         }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn a_chosen_microphone_goes_before_the_file() {
+        let mic = "alsa_input.usb-Mic-00.mono-fallback";
+        let (_, pw) = recorder_args(LinuxRecorder::PwRecord, "/tmp/x.wav", mic);
+        assert_eq!(pw[pw.len() - 3..], ["--target", mic, "/tmp/x.wav"]);
+        let (_, pa) = recorder_args(LinuxRecorder::Parecord, "/tmp/x.wav", mic);
+        assert_eq!(pa[pa.len() - 2], format!("--device={mic}"));
+        let (_, al) = recorder_args(LinuxRecorder::Arecord, "/tmp/x.wav", "hw:1,0");
+        assert_eq!(al[al.len() - 3..], ["-D", "hw:1,0", "/tmp/x.wav"]);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn device_lists_are_read_from_pactl_and_arecord() {
+        let pactl = "0\talsa_output.pci.analog-stereo.monitor\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n\
+                     1\talsa_input.pci.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n";
+        assert_eq!(parse_pactl_sources(pactl), ["alsa_input.pci.analog-stereo"]);
+        let arecord = "null\n    Discard all samples\ndefault\n    Default ALSA device\nhw:CARD=PCH,DEV=0\n    HDA Intel PCH\n";
+        assert_eq!(
+            parse_arecord_list(arecord),
+            ["default", "hw:CARD=PCH,DEV=0"]
+        );
     }
 }

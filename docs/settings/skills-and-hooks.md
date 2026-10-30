@@ -39,7 +39,12 @@ provider only when the model loads it (see [Data and privacy](../reference/data-
 | **Open skills folder** | | Creates the skills folder if it's missing and opens it in the file manager. Its path is shown under the button. |
 | **Skill checkboxes** | on | Lists the skills in your skills folder. Switch one off and it is neither listed nor loadable, in any chat. **Refresh** reads the folder again. |
 
-Per chat, the tools menu next to the message box has a **Skills** switch. It appears when the
+Typing **/** in the message box lists the skills (under **Skills**, after the slash commands)
+whose names start with what you type. Sending `/name` for a skill (when no slash command has
+that name) asks the model to use it: the message becomes *Use the "name" skill.* followed by the
+rest of what you typed.
+
+Per chat, the tools menu (in the message box's **+** menu) has a **Skills** switch. It appears when the
 chat can see any skills (in your skills folder or in its working folder), and it is on by
 default.
 

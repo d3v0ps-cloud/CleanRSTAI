@@ -27,7 +27,7 @@ or right-click the **Projects** heading. The editor has:
   out, and the model is told so.
 - **Folder**: the working folder a new chat in the project starts with.
 - **Provider** and **Model**: what a new chat starts with. Leave the provider on
-  "Settings' active provider" to use the one you picked in the top bar.
+  "Settings' active provider" to use the one you picked under the message box.
 - **Permissions**: the permission mode a new chat starts with (see [Tools and approvals](tools.html)).
 - **Tool switches**: the switches a new chat starts with. They are set from a chat, see below.
 

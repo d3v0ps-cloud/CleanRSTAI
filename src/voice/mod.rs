@@ -88,6 +88,10 @@ pub struct VoiceInput {
     pub language: String,
     /// A recording stops by itself after this many seconds.
     pub max_secs: u32,
+    /// The microphone to record from, by the name `record::input_devices` lists; empty is the
+    /// system's default.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub device: String,
 }
 
 impl Default for VoiceInput {
@@ -98,6 +102,7 @@ impl Default for VoiceInput {
             model: DEFAULT_TRANSCRIBE_MODEL.into(),
             language: String::new(),
             max_secs: 120,
+            device: String::new(),
         }
     }
 }
@@ -332,12 +337,13 @@ impl VoiceState {
     pub fn start_recording(
         &mut self,
         max_secs: u32,
+        device: String,
         tx: &EventSender,
         repaint: impl Fn() + Send + Sync + 'static,
     ) -> Result<(), String> {
         let stop = Arc::new(AtomicBool::new(false));
         let tx = tx.clone();
-        record::start(max_secs, stop.clone(), move |result| {
+        record::start(max_secs, device, stop.clone(), move |result| {
             let _ = tx.send(AppEvent::VoiceCaptured(result));
             repaint();
         })?;

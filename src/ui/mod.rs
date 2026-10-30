@@ -1,6 +1,7 @@
 pub mod artifact_panel;
 pub mod attachments;
 pub mod chat_view;
+pub mod chrome;
 pub mod commit_dialog;
 #[cfg(target_os = "linux")]
 pub mod linux_preview;

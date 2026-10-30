@@ -20,12 +20,21 @@ use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall, results_after};
 
-pub const MAX_CONTENT_WIDTH: f32 = 760.0;
+/// The transcript's column: narrow and centred.
+pub const MAX_CONTENT_WIDTH: f32 = 700.0;
+
+/// The home screen's composer and the cards under it.
+pub const HOME_WIDTH: f32 = 656.0;
 
 /// Lay out `add` in a centred column of at most [`MAX_CONTENT_WIDTH`].
 pub fn centered<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    centered_at(ui, MAX_CONTENT_WIDTH, add)
+}
+
+/// Lay out `add` in a centred column of at most `max` points.
+pub fn centered_at<R>(ui: &mut egui::Ui, max: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let avail = ui.available_width();
-    let width = avail.min(MAX_CONTENT_WIDTH);
+    let width = avail.min(max + 16.0);
     let pad = ((avail - width) / 2.0).max(0.0);
     ui.horizontal(|ui| {
         ui.add_space(pad);
@@ -1064,35 +1073,121 @@ fn error_box(ui: &mut egui::Ui, err: &str, retry: Option<Uuid>, actions: &mut Ve
 }
 
 /// The new-chat greeting, "Good evening, Aaron", in the serif with a time-of-day icon.
-pub fn greeting(ui: &mut egui::Ui, name: Option<&str>) {
+/// The greeting's words for a weekday and hour: "Happy Friday, Aaron", "Good morning", …
+pub fn greeting_text(
+    weekday: chrono::Weekday,
+    hour: u32,
+    name: Option<&str>,
+    code: bool,
+) -> String {
+    use chrono::Weekday;
+    let opening = match (weekday, hour) {
+        (_, 0..=4) => "Up late",
+        (Weekday::Fri, 12..=23) => "Happy Friday",
+        (Weekday::Sat | Weekday::Sun, 9..=20) => "Happy weekend",
+        (_, 5..=11) => "Good morning",
+        (_, 12..=17) => "Good afternoon",
+        _ => "Good evening",
+    };
+    match (name, code) {
+        (Some(n), false) => format!("{opening}, {n}"),
+        (None, false) => opening.to_owned(),
+        (Some(n), true) => format!("What are we building, {n}?"),
+        (None, true) => "What are we building?".to_owned(),
+    }
+}
+
+/// A short date for cards: "Today", "Yesterday", "Mon", "Oct 28" or "Oct 28, 2025".
+pub fn short_date(
+    when: chrono::DateTime<chrono::Local>,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let (day, today) = (when.date_naive(), now.date_naive());
+    let days = (today - day).num_days();
+    if days <= 0 {
+        "Today".to_owned()
+    } else if days == 1 {
+        "Yesterday".to_owned()
+    } else if days < 7 {
+        when.format("%a").to_string()
+    } else if chrono::Datelike::year(&day) == chrono::Datelike::year(&today) {
+        when.format("%b %-d").to_string()
+    } else {
+        when.format("%b %-d, %Y").to_string()
+    }
+}
+
+/// The home screen's greeting: the brand mark and one serif line, centred.
+pub fn greeting(ui: &mut egui::Ui, name: Option<&str>, code: bool) {
     let p = theme::palette(ui.visuals().dark_mode);
-    let hour = chrono::Timelike::hour(&chrono::Local::now());
-    let (glyph, text) = match hour {
-        5..=11 => (icon::SUN, "Good morning"),
-        12..=17 => (icon::SUN, "Good afternoon"),
-        _ => (icon::MOON, "Good evening"),
-    };
-    let text = match name {
-        Some(n) => format!("{text}, {n}"),
-        None => text.to_owned(),
-    };
-    let font = egui::FontId::new(34.0, egui::FontFamily::Proportional);
-    // Centre the icon and the words together.
-    let width = ui
-        .ctx()
-        .fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), p.ink).size().x)
-        + 44.0;
-    ui.horizontal(|ui| {
-        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
-        ui.label(RichText::new(glyph).size(30.0).color(p.signal));
-        ui.add_space(4.0);
-        ui.label(RichText::new(text).font(font).color(p.ink));
-    });
+    let now = chrono::Local::now();
+    let text = greeting_text(
+        chrono::Datelike::weekday(&now),
+        chrono::Timelike::hour(&now),
+        name,
+        code,
+    );
+    let font = theme::serif(34.0);
+    let mark = 30.0;
+    let galley = ui.ctx().fonts_mut(|f| f.layout_no_wrap(text, font, p.ink));
+    let width = galley.size().x + mark + 14.0;
+    let height = galley.size().y.max(mark);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let left = rect.center().x - width / 2.0;
+    let mark_rect = egui::Rect::from_center_size(
+        egui::pos2(left + mark / 2.0, rect.center().y + 1.0),
+        egui::Vec2::splat(mark),
+    );
+    super::chrome::paint_brand_mark(ui.painter(), mark_rect, p.signal);
+    ui.painter().galley(
+        egui::pos2(left + mark + 14.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p.ink,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn greetings_follow_the_day_and_hour() {
+        use chrono::Weekday::*;
+        assert_eq!(
+            greeting_text(Fri, 15, Some("Aaron"), false),
+            "Happy Friday, Aaron"
+        );
+        assert_eq!(
+            greeting_text(Fri, 9, Some("Aaron"), false),
+            "Good morning, Aaron"
+        );
+        assert_eq!(greeting_text(Tue, 14, None, false), "Good afternoon");
+        assert_eq!(greeting_text(Sun, 10, None, false), "Happy weekend");
+        assert_eq!(greeting_text(Wed, 21, None, false), "Good evening");
+        assert_eq!(greeting_text(Mon, 2, Some("Sam"), false), "Up late, Sam");
+        assert_eq!(
+            greeting_text(Mon, 10, Some("Sam"), true),
+            "What are we building, Sam?"
+        );
+    }
+
+    #[test]
+    fn card_dates_are_short() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 30, 12, 0, 0)
+            .unwrap();
+        let at = |m, d| chrono::Local.with_ymd_and_hms(2026, m, d, 9, 0, 0).unwrap();
+        assert_eq!(short_date(at(10, 30), now), "Today");
+        assert_eq!(short_date(at(10, 29), now), "Yesterday");
+        assert_eq!(short_date(at(10, 26), now), "Mon");
+        assert_eq!(short_date(at(9, 2), now), "Sep 2");
+        let old = chrono::Local.with_ymd_and_hms(2025, 1, 5, 9, 0, 0).unwrap();
+        assert_eq!(short_date(old, now), "Jan 5, 2025");
+    }
 
     #[test]
     fn reasoning_default_state() {

@@ -67,6 +67,24 @@ pub fn expand(input: &str, commands: &[SlashCommand]) -> Option<String> {
     Some(text.trim().to_owned())
 }
 
+/// A message that starts with `/name` for one of `skills` (and isn't a command): asks the
+/// model to load that skill, followed by the rest of the message.
+pub fn skill_request<'a>(input: &str, skills: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let rest = input.strip_prefix('/')?;
+    let name_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let (name, after) = rest.split_at(name_end);
+    if name.is_empty() {
+        return None;
+    }
+    skills.into_iter().find(|s| *s == name)?;
+    let args = after.trim();
+    Some(if args.is_empty() {
+        format!("Use the \"{name}\" skill.")
+    } else {
+        format!("Use the \"{name}\" skill.\n\n{args}")
+    })
+}
+
 /// The commands a message box offers while `input` is a command name being typed (`/ex`).
 pub fn suggestions(input: &str, commands: &[SlashCommand]) -> Vec<SlashCommand> {
     let Some(typed) = input.strip_prefix('/') else {
@@ -367,5 +385,21 @@ mod tests {
             expand("/explain x", &cmds).as_deref(),
             Some("Explain this code step by step:\n\nx")
         );
+    }
+
+    #[test]
+    fn a_skill_name_asks_for_that_skill() {
+        let skills = ["pdf", "release-notes"];
+        assert_eq!(
+            skill_request("/pdf fill in the form", skills).as_deref(),
+            Some("Use the \"pdf\" skill.\n\nfill in the form")
+        );
+        assert_eq!(
+            skill_request("/release-notes", skills).as_deref(),
+            Some("Use the \"release-notes\" skill.")
+        );
+        assert_eq!(skill_request("/pd x", skills), None);
+        assert_eq!(skill_request("pdf", skills), None);
+        assert_eq!(skill_request("/", skills), None);
     }
 }

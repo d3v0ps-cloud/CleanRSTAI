@@ -62,7 +62,7 @@ switch it off for one chat in the tools menu next to the message box.
 
 ## Signing in (OAuth)
 
-When a remote server needs sign-in, its status reads **Sign-in required** and the top bar
+When a remote server needs sign-in, its status reads **Sign-in required** and the MCP status at the top right
 warns that an MCP server needs you to sign in. Click **Sign in…** on the server's settings
 page: your browser opens, and CleanRSTAI completes the standard MCP authorization flow
 (discovery, automatic client registration, PKCE and a loopback redirect).
@@ -73,7 +73,7 @@ server's documentation.
 
 ## Resources and prompts
 
-The MCP menu (books icon) next to the message box lists each connected server's:
+**Resources & prompts** in the message box's **+** menu lists each connected server's:
 
 - **Resources**: click one to attach it to your message. PDFs and Office documents are
   attached as text, like file attachments.

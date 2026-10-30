@@ -6,7 +6,7 @@ use uuid::Uuid;
 use super::settings::Tab;
 use super::theme::icon;
 use crate::approval::ApprovalMode;
-use crate::config::Theme;
+use crate::config::{AppMode, Theme};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -36,6 +36,12 @@ pub enum Command {
     RunScheduledTask(Uuid),
     NewProject,
     ImportProject,
+    ShowProjects,
+    ShowArtifacts,
+    GoBack,
+    GoForward,
+    SetMode(AppMode),
+    ToggleVoiceMode,
 }
 
 #[derive(Clone, Debug)]

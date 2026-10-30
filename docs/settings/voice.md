@@ -14,11 +14,12 @@ Dictating into the message box and reading replies aloud. How they work is on th
 
 | Setting | Default | What it does |
 |---|---|---|
-| **Voice input** | Off | Shows the microphone button under the message box and enables ⌘/Ctrl + Shift + M |
+| **Voice input** | Off | Lets the microphone in the message box record (and ⌘/Ctrl + Shift + M), and turns on voice mode |
 | **Provider** | Active provider | The provider whose base URL, API key and headers the transcription call uses |
 | **Model** | `whisper-1` | The transcription model, or the name a local server gives its model |
 | **Language** | Detect | A language code such as `de`; empty lets the model detect it |
 | **Longest recording (seconds)** | 120 | A recording stops by itself after this long. From 5 to 600 |
+| **Microphone** | System default | The input device to record from. macOS and Windows list the system's microphones; Linux lists PipeWire or PulseAudio sources (`pactl`), or ALSA devices (`arecord -L`) when only `arecord` is installed. A saved microphone that isn't plugged in stays chosen, and recording falls back to the default (on macOS and Windows) until it is back. The chevron beside the microphone in the message box picks it too |
 
 ## Reading replies aloud
 

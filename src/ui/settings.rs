@@ -132,6 +132,7 @@ fn protocol_label(protocol: NetProtocol) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     General,
+    Appearance,
     Providers,
     Mcp,
     Tools,
@@ -182,6 +183,8 @@ pub struct SettingsUi {
     import_text: String,
     import_error: Option<String>,
     search: String,
+    /// The microphones found when the Voice tab was first shown.
+    mic_devices: Option<Vec<String>>,
     memory_ui: MemoryEditor,
     queued: Vec<SettingsAction>,
     pub fetching_models: bool,
@@ -812,6 +815,7 @@ impl SettingsUi {
             import_text: String::new(),
             import_error: None,
             search: String::new(),
+            mic_devices: None,
             queued: Vec::new(),
             fetching_models: false,
             models_error: None,
@@ -862,13 +866,23 @@ impl SettingsUi {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
 
-        egui::Panel::left("settings-nav")
-            .resizable(false)
-            .exact_size(220.0)
+        let p = super::theme::palette(dark);
+        egui::Panel::top("settings-header")
+            .show_separator_line(true)
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 20,
+                right: 12,
+                top: 12,
+                bottom: 10,
+            }))
             .show(ui, |ui| {
-                ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.heading("Settings");
+                    ui.label(
+                        egui::RichText::new("Settings")
+                            .size(16.0)
+                            .strong()
+                            .color(p.ink),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if super::widgets::icon_button(ui, icon::CLOSE, "Close settings (Esc)")
                             .clicked()
@@ -877,54 +891,73 @@ impl SettingsUi {
                         }
                     });
                 });
+            });
+
+        egui::Panel::left("settings-nav")
+            .resizable(false)
+            .exact_size(195.0)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 10)))
+            .show(ui, |ui| {
+                search_pill(ui, &mut self.search);
                 ui.add_space(6.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("search settings")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(6.0);
-                if self.search.trim().is_empty() {
-                    for (tab, label) in [
-                        (Tab::General, "General"),
-                        (Tab::Providers, "Providers"),
-                        (Tab::Mcp, "MCP servers"),
-                        (Tab::Tools, "Built-in tools"),
-                        (Tab::Extensions, "Skills & hooks"),
-                        (Tab::Context, "Context & files"),
-                        (Tab::Docker, "Docker sandbox"),
-                        (Tab::Subagents, "Subagents"),
-                        (Tab::Background, "Background"),
-                        (Tab::Voice, "Voice"),
-                    ] {
-                        if ui
-                            .add(
-                                egui::Button::selectable(self.tab == tab, label)
-                                    .right_text("")
-                                    .min_size(egui::vec2(ui.available_width(), 30.0)),
-                            )
-                            .clicked()
-                        {
-                            self.tab = tab;
-                        }
-                    }
+                let query = self.search.trim().to_owned();
+                let query = query.as_str();
+                let hits = if query.is_empty() {
+                    Vec::new()
                 } else {
-                    let hits = search_settings(&self.search);
-                    if hits.is_empty() {
-                        ui.weak("No matching settings");
-                    }
-                    for (tab, section, label) in hits {
-                        let resp = ui.add(
-                            egui::Button::selectable(self.tab == tab, label)
-                                .right_text(egui::RichText::new(section).small().weak())
-                                .min_size(egui::vec2(ui.available_width(), 28.0)),
-                        );
-                        if resp.clicked() {
-                            self.tab = tab;
-                            self.search.clear();
+                    search_settings(query)
+                };
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = super::chrome::ROW_GAP;
+                        let mut shown = 0;
+                        for (group, tabs) in NAV_GROUPS {
+                            // While searching, only the pages whose name or settings match.
+                            let tabs: Vec<_> = tabs
+                                .iter()
+                                .filter(|(tab, _, label)| {
+                                    query.is_empty()
+                                        || super::palette::score(query, label).is_some()
+                                        || hits.iter().any(|h| h.0 == *tab)
+                                })
+                                .collect();
+                            if tabs.is_empty() {
+                                continue;
+                            }
+                            super::chrome::section_label(ui, group);
+                            for (tab, glyph, label) in tabs {
+                                shown += 1;
+                                if super::chrome::nav_row(ui, glyph, label, self.tab == *tab, false)
+                                    .clicked()
+                                {
+                                    self.tab = *tab;
+                                }
+                            }
+                            ui.add_space(6.0);
                         }
-                    }
-                }
+                        if !query.is_empty() {
+                            if hits.is_empty() && shown == 0 {
+                                ui.add_space(6.0);
+                                ui.weak("No matching settings");
+                            }
+                            if !hits.is_empty() {
+                                super::chrome::section_label(ui, "Matching settings");
+                            }
+                            for (tab, section, label) in hits {
+                                let resp = ui.add(
+                                    egui::Button::selectable(self.tab == tab, label)
+                                        .right_text(egui::RichText::new(section).small().weak())
+                                        .truncate()
+                                        .min_size(egui::vec2(ui.available_width(), 28.0)),
+                                );
+                                if resp.clicked() {
+                                    self.tab = tab;
+                                    self.search.clear();
+                                }
+                            }
+                        }
+                    });
             });
 
         egui::Panel::bottom("settings-buttons")
@@ -959,8 +992,16 @@ impl SettingsUi {
                 ui.add_space(4.0);
             });
 
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            ui.heading(match self.tab {
+        egui::CentralPanel::no_frame()
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 24,
+                right: 16,
+                top: 16,
+                bottom: 8,
+            }))
+            .show(ui, |ui| {
+            ui.label(egui::RichText::new(match self.tab {
+                Tab::Appearance => "Appearance",
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
                 Tab::Tools => "Built-in Tools",
@@ -971,8 +1012,9 @@ impl SettingsUi {
                 Tab::Background => "Background",
                 Tab::Voice => "Voice",
                 Tab::General => "General",
-            });
+            }).size(18.0).color(p.ink));
             ui.weak(match self.tab {
+                Tab::Appearance => "Theme, size, motion, your name, and how replies look.",
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
@@ -982,7 +1024,7 @@ impl SettingsUi {
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
                 Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
                 Tab::Voice => "Dictate into the message box, and read replies aloud: the speech providers, models and voices.",
-                Tab::General => "Appearance, behaviour, secrets and data.",
+                Tab::General => "Behaviour, secrets, remote access, updates and data.",
             });
             ui.add_space(8.0);
             match self.tab {
@@ -995,6 +1037,7 @@ impl SettingsUi {
                 Tab::Subagents => self.subagents_tab(ui),
                 Tab::Background => self.background_tab(ui, chats, &mut actions),
                 Tab::Voice => self.voice_tab(ui),
+                Tab::Appearance => self.appearance_tab(ui),
                 Tab::General => {
                     self.general_tab(ui, live, remote, (tunnel, access_error), &mut actions)
                 }
@@ -2740,6 +2783,10 @@ impl SettingsUi {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
+        let devices = self
+            .mic_devices
+            .get_or_insert_with(crate::voice::record::input_devices)
+            .clone();
         let voice = &mut self.draft.general.voice;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -2787,6 +2834,9 @@ impl SettingsUi {
                                     egui::DragValue::new(&mut voice.input.max_secs)
                                         .range(5..=crate::voice::MAX_RECORD_SECS),
                                 );
+                                ui.end_row();
+                                ui.label("Microphone");
+                                mic_picker(ui, &mut voice.input.device, &devices);
                                 ui.end_row();
                             });
                     });
@@ -3220,6 +3270,109 @@ impl SettingsUi {
             });
     }
 
+    /// Theme, UI scale, motion, the name used in the greeting, and how replies look; each as
+    /// one row with the control on the right.
+    fn appearance_tab(&mut self, ui: &mut egui::Ui) {
+        use super::chrome::{segmented, setting_row};
+        let g = &mut self.draft.general;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                setting_row(ui, "Theme", "", |ui| {
+                    segmented(
+                        ui,
+                        &mut g.theme,
+                        &[
+                            (Theme::Dark, icon::MOON, "Dark"),
+                            (Theme::Light, icon::SUN, "Light"),
+                            (Theme::System, icon::MONITOR, "Match the system"),
+                        ],
+                    );
+                });
+                setting_row(
+                    ui,
+                    "UI scale",
+                    "Everything in the window, text included",
+                    |ui| {
+                        egui::ComboBox::from_id_salt("ui-scale")
+                            .selected_text(format!("{:.0}%", g.zoom * 100.0))
+                            .show_ui(ui, |ui| {
+                                for z in ZOOM_STEPS {
+                                    ui.selectable_value(
+                                        &mut g.zoom,
+                                        z,
+                                        format!("{:.0}%", z * 100.0),
+                                    );
+                                }
+                            });
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Your name",
+                    "For the greeting and the sidebar; empty uses your account name",
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut g.display_name)
+                                .hint_text("Account name")
+                                .desired_width(180.0),
+                        );
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Reduce motion",
+                    "No fades, sliding sidebar or zooming dialogs",
+                    |ui| {
+                        toggle(ui, &mut g.reduce_motion);
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Reasoning",
+                    "How the model's \"Thinking\" section starts out",
+                    |ui| {
+                        egui::ComboBox::from_id_salt("reasoning-display")
+                            .selected_text(g.reasoning_display.label())
+                            .show_ui(ui, |ui| {
+                                for mode in crate::config::ReasoningDisplay::ALL {
+                                    ui.selectable_value(
+                                        &mut g.reasoning_display,
+                                        mode,
+                                        mode.label(),
+                                    );
+                                }
+                            });
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Speed stats",
+                    "Prefill/decode speed and token counts under responses",
+                    |ui| {
+                        toggle(ui, &mut g.show_stats);
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Load web images in replies",
+                    "Off: they show as links. Loading one tells its server the chat was opened.",
+                    |ui| {
+                        toggle(ui, &mut g.load_remote_images);
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Artifacts in a side panel",
+                    "Open web pages, drawings and long code beside the chat as they arrive",
+                    |ui| {
+                        toggle(ui, &mut g.open_artifacts);
+                    },
+                );
+            });
+    }
+
     fn general_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -3257,22 +3410,6 @@ impl SettingsUi {
                     .num_columns(2)
                     .spacing([12.0, 10.0])
                     .show(ui, |ui| {
-                        ui.label("Theme");
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut g.theme, Theme::System, "System");
-                            ui.radio_value(&mut g.theme, Theme::Light, "Light");
-                            ui.radio_value(&mut g.theme, Theme::Dark, "Dark");
-                        });
-                        ui.end_row();
-
-                        ui.label("UI scale");
-                        ui.add(
-                            egui::Slider::new(&mut g.zoom, 0.5..=2.5)
-                                .step_by(0.05)
-                                .suffix("×"),
-                        );
-                        ui.end_row();
-
                         ui.label("Sending");
                         ui.vertical(|ui| {
                             ui.radio_value(
@@ -3370,46 +3507,6 @@ impl SettingsUi {
                                 None => {}
                             }
                         });
-                        ui.end_row();
-
-                        ui.label("Reasoning");
-                        ui.vertical(|ui| {
-                            for mode in crate::config::ReasoningDisplay::ALL {
-                                ui.radio_value(&mut g.reasoning_display, mode, mode.label());
-                            }
-                        })
-                        .response
-                        .on_hover_text("How the model's \"Thinking\" section starts out");
-                        ui.end_row();
-
-                        ui.label("Stats");
-                        ui.checkbox(
-                            &mut g.show_stats,
-                            "Show prefill/decode speed and token counts under responses",
-                        );
-                        ui.end_row();
-
-                        ui.label("Images");
-                        ui.checkbox(
-                            &mut g.load_remote_images,
-                            "Load web images in replies",
-                        )
-                        .on_hover_text(
-                            "When off, images from the web show as links. Loading them tells \
-                             the image's server that this chat was opened, and a reply could \
-                             put chat contents in the image address.",
-                        );
-                        ui.end_row();
-
-                        ui.label("Artifacts");
-                        ui.checkbox(
-                            &mut g.open_artifacts,
-                            "Open web pages, drawings and long code in a side panel",
-                        )
-                        .on_hover_text(
-                            "When a reply makes one, the panel opens beside the chat. Off: \
-                             click the card under the reply to open it.",
-                        );
                         ui.end_row();
 
                         ui.label("Web page preview");
@@ -4019,6 +4116,115 @@ fn hook_rows(ui: &mut egui::Ui, h: &mut HookSettings) {
 }
 
 /// Settings the search box can find: (tab, section, label).
+/// The settings pages in the navigation, by group: page, icon, label.
+type NavPage = (Tab, &'static str, &'static str);
+
+const NAV_GROUPS: &[(&str, &[NavPage])] = &[
+    (
+        "Preferences",
+        &[
+            (Tab::General, icon::GEAR, "General"),
+            (Tab::Appearance, icon::PALETTE, "Appearance"),
+            (Tab::Voice, icon::MICROPHONE, "Voice"),
+        ],
+    ),
+    (
+        "This computer",
+        &[
+            (Tab::Docker, icon::TERMINAL, "Docker sandbox"),
+            (Tab::Background, icon::CLOCK, "Background"),
+        ],
+    ),
+    (
+        "Customize",
+        &[
+            (Tab::Providers, icon::CLOUD, "Providers"),
+            (Tab::Mcp, icon::PLUGS, "MCP servers"),
+            (Tab::Tools, icon::TOOLBOX, "Built-in tools"),
+            (Tab::Extensions, icon::BOOKS, "Skills & hooks"),
+            (Tab::Context, icon::FILE, "Context & files"),
+            (Tab::Subagents, icon::ROBOT, "Subagents"),
+        ],
+    ),
+];
+
+/// A dropdown of the microphones `record::input_devices` found, "System default" first.
+pub fn mic_picker(ui: &mut egui::Ui, device: &mut String, devices: &[String]) -> bool {
+    let before = device.clone();
+    egui::ComboBox::from_id_salt("mic-device")
+        .selected_text(if device.is_empty() {
+            "System default"
+        } else {
+            device.as_str()
+        })
+        .truncate()
+        .width(240.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(device, String::new(), "System default");
+            for d in devices {
+                ui.selectable_value(device, d.clone(), d);
+            }
+            // A saved microphone that isn't plugged in stays chosen until another is picked.
+            if !device.is_empty() && !devices.contains(device) {
+                ui.label(egui::RichText::new(format!("{device} (not found)")).weak());
+            }
+        });
+    *device != before
+}
+
+/// The UI scale choices.
+const ZOOM_STEPS: [f32; 8] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+
+/// The settings search field: a rounded pill with a magnifier, ringed while focused.
+fn search_pill(ui: &mut egui::Ui, text: &mut String) {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    let id = egui::Id::unique("settings-search");
+    let focused = ui.memory(|m| m.has_focus(id));
+    egui::Frame::new()
+        .fill(p.raised)
+        .stroke(egui::Stroke::new(
+            1.0,
+            if focused { p.pencil } else { p.hairline },
+        ))
+        .corner_radius(16)
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icon::SEARCH).size(14.0).color(p.pencil));
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .hint_text(egui::RichText::new("Search").color(p.pencil))
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        });
+}
+
+/// An on/off switch, drawn as a small pill with a knob.
+fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    let size = egui::vec2(34.0, 20.0);
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let value = *on;
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, value, ""));
+    let t = ui.ctx().animate_bool(resp.id, *on);
+    let track = p.selected.lerp_to_gamma(p.signal, t);
+    ui.painter().rect_filled(rect, 10, track);
+    let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
+    ui.painter().circle_filled(
+        egui::pos2(x, rect.center().y),
+        7.0,
+        p.ink.lerp_to_gamma(egui::Color32::WHITE, t),
+    );
+    resp
+}
+
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Voice, "Voice", "Voice input"),
     (Tab::Voice, "Voice", "Voice input provider"),
@@ -4036,8 +4242,8 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Voice, "Voice", "Speech speed"),
     (Tab::Voice, "Voice", "Longest reply read aloud"),
     (Tab::General, "General", "System prompt"),
-    (Tab::General, "General", "Theme (light / dark)"),
-    (Tab::General, "General", "UI scale / zoom"),
+    (Tab::Appearance, "Appearance", "Theme (light / dark)"),
+    (Tab::Appearance, "Appearance", "UI scale / zoom"),
     (Tab::General, "General", "Send with Enter"),
     (Tab::General, "General", "Keychain / secrets"),
     (Tab::General, "General", "Remote access (browser)"),
@@ -4065,17 +4271,21 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "General",
         "Cloudflare Access sign in without the app password",
     ),
-    (Tab::General, "General", "Show speed stats"),
+    (Tab::Appearance, "Appearance", "Show speed stats"),
     (Tab::General, "General", "Save as Word document (.docx)"),
     (Tab::General, "General", "Save as PDF"),
     (Tab::General, "General", "Save as Excel workbook (.xlsx)"),
     (Tab::General, "General", "Save reply as file"),
-    (Tab::General, "General", "Load web images in replies"),
+    (Tab::Appearance, "Appearance", "Load web images in replies"),
     (
-        Tab::General,
-        "General",
+        Tab::Appearance,
+        "Appearance",
         "Reasoning / thinking display (collapsed by default)",
     ),
+    (Tab::Appearance, "Appearance", "Your name (greeting)"),
+    (Tab::Appearance, "Appearance", "Reduce motion / animations"),
+    (Tab::Appearance, "Appearance", "Artifacts in a side panel"),
+    (Tab::Voice, "Voice", "Microphone (input device)"),
     (Tab::General, "General", "Auto-approve tool calls"),
     (
         Tab::General,
@@ -4340,7 +4550,8 @@ mod tests {
     fn finds_settings() {
         let hits = search_settings("api key");
         assert_eq!(hits[0], (Tab::Providers, "Providers", "API key"));
-        assert_eq!(search_settings("theme")[0].0, Tab::General);
+        assert_eq!(search_settings("theme")[0].0, Tab::Appearance);
+        assert_eq!(search_settings("reduce motion")[0].0, Tab::Appearance);
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);

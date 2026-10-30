@@ -12,18 +12,62 @@ nav_order: 1
 
 ## The window
 
-- **Sidebar** (left): **New chat**, a search box, pinned chats and recent chats, and
-  **Settings** at the bottom. Hide or show it with **⌘/Ctrl + B**.
-- **Top bar**: the sidebar, settings, command palette and [artifact panel](#artifacts) buttons,
-  plus an **Update to …**
-  link when a new version is out and a warning when an MCP server needs attention.
+The window is dark first and quiet: a sidebar on the left and a large canvas holding the chat,
+with hairline dividers and greys rather than colour. On macOS the window has no title bar of its
+own: the traffic lights sit at the top of the sidebar, and the strip along the top (the *title
+row*) moves the window when dragged and zooms it on a double click.
+
+- **Title row**: show or hide the sidebar (**⌘/Ctrl + B**), **Back** and **Forward**
+  (**⌘/Ctrl + [** and **⌘/Ctrl + ]**) through the chats and pages you opened, and the
+  **Chat / Code** switch ([below](#chat-and-code)). At the top right of the canvas, the ghost
+  starts an [incognito chat](memory.html#incognito-chats) (it is lit while one is open), with the
+  [artifact panel](#artifacts) button beside it in a chat that has artifacts, an **Update to …**
+  link when a new version is out, and the MCP status when servers are set up.
+- **Sidebar**: **New** (a new chat), then **Search** (a box that filters chats by title and text,
+  in both modes), **Projects** and **Artifacts** (pages in the canvas, below), **Scheduled**
+  ([Background](../settings/background.html#scheduled-tasks) settings), **Design**
+  ([Appearance](../settings/appearance.html)) and **Customize**
+  ([Skills & hooks](../settings/skills-and-hooks.html)). **Recents** (click the label to fold it
+  away) lists the chats, pinned ones first; a long title fades out on the right, and a mark at the
+  right edge shows a chat's state ([below](#running-chats-in-the-background)) or, with a document
+  icon, that it has artifacts. The footer shows your name and the active provider, with a menu for
+  Settings, the command palette, shortcuts, the documentation and **Check for updates**; the
+  laptop button beside it opens [remote access](remote-access.html) (green while it runs).
+- **Home**: a new chat opens on a greeting (with your name from
+  [Appearance](../settings/appearance.html), or your account's), the message box in the middle,
+  and your three newest artifacts under it. The app starts here. Once the chat has a message, the
+  greeting and cards give way to the conversation: a narrow centred column, with the message box at
+  the bottom.
+- **Chat**: your messages sit in bubbles on the right; replies run the column's width, and tool
+  calls show as collapsible cards.
+- **Message box**: **+** opens a menu to attach files, this chat's **Tools** (switches,
+  permissions, compaction and review), MCP **Resources & prompts**, and **Commands and skills**.
+  On the right, the microphone (with a menu to pick the input device), then the waveform for
+  [voice mode](voice.html#voice-mode); once you type, the send button takes the waveform's place.
+  Typing **/** lists the [slash commands](../settings/skills-and-hooks.html) and skills that
+  match. The box grows with what you type, then scrolls.
+- **Under the message box**: **Project or folder** picks the chat's working folder (recent
+  folders, **Choose a folder…**, **No folder**) and its [project](projects.html); on the right,
+  the model, its reasoning effort (**· Medium**, or **· Default**) and the permission mode
+  (**Ask**, **Auto**, **Allow all**, **Read only** or **Plan**), each opening its own menu.
 - **Artifact panel** (right): web pages, drawings and longer code from replies.
-- **Chat**: your messages sit in bubbles on the right; replies run full width, and tool calls
-  show as collapsible cards.
-- **Message box** (bottom, or centred under the greeting in a new chat): **+** to attach
-  files, the tools menu (sliders icon), the model options menu (sparkle icon), the MCP menu
-  (books icon), the model picker and
-  **Set working directory**.
+- **Settings** opens over the window, which dims behind it; click outside or press **Esc** to
+  close it when nothing is unsaved.
+
+### Chat and Code
+
+The switch in the title row splits your chats in two: **Chat** lists the chats without a working
+folder, and **Code** the ones with one. A new chat in Code mode starts in the folder you used last
+(change it under the message box), and one in Chat mode has none. Opening a chat (from search,
+the palette or a project) switches to its mode, and the switch is remembered between runs.
+
+### Projects and Artifacts pages
+
+**Projects** lists each [project](projects.html) as a card with its folder, the first line of
+its instructions and its newest chats (**Show all** for the rest), **New chat** and a menu to
+**Edit**, **Export** or **Delete** it; **New project** and **Import…** sit at the top.
+**Artifacts** shows the artifacts of your recent chats (the 200 most recent) as cards with a
+preview, newest first; click one to open it in its chat's panel.
 
 ## Sending messages
 
@@ -33,13 +77,14 @@ While a reply is streaming, the send button becomes **Stop**.
 
 ### Choosing a model
 
-The model picker under the message box lists your provider profiles and the models fetched
-for each, and you can type a model name. **⌘/Ctrl + K** opens the command palette, where you
+The model's name under the message box (shown without an `org/` prefix) opens the picker: your
+provider profiles and the models fetched for each, and you can type a model name. **⌘/Ctrl + K** opens the command palette, where you
 can also switch provider or model.
 
 ### Model options
 
-The sparkle menu under the message box sets **Reasoning effort**, **Thinking budget**,
+The effort label under the message box (**· Default** until one is set) opens the model
+options for this chat: **Reasoning effort**, **Thinking budget**,
 **Temperature**, **Top-p**, **Max tokens** and **Stop sequences** for this chat only. Unset
 options show the default they inherit from the provider and model
 ([Settings → Providers](../settings/providers.html#reasoning-and-sampling)), or "server default".
@@ -235,8 +280,10 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
 - **Click the link** to expand the artifact in the chat as well, and again to fold it away.
 - **Open in panel** after the link shows that artifact in the panel ("in the panel" marks
   the one shown).
-- **The panel button** in the top bar, beside the command palette, shows and hides the panel
-  (it opens on the newest artifact, and is greyed out in a chat without any).
+- **The panel button** at the top right, beside the ghost, shows and hides the panel (it opens
+  on the newest artifact, and only shows in a chat that has one).
+- **Cards** for the newest artifacts sit under the message box on the home screen, and the
+  **Artifacts** page in the sidebar lists them all; a card opens its artifact in its chat.
 
 - **What counts**: closed top-level code blocks marked ```` ```html ````, ```` ```svg ````,
   ```` ```mermaid ```` or ```` ```markdown ```` (an SVG or web page in an ```` ```xml ```` or
@@ -314,7 +361,8 @@ The sidebar row shows what each one is doing:
 - a spinning hourglass: the reply is running;
 - a shield: the reply is waiting for your approval of a tool;
 - a clock: the reply is **queued**, because the limit on replies at once is reached;
-- a check mark: the reply ended while you were in another chat, until you open it.
+- a check mark: the reply ended while you were in another chat, until you open it;
+- a pin: the chat is pinned; a document: the chat has artifacts.
 
 A [scheduled](#scheduled-tasks) run that starts when the limit is reached waits in the queue the
 same way, and a run whose chat is still replying is skipped that time.
@@ -345,7 +393,8 @@ a new chat starts read only unless the task says otherwise.
 
 Chats are saved automatically. In the sidebar:
 
-- Type in the search box to filter chats.
+- Click **Search** and type to filter chats (titles and text, in Chat and Code mode alike);
+  **Esc** closes the box.
 - Right-click a chat for **Pin** / **Unpin**, **Rename**, **Export as Markdown…**,
   **Share as HTML…** and **Delete**.
 
@@ -359,7 +408,8 @@ once, use **Export conversations…** in [General](../settings/general.html#expo
 **⌘/Ctrl + K** opens a searchable list of commands: new chat, attach files, export this chat,
 compact this chat, undo the last turn's file edits, show files changed in this chat, fork this
 chat, set this chat's permissions (one entry per [mode](tools.html#permissions)), share this chat
-as HTML, toggle the sidebar, change theme, open each settings page, export and import, check for
-updates, switch provider or model, run a scheduled task now, and open any chat.
+as HTML, toggle the sidebar, go to Projects or Artifacts, back and forward, switch to Chat or
+Code mode, voice mode on or off, change theme, open each settings page, export and import, check
+for updates, switch provider or model, run a scheduled task now, and open any chat.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.html) for the rest.

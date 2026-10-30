@@ -33,7 +33,7 @@ too, as an installer and a portable `.exe`.
   (reasoning summaries, reasoning kept between tool calls) and Anthropic's **Messages** API
   (extended thinking, prompt caching).
 - **Reasoning effort and sampling**: reasoning effort, thinking budget, temperature, top-p,
-  max tokens and stop sequences per provider, per model and per chat (from the sparkle menu
+  max tokens and stop sequences per provider, per model and per chat (from the effort label
   under the message box), each left to the server until you set it.
 - **Model discovery**: *Fetch models* calls `GET /models` and fills the model picker.
 - **Streaming** responses (SSE), with a non-streaming fallback for servers that don't support it.
@@ -52,7 +52,7 @@ too, as an installer and a portable `.exe`.
   server reports (load state, GPU memory, quantization, queue and KV cache, prices, credit
   left). Set **Server type** on a provider (or click **Detect**) to get these extras.
 - **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thought
-  process* section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
+  process* section, collapsed by default. **Settings → Appearance → Reasoning** can keep it expanded, or
   expanded only while the model is thinking.
 - **Built-in tools** that work without any MCP server:
   - **Time & date**: the current date, time, weekday and time zone, and the time at other UTC
@@ -76,8 +76,8 @@ too, as an installer and a portable `.exe`.
   Time, calculator and task list run locally without asking. Web fetch and web search reach the
   internet, so they ask for approval like MCP tools do ("Always allow this tool" skips that for
   the rest of the chat). Switch each one in **Settings → Built-in Tools**.
-- **Workspace**: give a chat a local working folder with **Set working directory** under the
-  message box, and the model gets tools to work in it: `read_file`, `file_glob_search`,
+- **Workspace**: give a chat a local working folder with **Project or folder** under the
+  message box (or switch the title row to **Code**), and the model gets tools to work in it: `read_file`, `file_glob_search`,
   `grep_search`, `get_info`, `git_status` and `git_diff` run freely; `write_file`, `edit_file` and
   `exec_shell_command` ask for approval first. Every path is kept inside the folder (no `..`,
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
@@ -104,7 +104,7 @@ too, as an installer and a portable `.exe`.
   call), after one (the output is added to the result), or when a reply is done (the output is
   a notice), with a tool-name filter, a timeout and a per-chat switch. They run in the chat's
   folder, or in its Docker sandbox when that is on.
-- **Projects**: group chats in the sidebar. A project's instructions and reference files go to
+- **Projects**: group chats, listed as cards on the **Projects** page. A project's instructions and reference files go to
   every chat in it, and its folder, provider, model, tool switches and permission mode are what
   a new chat starts with. Export a project with its chats to one file, and import it again.
 - **Memory** (off by default): the model can save facts about you (with your approval, if you
@@ -133,9 +133,11 @@ too, as an installer and a portable `.exe`.
   model for simple tasks), system prompt, tool access, how many run at once, round limit and
   time limit. With the Docker sandbox on, subagents can also use the workspace, each running
   commands in a container of its own on the chat's network.
-- **Voice**: dictate into the message box with a microphone button (⌘/Ctrl+Shift+M) through
-  a cloud transcription service or a local Whisper server, and have replies read aloud (⌘/Ctrl+Shift+S)
-  with the system voice or a speech endpoint. Both are off by default; see **Settings → Voice**.
+- **Voice**: dictate into the message box with the microphone (⌘/Ctrl+Shift+M, with a
+  menu to pick the input device) through a cloud transcription service or a local Whisper server,
+  and have replies read aloud (⌘/Ctrl+Shift+S) with the system voice or a speech endpoint. **Voice
+  mode** (the waveform) sends what you say, reads the reply aloud and listens again. Both are off
+  by default; see **Settings → Voice**.
 - **Background replies**: a reply keeps running when you open another chat. The sidebar shows
   which chats are replying, waiting for approval, queued or finished. Desktop notifications say
   when a reply finishes, fails or needs approval (each chat can turn its own off). **Settings →
@@ -177,12 +179,18 @@ too, as an installer and a portable `.exe`.
   run without asking), Allow all, Read only or Plan. In Plan, the model reads and proposes a
   numbered plan, and **Approve plan** under the reply carries it out in the chat's chosen mode.
   It can switch the terminal sandbox off for the chat.
-- **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
-  accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
-  the model picker beneath; your messages sit in bubbles on the right, replies run full
-  width, and tool calls show as collapsible cards. A collapsible sidebar with search, pinned
-  chats and recents, a full-page searchable settings screen and a ⌘K command palette. Fonts
-  are bundled (SIL OFL, see `assets/fonts`).
+- **Interface**: dark first, flat and quiet: near-black neutral greys (or near-white ones),
+  hairline borders and one warm orange accent for the brand mark; Instrument Sans for the
+  interface and replies, Newsreader (a serif) for the greeting. A fixed sidebar (New, Search,
+  Projects, Artifacts, Scheduled, Design, Customize, Recents and your name) with a title row for
+  back/forward (⌘[ and ⌘]) and a **Chat / Code** switch (Code lists the chats with a working
+  folder); on macOS the window has no title bar and the traffic lights sit in the sidebar. A new
+  chat opens on a greeting with the message box in the middle, a strip under it for the project
+  or folder, model, effort and permission mode, and cards for your newest artifacts; once it
+  starts, the chat is a narrow centred column with the box docked at the bottom. Typing **/**
+  lists slash commands and skills. Settings opens as a dimmed modal with grouped pages and live
+  search, and **Reduce motion** turns off the fades. A ⌘K command palette. Fonts are bundled
+  (SIL OFL, see `assets/fonts`).
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
   edit and resend a message, regenerate a reply, fork a chat from any message into a new chat,
   or stop a generation.
@@ -235,7 +243,7 @@ too, as an installer and a portable `.exe`.
   [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html) and
   [Cloudflare Tunnel](https://d3v0ps-cloud.github.io/CleanRSTAI/using/cloudflare-tunnel.html).
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
-  (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
+  (system/light/dark), UI scale, reduce motion, send key, tool approval, round limit and timeouts.
 
 ### Screenshots
 
@@ -357,11 +365,13 @@ console window.
 
 ## Configuration
 
-Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
+Open **Settings** from the menu on your name in the sidebar (or press ⌘/Ctrl + ,); it opens over
+the window on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, artifacts and the live web page preview, auto-approve tools, max tool rounds, tool timeout, branches (keep the replaced version, versions kept per message), updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
+| General | System prompt, send key, the live web page preview, auto-approve tools, max tool rounds, tool timeout, branches (keep the replaced version, versions kept per message), updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
+| Appearance | Theme, UI scale, your name, reduce motion, reasoning display, speed stats, web images, the artifact panel |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
 | Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
@@ -456,6 +466,7 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 | ⌘/Ctrl + N | New chat |
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |
+| ⌘/Ctrl + [ / ] | Back / forward through the chats and pages you opened |
 | ⌘/Ctrl + , | Settings (Esc closes it when there are no unsaved changes) |
 | ⌘/Ctrl + Shift + M | Start or stop voice input (dictation into the message box) |
 | ⌘/Ctrl + Shift + S | Read the latest reply aloud, or stop reading |
@@ -484,8 +495,10 @@ Source layout:
 ```
 src/
   main.rs         startup: PATH fix, tokio runtime, eframe window
-  app.rs          main UI: sidebar, chat view, input, event handling
-  ui/             theme and icons, chat view, markdown and drawings, settings page, palette
+  app.rs          main UI: chat view, input, event handling
+  app/shell.rs    the window's frame: title row, sidebar, home, Projects/Artifacts pages
+  ui/             theme and icons, window chrome (rows, cards, toggles), chat view, markdown
+                  and drawings, settings modal, palette
   agent.rs        generation loop: stream, run tool calls, repeat
   approval.rs     tool-call approvals and the per-chat "Always allow" list
   tools/          built-in tools (time, calculator, task list, fetch, workspace), per-chat switches

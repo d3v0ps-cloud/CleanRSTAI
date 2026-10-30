@@ -12,8 +12,9 @@ you turn them on in [Settings → Voice](../settings/voice.html).
 
 ## Voice input
 
-With **Voice input** on, a microphone button sits under the message box, next to the attachment
-and tool buttons. Click it, or press **⌘/Ctrl + Shift + M**, to start recording. The button turns
+The microphone sits at the right of the message box's bottom row. With **Voice input** on, click
+it, or press **⌘/Ctrl + Shift + M**, to start recording (with it off, it says where to turn it
+on). The button turns
 red and counts the seconds. Click it again, or press the shortcut again, to stop. The clip is
 then transcribed, and the text appears in the message box at the cursor (or at the end), so you
 can read and edit it before you send. Nothing is sent for you.
@@ -47,7 +48,11 @@ set, so use a server on this computer or on a network you trust.
 
 ### Microphone
 
-On macOS and Windows the app records from the default input device, and the system asks for
+The small chevron beside the microphone picks the input device (**Microphone** in
+[Settings → Voice](../settings/voice.html) does the same); **Look for microphones again** reads the
+list afresh after you plug one in. **System default** follows the system's choice.
+
+On macOS and Windows the app records with the system's audio API, and the system asks for
 microphone permission the first time. On Linux it uses the first of these that is installed:
 
 - `pw-record` (PipeWire),
@@ -55,6 +60,24 @@ microphone permission the first time. On Linux it uses the first of these that i
 - `arecord` (ALSA utils).
 
 If none is installed, the button reports "Install PipeWire, PulseAudio or ALSA utils to record".
+The device list comes from `pactl list short sources` for the first two (without the monitors of
+outputs) and `arecord -L` for ALSA; a chosen device is passed as `--target`, `--device=` or `-D`.
+
+## Voice mode
+
+The waveform at the right end of the message box (shown while the box is empty) starts voice
+mode, a spoken back-and-forth:
+
+1. it records, as the microphone does; click the microphone (or press the shortcut) when you have
+   finished speaking, or let the **Longest recording** end it;
+2. the transcript is sent at once, without stopping in the message box;
+3. when the reply is done it is read aloud, if **Read replies aloud** is on;
+4. then it records again.
+
+The waveform is lit while voice mode is on; click it again (or use **Voice mode on or off** in the
+command palette) to end it, which also stops a recording or reading. Voice mode needs voice input
+on, and it ends by itself when a transcription, a reading or the reply fails. It waits while the
+reply waits for your approval of a tool.
 
 ## Reading replies aloud
 

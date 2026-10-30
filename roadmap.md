@@ -30,7 +30,11 @@ from the chat, the provider's own web search (Anthropic, OpenAI Responses and Op
 saving replies and artifacts as Word, PDF and Excel files, OCR for scanned PDFs, Cloudflare
 Access in front of a named tunnel, conversation branches, voice input and reading replies
 aloud, and the live web page preview on Linux (in a window of its own, when WebKitGTK is
-installed) in **v0.9.2-dev.5**. Signed builds are not planned.
+installed) in **v0.9.2-dev.5**, and the new desktop design (a dark-first neutral palette, the
+sidebar with pages and a title row with back/forward and a Chat/Code switch, the home screen with
+a serif greeting and recent artifacts, the strip of pickers under the message box, skills in the
+slash menu, voice mode and a microphone picker, Settings as a modal with an Appearance page, and
+reduce motion) in **v0.9.2-dev.6**. Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -57,6 +61,14 @@ Unticked items are still open.
   greeting on new chats, user messages in bubbles and the model picker under the message box
 - [x] Compact tool-call cards, with arguments and results expandable
 - [x] Settings as a full page with a search box
+- [x] New desktop design in **v0.9.2-dev.6**: dark-first neutral greys with one warm accent, a
+  serif greeting, a fixed sidebar (New, Search, Projects, Artifacts, Scheduled, Design,
+  Customize, collapsible Recents with status marks, an account footer), a title row with
+  back/forward and a Chat/Code switch (traffic lights in the sidebar on macOS), a home screen with
+  the composer in the middle and recent artifact cards, Projects and Artifacts pages, a strip of
+  text pickers under the composer (project or folder, model, effort, permission mode), skills in
+  the slash menu, voice mode and a microphone picker, Settings as a dimmed modal with grouped
+  pages, live search and an Appearance page, and Reduce motion
 - [x] Command palette (⌘K) and keyboard shortcuts
 - [x] Screen-reader labels on icon-only buttons
 - [x] Accessibility pass: focus order and a high-contrast check. A visible focus ring while

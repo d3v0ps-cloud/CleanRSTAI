@@ -54,7 +54,7 @@ tools menu. Such a chat is incognito:
 
 - its system prompt has no memories, and the model is not told about memory at all;
 - the model has no memory tool, so it can't save or delete anything;
-- the top bar shows **Incognito** while the chat is open.
+- the ghost at the top right of the window is lit while the chat is open.
 
 **New incognito chat** in the command palette (⌘K) starts a new chat with memory off, whatever
 the Settings default is. Subagents never get memories or the memory tool.

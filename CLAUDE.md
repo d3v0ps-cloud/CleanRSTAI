@@ -322,10 +322,22 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
 
 ## UI conventions
 
-- The look follows the Claude desktop app: palette, fonts and widget styling live in
-  `ui/theme.rs` (`theme::palette(dark)`). Fonts are bundled in `assets/fonts` (Instrument
-  Sans for the interface and replies, IBM Plex Mono for code, Phosphor for icons; codepoints
-  in `theme::icon`).
+- The look is dark first and flat: palette (including the translucent `hover`, `active` and
+  `hairline` tokens), fonts and widget styling live in `ui/theme.rs` (`theme::palette(dark)`).
+  Fonts are bundled in `assets/fonts` (Instrument Sans for the interface and replies, Newsreader
+  for the greeting and page headings via `theme::serif`, IBM Plex Mono for code, Phosphor for
+  icons; codepoints in `theme::icon`). The interface is 14px (`TextStyle::Body`); `markdown.rs`
+  sets `Body` to `theme::READING_SIZE` around reply prose. `theme::set_motion` sets the
+  animation time (0 with `general.reduce_motion`).
+- The window's frame is `app/shell.rs` (a child module of `app`, so it uses `ChatApp`'s private
+  fields): the title row (`title_controls`, a drag area that sends `StartDrag`; on macOS
+  `main.rs` hides the title bar and `TRAFFIC_LIGHTS` leaves room for the buttons), the sidebar
+  (`nav_row`s, Recents via `chat_row`, the footer), `home` (greeting, composer, artifact cards from
+  `ArtifactIndex`), the `Page`s (Projects, Artifacts), back/forward `History` (`track_place` in
+  `logic`), the Chat/Code `AppMode` (Code lists chats with a workspace; `fit_new_chat_to_mode`),
+  the strip under the composer (`control_strip`), voice mode, and the Settings modal
+  (`settings_modal`). Reusable pieces (rows, segmented toggles, setting rows, cards, the brand
+  mark) are in `ui/chrome.rs`.
 - The app icon lives in `assets/icon/`: `glyph.png` is the source art and
   `scripts/make-icons.py` (Pillow) makes the rest from it: light/dark 1024 px masters, the
   `macos/` sizes listed under `[package.metadata.bundle] icon` in `Cargo.toml`, `icon.ico`,
