@@ -43,8 +43,10 @@ CLEANRSTAI_DOCKER_TESTS=1 cargo test real_tests -- --ignored
 ```
 src/
   main.rs         startup: PATH fix, tokio runtime, eframe window
-  app.rs          main UI: sidebar, chat view, input, event handling
-  ui/             theme and icons, chat view, markdown and drawings, settings page, palette
+  app.rs          main UI: chat view, input, event handling
+  app/shell.rs    the window's frame: title row, sidebar, home, Projects/Artifacts pages
+  ui/             theme and icons, window chrome (rows, cards, toggles), chat view, markdown
+                  and drawings, settings modal, palette
   agent.rs        generation loop: stream, run tool calls, repeat
   approval.rs     tool-call approvals and the per-chat "Always allow" list
   tools/          built-in tools (time, calculator, task list, fetch, workspace), per-chat switches

@@ -12,7 +12,8 @@ service you want to use before sending a message.
 
 ## 1. Set up a provider
 
-1. Open **Settings** with the gear icon or **⌘/Ctrl + ,**, then choose **Providers**.
+1. Open **Settings** from the menu on your name at the bottom of the sidebar, or with
+   **⌘/Ctrl + ,**, then choose **Providers**.
 2. Pick a **Base URL** from **Presets** (OpenAI, OpenRouter, Groq, Mistral, DeepSeek, Together,
    Gemini, Ollama, LM Studio, llama.cpp / vLLM) or type your own. It is the URL that ends in
    `/v1`, without `/chat/completions`.
@@ -46,8 +47,8 @@ The built-in tools are on by default, so you can ask straight away:
 - "What is 17.5% of 2,340, rounded to 2 places?" uses the **Calculator**.
 - "Summarise https://example.com" uses **Web fetch**, which asks for your approval first.
 
-To let the model work with files, click **Set working directory** under the message box and
-pick a folder. See [Tools and approvals](../using/tools.html).
+To let the model work with files, click **Project or folder** under the message box and pick a
+folder, or switch the title row to **Code**. See [Tools and approvals](../using/tools.html).
 
 ## Next steps
 

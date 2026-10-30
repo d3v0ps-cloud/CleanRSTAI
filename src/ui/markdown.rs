@@ -235,7 +235,12 @@ pub fn show(
                 // Prose in the reading serif; code and headings keep their own styles.
                 let ui = &mut *ui;
                 let previous = ui.style().override_text_style.clone();
+                let body = ui.style().text_styles.get(&theme::reading()).cloned();
                 ui.style_mut().override_text_style = Some(theme::reading());
+                ui.style_mut().text_styles.insert(
+                    theme::reading(),
+                    egui::FontId::proportional(theme::READING_SIZE),
+                );
                 CommonMarkViewer::new()
                     .max_image_width(Some(ui.available_width() as usize))
                     // Neutral themes to sit with the charcoal and paper backgrounds.
@@ -243,6 +248,9 @@ pub fn show(
                     .syntax_theme_light("InspiredGitHub")
                     .show_with_id(id.with(i), ui, md_cache, &md);
                 ui.style_mut().override_text_style = previous;
+                if let Some(body) = body {
+                    ui.style_mut().text_styles.insert(theme::reading(), body);
+                }
             }
             Segment::Drawing {
                 kind,

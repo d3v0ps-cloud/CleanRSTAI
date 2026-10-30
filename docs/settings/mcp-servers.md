@@ -80,6 +80,6 @@ The buttons next to it:
 Once connected, the page lists:
 
 - **Tools**: untick a tool to stop offering it to the model. Hover for its description.
-- **Resources** and **Prompts**: what the server offers in the MCP menu (books icon) next to
+- **Resources** and **Prompts**: what the server offers in **Resources & prompts** (the **+** menu) in
   the message box.
 - **Server log (stderr)**: the last lines a stdio server printed, for troubleshooting.

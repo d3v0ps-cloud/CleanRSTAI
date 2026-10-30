@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::commands::{SlashCommand, default_commands};
 use crate::secrets::SecretStore;
 
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
@@ -169,6 +170,14 @@ pub struct ProviderConfig {
     pub kind: ProviderKind,
     /// Ask for token usage in streamed responses (`stream_options.include_usage`).
     pub request_usage: bool,
+    /// The model's context size in tokens, for when the server doesn't report it. Used for
+    /// compaction and the context-use figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u32>,
+    /// For one request only (set per chat by `AgentRequest::for_chat`, never saved): the
+    /// provider's own web search, with this many searches allowed per reply.
+    #[serde(skip)]
+    pub native_search: Option<u32>,
 }
 
 impl Default for ProviderConfig {
@@ -189,6 +198,8 @@ impl Default for ProviderConfig {
             timeout_secs: 300,
             kind: ProviderKind::Generic,
             request_usage: true,
+            context_tokens: None,
+            native_search: None,
         }
     }
 }
@@ -283,6 +294,16 @@ pub enum Theme {
     Dark,
 }
 
+/// The window's two modes, from the switch in the title bar: Chat lists chats without a working
+/// folder, Code lists those with one (and a new chat there starts in the last folder used).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppMode {
+    #[default]
+    Chat,
+    Code,
+}
+
 /// How the model's reasoning ("Thinking") is shown in the chat.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -326,6 +347,14 @@ pub struct BuiltinToolSettings {
     pub fetch_private_networks: bool,
     /// Read, search, edit and run commands in a chat's workspace folder, when it has one.
     pub workspace: bool,
+    /// Let the model commit a chat's workspace changes to its git repository, after approval.
+    /// Off by default; it is also a per-chat switch.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub git_commit: bool,
+    /// Let `git_commit` sign commits when the repository's git config asks for signing (gpg
+    /// may then prompt, and a failed signature fails the commit). Off: commits are never signed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub allow_signing: bool,
     /// Search the web through the service in `search`.
     pub web_search: bool,
     pub search: WebSearchSettings,
@@ -340,6 +369,8 @@ impl Default for BuiltinToolSettings {
             fetch: true,
             fetch_private_networks: false,
             workspace: true,
+            git_commit: false,
+            allow_signing: false,
             web_search: true,
             search: WebSearchSettings::default(),
         }
@@ -359,11 +390,18 @@ pub enum SearchBackend {
     Brave,
     /// The Tavily search API (needs a key).
     Tavily,
+    /// The Kagi Search API (needs a key).
+    Kagi,
 }
 
 impl SearchBackend {
-    pub const ALL: [SearchBackend; 4] =
-        [Self::DuckDuckGo, Self::Searxng, Self::Brave, Self::Tavily];
+    pub const ALL: [SearchBackend; 5] = [
+        Self::DuckDuckGo,
+        Self::Searxng,
+        Self::Brave,
+        Self::Tavily,
+        Self::Kagi,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -371,16 +409,43 @@ impl SearchBackend {
             Self::Searxng => "SearXNG",
             Self::Brave => "Brave Search API",
             Self::Tavily => "Tavily",
+            Self::Kagi => "Kagi Search API",
         }
     }
 
     pub fn needs_key(self) -> bool {
-        matches!(self, Self::Brave | Self::Tavily)
+        matches!(self, Self::Brave | Self::Tavily | Self::Kagi)
     }
 }
 
 /// Most results one web search returns.
 pub const MAX_SEARCH_RESULTS: u32 = 20;
+
+/// Most searches the provider's own search may run for one reply.
+pub const MAX_NATIVE_SEARCH_USES: u32 = 20;
+
+/// Which search a chat uses when its web search is on.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSearch {
+    /// CleanRSTAI's own search service (the built-in `web_search` tool).
+    #[default]
+    Off,
+    /// The provider's own search, when its API has one (Anthropic, OpenAI Responses and
+    /// OpenRouter). Other providers keep the built-in tool.
+    PreferProvider,
+}
+
+impl NativeSearch {
+    pub const ALL: [NativeSearch; 2] = [Self::Off, Self::PreferProvider];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "CleanRSTAI's search service",
+            Self::PreferProvider => "the provider's own search when it has one",
+        }
+    }
+}
 
 /// The web search tool's service and options.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -389,7 +454,7 @@ pub struct WebSearchSettings {
     pub backend: SearchBackend,
     /// Base URL of the SearXNG instance, e.g. `https://searx.example.org`.
     pub searxng_url: String,
-    /// API key for Brave or Tavily. Kept in the keychain.
+    /// API key for Brave, Tavily or Kagi. Kept in the keychain.
     pub api_key: String,
     /// Results per search, 1–20.
     pub max_results: u32,
@@ -399,6 +464,10 @@ pub struct WebSearchSettings {
     pub ask: bool,
     /// Subagents may search too (when they may use the built-in tools).
     pub subagents: bool,
+    /// Search with this service, or with the provider's own search when it has one.
+    pub native: NativeSearch,
+    /// Searches the provider's own search may run for one reply, 1–20.
+    pub native_max_uses: u32,
 }
 
 impl Default for WebSearchSettings {
@@ -411,6 +480,8 @@ impl Default for WebSearchSettings {
             safe_search: true,
             ask: true,
             subagents: true,
+            native: NativeSearch::Off,
+            native_max_uses: 5,
         }
     }
 }
@@ -462,6 +533,115 @@ impl Default for CompactionSettings {
     }
 }
 
+/// Which changes "Review changes" sends to the model.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewScope {
+    /// Staged, unstaged and new files, against the last commit.
+    #[default]
+    Uncommitted,
+    /// Everything on the current branch since it forked from its base.
+    Branch,
+}
+
+pub const DEFAULT_REVIEW_PROMPT: &str = "Review the changes in the attached diff. Look for \
+bugs, security problems, unclear code and missing tests. List each finding by severity (high, \
+medium or low) with its file and line, and say why it matters and how to fix it. Leave out \
+praise and a restatement of what the change does. If you find nothing worth reporting, say so \
+plainly.";
+
+/// How much "Review changes" reports beyond the prompt's own list.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStrictness {
+    /// Only problems that would cause bugs, data loss or security issues.
+    Lenient,
+    /// The review prompt as written.
+    #[default]
+    Normal,
+    /// Also style, naming, readability, missing tests and documentation, and risky assumptions.
+    Strict,
+}
+
+impl ReviewStrictness {
+    /// The words added to the review prompt for this level; empty for `Normal`.
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Lenient => {
+                "Only report problems that would cause bugs, data loss or security issues; skip \
+                 style and minor suggestions."
+            }
+            Self::Normal => "",
+            Self::Strict => {
+                "Be thorough: also report style, naming, readability, missing tests and \
+                 documentation, and any risky assumption."
+            }
+        }
+    }
+}
+
+/// "Review changes": the working folder's git diff, sent to a model with a review prompt.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ReviewSettings {
+    /// Show "Review changes" in the tools menu and the command palette.
+    pub enabled: bool,
+    /// Instructions for the model that reviews the diff.
+    pub prompt: String,
+    pub scope: ReviewScope,
+    /// Branch the "branch" scope diffs against; empty picks `origin/HEAD`, `main` or `master`.
+    pub base_branch: String,
+    /// Provider profile that writes the review; empty means the chat's provider.
+    pub provider_id: String,
+    /// Model override for the review; empty means the provider's selected model.
+    pub model: String,
+    /// Largest diff sent, in KB (16–4096); a longer one is cut.
+    pub max_diff_kb: u32,
+    /// How far beyond the prompt the review reports.
+    pub strictness: ReviewStrictness,
+}
+
+impl Default for ReviewSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            prompt: DEFAULT_REVIEW_PROMPT.into(),
+            scope: ReviewScope::default(),
+            base_branch: String::new(),
+            provider_id: String::new(),
+            model: String::new(),
+            max_diff_kb: 200,
+            strictness: ReviewStrictness::default(),
+        }
+    }
+}
+
+/// Skills: folders of instructions the model loads with `load_skill` (see `skills`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SkillSettings {
+    /// List the skills in the system prompt and offer the `load_skill` tool.
+    pub enabled: bool,
+    /// Also load `.cleanrstai/skills/*/SKILL.md` from the chat's working folder; a workspace
+    /// skill replaces a user skill of the same name.
+    pub workspace_skills: bool,
+    /// Names of skills that are switched off, from either folder.
+    pub disabled: Vec<String>,
+    /// Most text one load returns, in KB (1–1024).
+    pub max_kb: u32,
+}
+
+impl Default for SkillSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            workspace_skills: true,
+            disabled: Vec::new(),
+            max_kb: 64,
+        }
+    }
+}
+
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`, …) read from a chat's workspace folder.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -485,6 +665,28 @@ impl Default for InstructionSettings {
             all_files: false,
             parent_folders: false,
             max_kb: 64,
+        }
+    }
+}
+
+/// Saved prompts typed as `/name` in the message box (see `commands`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SlashCommandSettings {
+    /// Expand `/name` commands when a message is sent, and suggest them while typing.
+    pub enabled: bool,
+    /// Commands from Settings, by name. Names are unique after normalizing.
+    pub commands: Vec<SlashCommand>,
+    /// Also load `.cleanrstai/commands/*.md` from the chat's working folder.
+    pub workspace_commands: bool,
+}
+
+impl Default for SlashCommandSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            commands: default_commands(),
+            workspace_commands: true,
         }
     }
 }
@@ -518,7 +720,8 @@ impl Default for FileEditSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct HtmlPreviewSettings {
-    /// Show web pages live in the panel (where the platform has a web view).
+    /// Show web pages live: in the panel (a web view on macOS and Windows) or in their own
+    /// window (Linux, with WebKitGTK).
     pub enabled: bool,
     /// Let the page run its scripts.
     pub scripts: bool,
@@ -532,6 +735,43 @@ impl Default for HtmlPreviewSettings {
             enabled: true,
             scripts: true,
             network: false,
+        }
+    }
+}
+
+/// Replies running in the background: notifications, how many run at once, and a time limit
+/// (Settings → Background).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BackgroundSettings {
+    /// Send a desktop notification when a reply finishes, fails or needs approval (per chat
+    /// too: `feature:notify`).
+    pub notify: bool,
+    /// Notify only while the CleanRSTAI window is in the background.
+    pub notify_only_unfocused: bool,
+    /// Replies that run at once; more wait in a queue (1–32).
+    pub max_parallel: u32,
+    /// Stop a reply after this many minutes, counted from when it starts; 0 for no limit
+    /// (0–1440).
+    pub time_limit_mins: u32,
+    /// Closing the window hides it to the menu bar (macOS) or system tray (Windows) and keeps
+    /// replies and MCP connections running. Not available on Linux yet.
+    pub keep_running: bool,
+}
+
+/// Most replies that run at once.
+pub const MAX_PARALLEL_RUNS: u32 = 32;
+/// Longest time limit for a reply, in minutes (a day).
+pub const MAX_TIME_LIMIT_MINS: u32 = 1440;
+
+impl Default for BackgroundSettings {
+    fn default() -> Self {
+        Self {
+            notify: true,
+            notify_only_unfocused: true,
+            max_parallel: 4,
+            time_limit_mins: 0,
+            keep_running: false,
         }
     }
 }
@@ -670,6 +910,41 @@ pub struct TunnelSettings {
     pub hostname: String,
     /// Path to `cloudflared`; empty finds it on `PATH`.
     pub cloudflared: String,
+    /// Cloudflare Access in front of a named tunnel's hostname (see `remote::access`).
+    pub access: AccessSettings,
+}
+
+/// Cloudflare Access (Zero Trust) in front of a named tunnel's hostname. Access signs each
+/// request it lets through; the app checks that signature, so a request that skips Access is
+/// refused. Only named tunnels: a quick tunnel's address can't be put behind an application.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AccessSettings {
+    /// Require a valid Access token for requests that arrive through the tunnel's hostname.
+    pub enabled: bool,
+    /// The team domain, e.g. `myteam.cloudflareaccess.com`. A pasted `https://` is dropped.
+    pub team_domain: String,
+    /// The application's audience (AUD) tag from the Access application's overview.
+    pub audience: String,
+    /// A valid Access token also signs the browser in, so the app password is not asked for.
+    pub skip_password: bool,
+}
+
+/// The host name of a pasted team domain: trimmed, lowercase, without `https://` or a trailing
+/// `/`. `MyTeam.cloudflareaccess.com/` gives `myteam.cloudflareaccess.com`.
+pub fn team_host(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    let host = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    host.trim_end_matches('/').to_owned()
+}
+
+/// Trims the Access fields and keeps only the host name of a pasted team URL.
+fn normalize_access(access: &mut AccessSettings) {
+    access.team_domain = team_host(&access.team_domain);
+    access.audience = access.audience.trim().to_owned();
 }
 
 impl Default for RemoteSettings {
@@ -693,10 +968,21 @@ pub struct GeneralSettings {
     pub system_prompt: String,
     pub theme: Theme,
     pub zoom: f32,
+    /// The name the greeting and the sidebar's footer use; empty takes it from the system's
+    /// user name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub display_name: String,
+    /// No hover fades, sliding sidebar or modal zoom.
+    pub reduce_motion: bool,
+    /// Chat or Code, from the title bar's switch.
+    pub mode: AppMode,
     /// Enter sends, Shift+Enter inserts a newline. When false, Ctrl/Cmd+Enter sends.
     pub send_with_enter: bool,
     /// Run MCP tool calls without asking first.
     pub auto_approve_tools: bool,
+    /// The permission mode new chats start in (each chat can change its own).
+    #[serde(default)]
+    pub default_approval_mode: crate::approval::ApprovalMode,
     pub max_tool_rounds: u32,
     pub tool_timeout_secs: u64,
     /// Show prefill/decode speed and token counts under each response.
@@ -722,10 +1008,71 @@ pub struct GeneralSettings {
     pub compaction: CompactionSettings,
     /// `AGENTS.md` and similar files from the workspace.
     pub instructions: InstructionSettings,
+    /// "Review changes": the workspace's git diff sent to a model.
+    pub review: ReviewSettings,
     /// Diffs and undo for workspace file edits.
     pub file_edits: FileEditSettings,
+    /// Reading scanned PDFs (no text layer) with a vision model or tesseract.
+    #[serde(default)]
+    pub ocr: crate::ocr::OcrSettings,
+    /// Slash commands: saved prompts typed as `/name` (see `commands`).
+    pub slash_commands: SlashCommandSettings,
+    /// Skills the model loads on demand (see `skills`).
+    pub skills: SkillSettings,
     /// Browser remote access (see `remote`).
     pub remote: RemoteSettings,
+    /// Replies running in the background: notifications, parallel limit and time limit.
+    #[serde(default)]
+    pub background: BackgroundSettings,
+    /// `cleanrstai exec`: one request from the command line (Settings → Background).
+    #[serde(default)]
+    pub exec: crate::exec::ExecSettings,
+    /// Commands run around tool calls and when a reply is done (see `hooks`).
+    #[serde(default)]
+    pub hooks: crate::hooks::HookSettings,
+    /// Prompts that run on a schedule into a chat (Settings → Background).
+    #[serde(default)]
+    pub schedules: crate::schedule::ScheduleSettings,
+    /// Projects: chats grouped with shared instructions and files (see `projects`).
+    #[serde(default)]
+    pub projects: crate::projects::ProjectSettings,
+    /// Memory: facts the model saves across chats (see `memory`).
+    #[serde(default)]
+    pub memory: crate::memory::MemorySettings,
+    /// Plan mode: the model proposes a plan, and approving it carries the plan out (see `plan`).
+    #[serde(default)]
+    pub plan: crate::plan::PlanSettings,
+    /// Voice input (dictation into the message box) and reading replies aloud (see `voice`).
+    #[serde(default)]
+    pub voice: crate::voice::VoiceSettings,
+    /// Regenerating and editing keep the replaced version as a branch (see `branches`).
+    #[serde(default)]
+    pub branching: crate::branches::BranchSettings,
+    /// Formats offered for "Save as…" on replies and artifacts (see `save_as`).
+    #[serde(default)]
+    pub save_as: SaveAsSettings,
+}
+
+/// Which file types "Save as…" offers for replies and artifacts (Settings → General).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SaveAsSettings {
+    /// Word documents (.docx).
+    pub docx: bool,
+    /// PDF files.
+    pub pdf: bool,
+    /// Excel workbooks (.xlsx), for replies with a table and CSV or TSV artifacts.
+    pub xlsx: bool,
+}
+
+impl Default for SaveAsSettings {
+    fn default() -> Self {
+        Self {
+            docx: true,
+            pdf: true,
+            xlsx: true,
+        }
+    }
 }
 
 fn is_default_update_url(url: &String) -> bool {
@@ -738,8 +1085,12 @@ impl Default for GeneralSettings {
             system_prompt: "You are a helpful assistant.".into(),
             theme: Theme::System,
             zoom: 1.0,
+            display_name: String::new(),
+            reduce_motion: false,
+            mode: AppMode::Chat,
             send_with_enter: true,
             auto_approve_tools: false,
+            default_approval_mode: Default::default(),
             max_tool_rounds: 20,
             tool_timeout_secs: 120,
             show_stats: true,
@@ -753,8 +1104,22 @@ impl Default for GeneralSettings {
             builtin_tools: BuiltinToolSettings::default(),
             compaction: CompactionSettings::default(),
             instructions: InstructionSettings::default(),
+            review: ReviewSettings::default(),
             file_edits: FileEditSettings::default(),
+            ocr: Default::default(),
+            slash_commands: SlashCommandSettings::default(),
+            skills: SkillSettings::default(),
             remote: RemoteSettings::default(),
+            background: BackgroundSettings::default(),
+            exec: Default::default(),
+            hooks: Default::default(),
+            schedules: Default::default(),
+            save_as: Default::default(),
+            projects: Default::default(),
+            memory: Default::default(),
+            plan: Default::default(),
+            voice: Default::default(),
+            branching: Default::default(),
         }
     }
 }
@@ -1063,6 +1428,11 @@ impl Settings {
         } else {
             url.to_owned()
         };
+        self.general.plan.normalized();
+        let providers = &self.providers;
+        self.general.voice.normalize(providers);
+        self.general.branching.normalized();
+        self.general.memory.normalized();
         let c = &mut self.general.compaction;
         c.threshold_percent = c.threshold_percent.clamp(50, 95);
         c.keep_recent = c.keep_recent.clamp(2, 50);
@@ -1072,6 +1442,18 @@ impl Settings {
         }
         if !self.providers.iter().any(|p| p.id == c.provider_id) {
             c.provider_id.clear();
+        }
+        self.general
+            .ocr
+            .normalize(|id| self.providers.iter().any(|p| p.id == id));
+        let rv = &mut self.general.review;
+        rv.max_diff_kb = rv.max_diff_kb.clamp(16, 4096);
+        rv.base_branch = rv.base_branch.trim().to_owned();
+        if rv.prompt.trim().is_empty() {
+            rv.prompt = DEFAULT_REVIEW_PROMPT.into();
+        }
+        if !self.providers.iter().any(|p| p.id == rv.provider_id) {
+            rv.provider_id.clear();
         }
         let ins = &mut self.general.instructions;
         ins.max_kb = ins.max_kb.clamp(1, 1024);
@@ -1083,14 +1465,55 @@ impl Settings {
             .collect();
         let fe = &mut self.general.file_edits;
         fe.max_file_kb = fe.max_file_kb.clamp(16, 65_536);
+        // Names are trimmed; commands that can't be typed, and repeats of a name, are dropped.
+        let mut names = std::collections::HashSet::new();
+        let commands = std::mem::take(&mut self.general.slash_commands.commands);
+        self.general.slash_commands.commands = commands
+            .into_iter()
+            .map(|mut c| {
+                c.name = c.name.trim().to_owned();
+                c
+            })
+            .filter(|c| crate::commands::valid_name(&c.name) && names.insert(c.name.clone()))
+            .collect();
+        let skills = &mut self.general.skills;
+        skills.max_kb = skills.max_kb.clamp(1, 1024);
+        // Names are trimmed; blanks and repeats are dropped.
+        let mut disabled: Vec<String> = Vec::new();
+        for name in skills.disabled.iter().map(|n| n.trim().to_owned()) {
+            if !name.is_empty() && !disabled.contains(&name) {
+                disabled.push(name);
+            }
+        }
+        skills.disabled = disabled;
         let search = &mut self.general.builtin_tools.search;
         search.max_results = search.max_results.clamp(1, MAX_SEARCH_RESULTS);
+        search.native_max_uses = search.native_max_uses.clamp(1, MAX_NATIVE_SEARCH_USES);
         search.searxng_url = search.searxng_url.trim().trim_end_matches('/').to_owned();
         let sa = &mut self.subagents;
         sa.max_parallel = sa.max_parallel.clamp(1, 16);
         sa.max_tasks = sa.max_tasks.clamp(1, 32);
         sa.max_rounds = sa.max_rounds.clamp(1, 100);
         sa.timeout_secs = sa.timeout_secs.clamp(10, 3600);
+        let bg = &mut self.general.background;
+        bg.max_parallel = bg.max_parallel.clamp(1, MAX_PARALLEL_RUNS);
+        bg.time_limit_mins = bg.time_limit_mins.min(MAX_TIME_LIMIT_MINS);
+        self.general.exec.mcp_wait_secs = self
+            .general
+            .exec
+            .mcp_wait_secs
+            .min(crate::exec::MAX_MCP_WAIT_SECS);
+        crate::hooks::normalize(&mut self.general.hooks);
+        self.general.schedules.normalize();
+        self.general.projects.normalize();
+        if !self
+            .providers
+            .iter()
+            .any(|p| Some(&p.id) == self.general.projects.default_provider.as_ref())
+        {
+            self.general.projects.default_provider = None;
+        }
+        normalize_access(&mut self.general.remote.tunnel.access);
         self.sandbox = self.sandbox.normalized();
         if !self.providers.iter().any(|p| p.id == sa.provider_id) {
             sa.provider_id.clear();
@@ -1125,6 +1548,21 @@ impl Settings {
             .clone();
         if !c.model.trim().is_empty() {
             p.model = c.model.trim().to_owned();
+        }
+        p
+    }
+
+    /// The provider profile that writes a code review for a chat on `chat`.
+    pub fn review_provider(&self, chat: &ProviderConfig) -> ProviderConfig {
+        let r = &self.general.review;
+        let mut p = self
+            .providers
+            .iter()
+            .find(|p| p.id == r.provider_id)
+            .unwrap_or(chat)
+            .clone();
+        if !r.model.trim().is_empty() {
+            p.model = r.model.trim().to_owned();
         }
         p
     }
@@ -1257,6 +1695,60 @@ pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_settings_normalise_with_the_rest_of_the_settings() {
+        let mut s = Settings::default();
+        assert!(!s.general.hooks.enabled);
+        s.general.hooks.hooks.push(crate::hooks::Hook {
+            command: "cargo fmt".into(),
+            timeout_secs: 0,
+            ..Default::default()
+        });
+        s.normalize();
+        assert_eq!(s.general.hooks.hooks[0].timeout_secs, 1);
+        assert_eq!(s.general.hooks.hooks[0].name, "hook 1");
+    }
+
+    #[test]
+    fn skill_settings_load_from_older_files_and_are_kept_tidy() {
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.skills, SkillSettings::default());
+        assert!(old.skills.enabled && old.skills.workspace_skills);
+
+        let partial: SkillSettings =
+            serde_json::from_str(r#"{"disabled": ["x"], "max_kb": 8}"#).unwrap();
+        assert!(partial.enabled && partial.workspace_skills);
+        assert_eq!(partial.disabled, ["x"]);
+        assert_eq!(partial.max_kb, 8);
+
+        let mut s = Settings::default();
+        s.general.skills.max_kb = 0;
+        s.general.skills.disabled = vec![" a ".into(), "".into(), "a".into(), "b".into()];
+        s.normalize();
+        assert_eq!(s.general.skills.max_kb, 1);
+        assert_eq!(s.general.skills.disabled, ["a", "b"]);
+    }
+
+    #[test]
+    fn review_strictness_and_provider_context_size_load_from_older_files() {
+        let old: ReviewSettings = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+        assert_eq!(old.strictness, ReviewStrictness::Normal);
+        let strict: ReviewSettings = serde_json::from_str(r#"{"strictness": "strict"}"#).unwrap();
+        assert_eq!(strict.strictness, ReviewStrictness::Strict);
+        assert!(
+            serde_json::to_string(&ReviewSettings::default())
+                .unwrap()
+                .contains(r#""strictness":"normal""#)
+        );
+
+        let p = ProviderConfig::default();
+        assert_eq!(p.context_tokens, None);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("context_tokens"), "{json}");
+        let p: ProviderConfig = serde_json::from_str(r#"{"context_tokens": 8192}"#).unwrap();
+        assert_eq!(p.context_tokens, Some(8192));
+    }
+
     use super::*;
 
     #[test]
@@ -1591,11 +2083,222 @@ mod tests {
     }
 
     #[test]
+    fn review_provider_and_limits_normalize() {
+        let mut s = Settings::default();
+        let chat = s.providers[0].clone();
+        assert_eq!(s.review_provider(&chat).model, chat.model);
+        s.providers.push(ProviderConfig {
+            id: "p2".into(),
+            model: "big".into(),
+            ..Default::default()
+        });
+        s.general.review.provider_id = "p2".into();
+        assert_eq!(s.review_provider(&chat).model, "big");
+        s.general.review.model = " reviewer ".into();
+        assert_eq!(s.review_provider(&chat).model, "reviewer");
+
+        s.general.review.max_diff_kb = 1;
+        s.general.review.base_branch = " dev ".into();
+        s.general.review.prompt = " ".into();
+        s.normalize();
+        assert_eq!(s.general.review.max_diff_kb, 16);
+        assert_eq!(s.general.review.base_branch, "dev");
+        assert_eq!(s.general.review.prompt, DEFAULT_REVIEW_PROMPT);
+        assert_eq!(s.general.review.provider_id, "p2");
+
+        s.general.review.provider_id = "gone".into();
+        s.general.review.max_diff_kb = 1_000_000;
+        s.normalize();
+        assert_eq!(s.general.review.provider_id, "");
+        assert_eq!(s.general.review.max_diff_kb, 4096);
+    }
+
+    #[test]
+    fn default_approval_mode_defaults_and_round_trips() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            s.default_approval_mode,
+            crate::approval::ApprovalMode::Default
+        );
+        let g = GeneralSettings {
+            default_approval_mode: crate::approval::ApprovalMode::ReadOnly,
+            ..Default::default()
+        };
+        let back: GeneralSettings =
+            serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert_eq!(
+            back.default_approval_mode,
+            crate::approval::ApprovalMode::ReadOnly
+        );
+    }
+
+    #[test]
+    fn branching_settings_load_from_older_files_and_clamp() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.branching, crate::branches::BranchSettings::default());
+        assert!(s.branching.enabled);
+        let mut settings = Settings::default();
+        settings.general.branching.max_per_message = 0;
+        settings.normalize();
+        assert_eq!(settings.general.branching.max_per_message, 1);
+    }
+
+    #[test]
+    fn plan_settings_load_from_older_files_and_normalize() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.plan, crate::plan::PlanSettings::default());
+        assert!(s.plan.enabled);
+        let mut settings = Settings::default();
+        settings.general.plan.after_approval = crate::approval::ApprovalMode::Plan;
+        settings.general.plan.prompt = "  ".into();
+        settings.normalize();
+        assert_eq!(
+            settings.general.plan.after_approval,
+            crate::approval::ApprovalMode::Default
+        );
+        assert_eq!(settings.general.plan.prompt, crate::plan::PLAN_PROMPT);
+    }
+
+    #[test]
+    fn review_settings_default_when_missing_from_file() {
+        let s: GeneralSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.review, ReviewSettings::default());
+        assert_eq!(s.review.scope, ReviewScope::Uncommitted);
+    }
+
+    #[test]
+    fn access_settings_load_from_older_files_and_normalize() {
+        let old: Settings = serde_json::from_str(
+            r#"{"general": {"remote": {"tunnel": {"enabled": true, "mode": "named"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.general.remote.tunnel.access, AccessSettings::default());
+
+        let mut s = Settings::default();
+        s.general.remote.tunnel.access = AccessSettings {
+            enabled: true,
+            team_domain: "  https://MyTeam.cloudflareaccess.com/ ".into(),
+            audience: " abc123 ".into(),
+            skip_password: true,
+        };
+        s.normalize();
+        let access = &s.general.remote.tunnel.access;
+        assert_eq!(access.team_domain, "myteam.cloudflareaccess.com");
+        assert_eq!(access.audience, "abc123");
+        assert!(access.enabled && access.skip_password);
+    }
+
+    #[test]
     fn remote_port_zero_normalizes_to_default() {
         let mut s = Settings::default();
         s.general.remote.port = 0;
         s.normalize();
         assert_eq!(s.general.remote.port, 8484);
+    }
+
+    #[test]
+    fn git_commit_settings_default_off_and_load_from_older_files() {
+        // Settings written before commits existed load with both switches off.
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"builtin_tools": {"workspace": true}}}"#).unwrap();
+        assert!(!s.general.builtin_tools.git_commit);
+        assert!(!s.general.builtin_tools.allow_signing);
+        assert!(s.general.builtin_tools.workspace);
+        // Off values aren't written, so an untouched file keeps its shape.
+        let json = serde_json::to_string(&BuiltinToolSettings::default()).unwrap();
+        assert!(
+            !json.contains("git_commit") && !json.contains("allow_signing"),
+            "{json}"
+        );
+        let on = BuiltinToolSettings {
+            git_commit: true,
+            allow_signing: true,
+            ..Default::default()
+        };
+        let back: BuiltinToolSettings =
+            serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert_eq!(back, on);
+    }
+
+    #[test]
+    fn project_settings_load_from_older_files_and_normalise() {
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.projects, crate::projects::ProjectSettings::default());
+        assert!(old.projects.enabled);
+        assert_eq!(old.projects.max_files_kb, 256);
+
+        let mut s = Settings::default();
+        s.general.projects.max_files_kb = 1;
+        s.general.projects.default_provider = Some("gone".into());
+        s.normalize();
+        assert_eq!(s.general.projects.max_files_kb, 16);
+        assert_eq!(s.general.projects.default_provider, None);
+
+        let id = s.providers[0].id.clone();
+        s.general.projects.default_provider = Some(id.clone());
+        s.normalize();
+        assert_eq!(s.general.projects.default_provider, Some(id));
+    }
+
+    #[test]
+    fn memory_settings_load_from_older_files_and_normalise() {
+        use crate::memory::{MemoryScope, MemorySettings};
+        let old: GeneralSettings = serde_json::from_str(r#"{"max_tool_rounds": 5}"#).unwrap();
+        assert_eq!(old.memory, MemorySettings::default());
+        assert!(!old.memory.enabled);
+        assert!(old.memory.ask_before_saving);
+
+        let on: GeneralSettings =
+            serde_json::from_str(r#"{"memory": {"enabled": true, "scope": "per_project"}}"#)
+                .unwrap();
+        assert!(on.memory.enabled);
+        assert_eq!(on.memory.scope, MemoryScope::PerProject);
+        assert_eq!(on.memory.max_kb, 8);
+
+        let mut s = Settings::default();
+        s.general.memory.max_kb = 900;
+        s.normalize();
+        assert_eq!(s.general.memory.max_kb, 64);
+        s.general.memory.max_kb = 0;
+        s.normalize();
+        assert_eq!(s.general.memory.max_kb, 1);
+    }
+
+    #[test]
+    fn background_settings_load_from_older_files_and_normalise() {
+        // Settings written before Background existed load with the defaults.
+        let s: Settings = serde_json::from_str(r#"{"general": {"zoom": 1.5}}"#).unwrap();
+        assert_eq!(s.general.background, BackgroundSettings::default());
+        assert!(s.general.background.notify);
+        assert!(s.general.background.notify_only_unfocused);
+        assert_eq!(s.general.background.max_parallel, 4);
+        assert_eq!(s.general.background.time_limit_mins, 0);
+        assert!(!s.general.background.keep_running);
+
+        // Settings from before "keep running" existed (a block without the field) load it off.
+        let s: Settings = serde_json::from_str(
+            r#"{"general": {"background": {"notify": false, "time_limit_mins": 3}}}"#,
+        )
+        .unwrap();
+        assert!(!s.general.background.keep_running);
+        assert!(!s.general.background.notify);
+        assert_eq!(s.general.background.time_limit_mins, 3);
+
+        // A partial block keeps the rest at their defaults.
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"background": {"max_parallel": 2}}}"#).unwrap();
+        assert_eq!(s.general.background.max_parallel, 2);
+        assert!(s.general.background.notify);
+
+        let mut s = Settings::default();
+        s.general.background.max_parallel = 0;
+        s.general.background.time_limit_mins = 5000;
+        s.normalize();
+        assert_eq!(s.general.background.max_parallel, 1);
+        assert_eq!(s.general.background.time_limit_mins, MAX_TIME_LIMIT_MINS);
+        s.general.background.max_parallel = 100;
+        s.normalize();
+        assert_eq!(s.general.background.max_parallel, MAX_PARALLEL_RUNS);
     }
 
     #[test]
@@ -1627,5 +2330,34 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn native_search_settings_default_off_load_older_files_and_clamp() {
+        assert_eq!(
+            serde_json::to_value(NativeSearch::PreferProvider).unwrap(),
+            "prefer_provider"
+        );
+        let s: Settings = serde_json::from_str(
+            r#"{"general": {"builtin_tools": {"search": {"backend": "searxng"}}}}"#,
+        )
+        .unwrap();
+        let search = &s.general.builtin_tools.search;
+        assert_eq!(search.native, NativeSearch::Off);
+        assert_eq!(search.native_max_uses, 5);
+        let mut s = s;
+        s.general.builtin_tools.search.native_max_uses = 0;
+        s.normalize();
+        assert_eq!(s.general.builtin_tools.search.native_max_uses, 1);
+        s.general.builtin_tools.search.native_max_uses = 99;
+        s.normalize();
+        assert_eq!(s.general.builtin_tools.search.native_max_uses, 20);
+        // A provider's per-request search is never saved.
+        let p = ProviderConfig {
+            native_search: Some(3),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v.get("native_search").is_none());
     }
 }

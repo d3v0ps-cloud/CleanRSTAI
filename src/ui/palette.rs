@@ -5,11 +5,13 @@ use uuid::Uuid;
 
 use super::settings::Tab;
 use super::theme::icon;
-use crate::config::Theme;
+use crate::approval::ApprovalMode;
+use crate::config::{AppMode, Theme};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewChat,
+    NewIncognitoChat,
     OpenChat(Uuid),
     ToggleSidebar,
     OpenSettings(Tab),
@@ -20,12 +22,27 @@ pub enum Command {
     ExportChatMarkdown,
     ExportChatHtml,
     CompactChat,
+    ReviewChanges,
+    CommitChanges,
     UndoLastEdits,
+    ShowChangedFiles,
+    ForkChat,
     ExportSettings,
     ExportConversations,
     ImportSettings,
     ImportConversations,
     CheckForUpdates,
+    SetApprovalMode(ApprovalMode),
+    RunScheduledTask(Uuid),
+    NewProject,
+    ImportProject,
+    ShowProjects,
+    ShowArtifacts,
+    ShowScheduled,
+    GoBack,
+    GoForward,
+    SetMode(AppMode),
+    ToggleVoiceMode,
 }
 
 #[derive(Clone, Debug)]

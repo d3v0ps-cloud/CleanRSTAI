@@ -166,9 +166,16 @@ pub fn gateway_run_args(name: &str, script: &str) -> Vec<String> {
     args
 }
 
-/// Arguments of `docker exec` that run `command` with `sh -c` in the chat's container.
-pub fn exec_args(name: &str, command: &str) -> Vec<String> {
-    strings(&["exec", "-w", "/workspace", name, "sh", "-c", command])
+/// Arguments of `docker exec` that run `command` with `sh -c` in the chat's container, with
+/// `env` set for it (`-e NAME=VALUE`).
+pub fn exec_args(name: &str, env: &[(String, String)], command: &str) -> Vec<String> {
+    let mut args = strings(&["exec", "-w", "/workspace"]);
+    for (key, value) in env {
+        args.push("-e".to_owned());
+        args.push(format!("{key}={value}"));
+    }
+    args.extend(strings(&[name, "sh", "-c", command]));
+    args
 }
 
 /// The `--mount` value that binds the folder at /workspace. The `src=` pair is CSV-quoted
@@ -900,9 +907,28 @@ mod tests {
     }
 
     #[test]
+    fn exec_args_pass_the_environment_before_the_container() {
+        let env = [("CLEANRSTAI_TOOL".to_owned(), "write_file".to_owned())];
+        assert_eq!(
+            exec_args("cleanrstai-abc", &env, "true"),
+            strings(&[
+                "exec",
+                "-w",
+                "/workspace",
+                "-e",
+                "CLEANRSTAI_TOOL=write_file",
+                "cleanrstai-abc",
+                "sh",
+                "-c",
+                "true",
+            ])
+        );
+    }
+
+    #[test]
     fn exec_args_run_sh_in_the_workspace() {
         assert_eq!(
-            exec_args("cleanrstai-abc", "ls -la && echo 'hi'"),
+            exec_args("cleanrstai-abc", &[], "ls -la && echo 'hi'"),
             strings(&[
                 "exec",
                 "-w",

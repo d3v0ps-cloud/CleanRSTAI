@@ -2,6 +2,7 @@
 //! the results back, and repeat until the model answers without tools.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -11,6 +12,7 @@ use crate::compaction::{self, Compaction};
 use crate::config::{GeneralSettings, ProviderConfig};
 use crate::llm::{self, Delta};
 use crate::mcp::manager::McpManager;
+use crate::sandbox::Place;
 use crate::subagent::{Delegation, SubagentReport};
 use crate::tools::workspace::{EditOptions, Workspace};
 use crate::tools::{self, ToolSelection, Toolbox};
@@ -35,14 +37,18 @@ pub enum ChatEvent {
     },
     /// The older messages are being summarised.
     Compacting,
-    /// The messages before the last `kept` ones were summarised as `summary`.
+    /// The messages before the last `kept` ones were summarised as `summary`, by a request
+    /// with these stats.
     Compacted {
         kept: usize,
         summary: String,
         info: CompactionInfo,
+        stats: Box<crate::stats::RequestStats>,
     },
     /// The project instruction files added to the system prompt.
     Instructions(Vec<String>),
+    /// What a reply-done hook printed (see `hooks`), for the app to show.
+    HookNotice(String),
     ToolRunning(String),
     /// Live progress of the subagents started by a `delegate` call.
     SubagentProgress {
@@ -73,6 +79,21 @@ pub struct ServerReport {
 pub enum AppEvent {
     /// A request from a browser connected to the remote access server.
     Remote(crate::remote::RemoteCommand),
+    /// The working folder's diff for "Review changes", or why it couldn't be read.
+    ReviewReady {
+        conv_id: Uuid,
+        result: Result<crate::review::ReviewDiff, String>,
+    },
+    /// The working folder's changes for the Commit dialog, or why they couldn't be read.
+    CommitListed {
+        conv_id: Uuid,
+        result: Result<Vec<crate::tools::commit::Change>, String>,
+    },
+    /// A commit from the Commit dialog: what it recorded, or why it failed.
+    Committed {
+        conv_id: Uuid,
+        result: Result<String, String>,
+    },
     /// Result of a GitHub Releases check. `explicit` when the user asked for it.
     UpdateChecked {
         result: Result<crate::update::UpdateCheck, String>,
@@ -100,10 +121,14 @@ pub enum AppEvent {
         name: String,
         result: Result<Vec<crate::attach::Attachment>, String>,
     },
-    /// A file read (and, for documents, its text extracted) for the next message.
+    /// A file read (and, for documents, its text extracted) for the next message. `ocr` is
+    /// set when the file was a scanned PDF read by OCR (after an `OcrStarted`).
     FileAttached {
         result: Result<crate::attach::Attachment, String>,
+        ocr: bool,
     },
+    /// A scanned PDF has started to be read with OCR.
+    OcrStarted,
     /// Messages from an MCP prompt, to insert into the chat.
     McpPromptReady {
         name: String,
@@ -119,6 +144,17 @@ pub enum AppEvent {
         /// Whether the user asked (Detect button) rather than it running alongside a fetch.
         explicit: bool,
     },
+    /// A voice input recording as WAV bytes, or why it failed (or stopped with nothing in it).
+    VoiceCaptured(Result<Vec<u8>, String>),
+    /// What a voice recording said, or why transcription failed.
+    VoiceTranscribed(Result<String, String>),
+    /// A reply read aloud has finished, was stopped, or failed.
+    SpeechEnded {
+        key: (uuid::Uuid, usize),
+        result: Result<(), String>,
+    },
+    /// A "Save as…" file was written (its message), or why it wasn't.
+    SavedAs(Result<String, String>),
 }
 
 pub struct AgentRequest {
@@ -142,6 +178,89 @@ pub struct AgentRequest {
     pub compact_only: bool,
     /// The chat's permission mode: which calls run without asking.
     pub approval_mode: crate::approval::ApprovalMode,
+    /// The chat's project instructions and files, read by the caller (see
+    /// `projects::load_context`) for a chat in a project. Added to the system prompt while
+    /// the Projects setting and the chat's "Project context" switch are on.
+    pub project: Option<crate::projects::ProjectContext>,
+    /// The chat's memory (see `memory::for_request`): the memories in its system prompt and the
+    /// memory tool. `None` for a chat with memory off (incognito), and for subagents.
+    pub memory: Option<crate::memory::MemoryRun>,
+}
+
+impl AgentRequest {
+    /// The request for a reply in `conv`, built from the settings the way the app does: the
+    /// chat's tools and permissions, its messages after the latest compaction, and the provider
+    /// with the chat's model options. `review` uses the review provider; `compact_only` only
+    /// summarises. `sandbox` is the Docker sandbox, which a chat with `no_sandbox` skips.
+    pub fn for_chat(
+        settings: &crate::config::Settings,
+        conv: &crate::types::Conversation,
+        sandbox: Option<&crate::sandbox::Sandbox>,
+        review: bool,
+        compact_only: bool,
+        provider_id: Option<&str>,
+    ) -> Self {
+        let permissions = &conv.permissions;
+        // A Plan chat is read only while plan mode is off in Settings.
+        let mode = permissions.mode.effective(settings.general.plan.enabled);
+        let selection = ToolSelection::new(settings, &conv.tool_overrides).with_mode(mode);
+        // After a compaction only its summary and the messages since are sent.
+        let marker = crate::types::last_compaction(&conv.messages);
+        let summary = marker.map(|i| conv.messages[i].content.clone());
+        let from = marker.map_or(0, |i| i + 1);
+        // A scheduled task may name the provider profile it runs on; otherwise the chat's own
+        // (from its project, or picked for it), then the active one.
+        let chat_provider = provider_id
+            .or(conv.provider.as_deref())
+            .and_then(|pid| settings.providers.iter().find(|p| p.id == pid))
+            .unwrap_or_else(|| settings.provider())
+            .clone();
+        let chat_provider = match conv.model.as_deref().map(str::trim) {
+            Some(model) if !model.is_empty() => ProviderConfig {
+                model: model.to_owned(),
+                ..chat_provider
+            },
+            _ => chat_provider,
+        };
+        let provider = if review {
+            settings.review_provider(&chat_provider)
+        } else {
+            chat_provider
+        };
+        let compaction =
+            (compact_only || selection.feature_on(tools::COMPACTION)).then(|| Compaction {
+                settings: settings.general.compaction.clone(),
+                provider: settings.compaction_provider(&provider),
+                auto: selection.feature_on(tools::COMPACTION),
+            });
+        // The provider's own search replaces the built-in tool when the setting asks for it.
+        let mut request_provider = provider.with_chat_options(&conv.model_options);
+        request_provider.native_search = crate::native::native_search_request(
+            &settings.general.builtin_tools.search,
+            selection.builtin_on("web_search"),
+            &request_provider,
+        );
+        Self {
+            conv_id: conv.id,
+            provider: request_provider,
+            general: settings.general.clone(),
+            history: conv.messages[from..]
+                .iter()
+                .filter(|m| !m.cancelled && m.compaction.is_none())
+                .cloned()
+                .collect(),
+            delegation: Delegation::new(settings, &selection),
+            selection,
+            workspace: conv.workspace.clone(),
+            sandbox: sandbox.filter(|_| !permissions.no_sandbox).cloned(),
+            summary,
+            compaction,
+            compact_only,
+            approval_mode: mode,
+            project: None,
+            memory: None,
+        }
+    }
 }
 
 pub type EventSender = mpsc::UnboundedSender<AppEvent>;
@@ -154,7 +273,12 @@ pub async fn run(
     repaint: impl Fn() + Send + Sync,
 ) {
     let conv_id = req.conv_id;
+    // Set when the reply reports an error: reply-done hooks don't run then.
+    let errored = AtomicBool::new(false);
     let emit = |event: ChatEvent| {
+        if matches!(event, ChatEvent::Error(_)) {
+            errored.store(true, Ordering::Relaxed);
+        }
         let _ = tx.send(AppEvent::Chat { conv_id, event });
         repaint();
     };
@@ -176,6 +300,7 @@ pub async fn run(
             checkpoint: req.selection.feature_on(tools::CHECKPOINTS),
             max_checkpoint_bytes: u64::from(edits.max_file_kb) * 1024,
         })
+        .with_commit_signing(req.general.builtin_tools.allow_signing)
     });
     // Shell commands run in the chat's sandbox container, when the sandbox is on.
     let workspace = match (workspace, &req.sandbox) {
@@ -204,6 +329,60 @@ pub async fn run(
             system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), loaded.prompt);
             emit(ChatEvent::Instructions(loaded.files));
         }
+    }
+    // Skills: listed in the system prompt and loaded with `load_skill`, when the chat allows
+    // them (subagents are switched off in their own selection).
+    let switched_off = req
+        .selection
+        .overrides
+        .get(&tools::ToolOverrides::builtin_key("skills"))
+        == Some(false);
+    let mut skill_files = Vec::new();
+    if req.general.skills.enabled && !switched_off {
+        let (settings, root) = (
+            req.general.skills.clone(),
+            workspace.as_ref().map(|ws| ws.path().to_path_buf()),
+        );
+        skill_files = tokio::task::spawn_blocking(move || {
+            crate::skills::for_chat(&settings, root.as_deref())
+        })
+        .await
+        .unwrap_or_default();
+    }
+    let skills = Arc::new(skill_files);
+    let selection = req
+        .selection
+        .clone()
+        .with_skills(!skills.is_empty())
+        .with_native_search(req.provider.native_search.is_some());
+    let skills_on = selection.builtin_on("skills");
+    if skills_on {
+        system_prompt = format!(
+            "{}\n\n{}",
+            system_prompt.trim_end(),
+            crate::skills::prompt_section(&skills)
+        );
+    }
+    // A chat in a project: the project's instructions and files (Settings → Context & files,
+    // and the chat's own switch).
+    if let Some(project) = &req.project
+        && req.general.projects.enabled
+        && selection.feature_on(tools::PROJECT)
+    {
+        system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), project.prompt());
+    }
+    // A chat with memory on: the memories it sees, read when the reply starts.
+    let memory = req.memory.clone();
+    if let Some(memory) = &memory {
+        system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), memory.prompt());
+    }
+    // A Plan chat is told to investigate and propose a plan, not to change anything.
+    if req.approval_mode == crate::approval::ApprovalMode::Plan {
+        system_prompt = format!(
+            "{}\n\n{}",
+            system_prompt.trim_end(),
+            req.general.plan.prompt_text()
+        );
     }
     // Subagents may get the workspace too, with commands in containers of their own.
     let delegation = req.delegation.map(|d| d.with_workspace(workspace.as_ref()));
@@ -234,6 +413,11 @@ pub async fn run(
         context_size = Some(n);
     }
     let prices = litellm.and_then(|m| m.prices);
+    // The provider's own context size, when the server reports none.
+    let server_reported = context_size.is_some();
+    if context_size.is_none() {
+        context_size = req.provider.context_tokens.map(u64::from);
+    }
     let mut summary = req.summary;
     let compaction = req.compaction;
     // Set once a compaction failed, so the rest of the run doesn't try again every round.
@@ -256,17 +440,42 @@ pub async fn run(
         return;
     }
 
+    // Hooks from Settings, run around tool calls and when the reply is done. They never run in
+    // compact-only runs (returned above) or for subagents. Commands run in the chat's sandbox
+    // container when the workspace's do, which needs a workspace.
+    let hook_place = req
+        .sandbox
+        .clone()
+        .filter(|_| workspace.is_some())
+        .map(|sandbox| Place::Chat(sandbox, conv_id));
+    let hooks = crate::hooks::Runner::new(
+        &req.general.hooks,
+        selection.feature_on(tools::HOOKS),
+        conv_id,
+        workspace.as_ref().map(|ws| ws.path().to_path_buf()),
+        hook_place,
+    );
+
     for round in 0.. {
         // Re-read the router every round so servers that finished connecting are picked up.
         let toolbox = if round < max_rounds {
             let toolbox = Toolbox::new(
                 mcp.router(),
-                &req.selection,
+                &selection,
                 delegation.as_ref().map(Delegation::tool_description),
             )
             .with_http(http.clone());
-            match &workspace {
-                Some(ws) => toolbox.with_workspace(ws.clone(), &req.selection),
+            let toolbox = match &workspace {
+                Some(ws) => toolbox.with_workspace(ws.clone(), &selection),
+                None => toolbox,
+            };
+            let toolbox = if skills_on {
+                toolbox.with_skills(skills.clone(), req.general.skills.max_kb)
+            } else {
+                toolbox
+            };
+            match &memory {
+                Some(memory) => toolbox.with_memory(memory.clone()),
                 None => toolbox,
             }
         } else {
@@ -340,16 +549,20 @@ pub async fn run(
         }
         msg.tool_calls = turn.tool_calls;
         msg.native = turn.native;
+        msg.sources = turn.sources;
+        msg.searched = turn.searched;
         let mut stats = turn.stats;
         // Only llama.cpp sends `timings` (source Server). Ask for the context size after such
         // a reply too: when Server type is left on Generic, or when a router had not loaded
         // the model yet at the start.
-        if context_size.is_none()
+        if !server_reported
             && !asked_context_after_reply
             && stats.source == crate::stats::StatsSource::Server
         {
             asked_context_after_reply = true;
-            context_size = llm::llama_cpp_context_size(&http, &req.provider).await;
+            if let Some(n) = llm::llama_cpp_context_size(&http, &req.provider).await {
+                context_size = Some(n);
+            }
         }
         stats.context_size = context_size;
         stats.slot_usage = slot_usage;
@@ -363,6 +576,11 @@ pub async fn run(
         emit(ChatEvent::AssistantFinal(Box::new(msg)));
 
         if calls.is_empty() {
+            // Anthropic pauses a long turn of its own web search: the reply goes back as it
+            // is, and the next request continues it (the rounds still bound this).
+            if turn.finish_reason.as_deref() == Some("pause_turn") && round + 1 < max_rounds {
+                continue;
+            }
             if turn.finish_reason.as_deref() == Some("length") {
                 emit(ChatEvent::Error(
                     "The response was cut off (max tokens reached).".into(),
@@ -378,8 +596,9 @@ pub async fn run(
         }
 
         for call in &calls {
-            let approved = if req.general.auto_approve_tools
-                || !toolbox.asks(&call.name)
+            let approved = if (req.general.auto_approve_tools
+                && !crate::approval::always_asks(&call.name))
+                || !toolbox.asks_call(&call.name, &call.arguments)
                 || req
                     .approval_mode
                     .runs_unasked(&call.name, req.sandbox.is_some())
@@ -387,6 +606,11 @@ pub async fn run(
                 true
             } else {
                 let preview = match &workspace {
+                    Some(ws) if call.name == tools::workspace::GIT_COMMIT => {
+                        let args = serde_json::from_str(&call.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        ws.commit_preview(&args).await
+                    }
                     Some(ws) if req.general.file_edits.diff_preview => {
                         let (ws, name, args) =
                             (ws.clone(), call.name.clone(), call.arguments.clone());
@@ -413,40 +637,64 @@ pub async fn run(
             };
             let result = if approved {
                 emit(ChatEvent::ToolRunning(call.id.clone()));
-                match (
-                    &delegation,
-                    call.name == tools::DELEGATE && toolbox.has(&call.name),
-                ) {
-                    (Some(delegation), true) => {
-                        let progress = |reports: &[SubagentReport]| {
-                            emit(ChatEvent::SubagentProgress {
-                                call_id: call.id.clone(),
-                                reports: reports.to_vec(),
-                            })
-                        };
-                        let (out, reports) = delegation
-                            .run(&http, &mcp, &call.arguments, &progress)
+                // A before-tool hook can block a call the toolbox offers; after-tool hooks add
+                // their output to its result.
+                let known = toolbox.has(&call.name);
+                let blocked = if known {
+                    hooks.before_tool(&call.name, &call.arguments).await
+                } else {
+                    None
+                };
+                if let Some(reason) = blocked {
+                    ChatMessage::tool_result(call, reason, true)
+                } else {
+                    let mut msg = match (
+                        &delegation,
+                        call.name == tools::DELEGATE && toolbox.has(&call.name),
+                    ) {
+                        (Some(delegation), true) => {
+                            let progress = |reports: &[SubagentReport]| {
+                                emit(ChatEvent::SubagentProgress {
+                                    call_id: call.id.clone(),
+                                    reports: reports.to_vec(),
+                                })
+                            };
+                            let (out, reports) = delegation
+                                .run(&http, &mcp, &call.arguments, &progress)
+                                .await;
+                            let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
+                            msg.subagents = reports;
+                            msg
+                        }
+                        _ => {
+                            let out = toolbox
+                                .call(&call.name, &call.arguments, tool_timeout)
+                                .await;
+                            let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
+                            msg.attachments = out.images;
+                            msg.sandbox = out.sandbox;
+                            msg.edit = out.edit;
+                            msg
+                        }
+                    };
+                    if known {
+                        let extra = hooks
+                            .after_tool(&call.name, &call.arguments, &msg.content)
                             .await;
-                        let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
-                        msg.subagents = reports;
-                        msg
+                        msg.content.push_str(&extra);
                     }
-                    _ => {
-                        let out = toolbox
-                            .call(&call.name, &call.arguments, tool_timeout)
-                            .await;
-                        let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
-                        msg.attachments = out.images;
-                        msg.sandbox = out.sandbox;
-                        msg.edit = out.edit;
-                        msg
-                    }
+                    msg
                 }
             } else {
                 ChatMessage::tool_result(call, "The user declined to run this tool.", true)
             };
             history.push(result.clone());
             emit(ChatEvent::ToolResult(Box::new(result)));
+        }
+    }
+    if !errored.load(Ordering::Relaxed) {
+        for notice in hooks.reply_done().await {
+            emit(ChatEvent::HookNotice(notice));
         }
     }
     emit(ChatEvent::Done);
@@ -467,7 +715,7 @@ async fn compact(
         return Err("Nothing to compact yet: the chat is shorter than the messages kept.".into());
     };
     emit(ChatEvent::Compacting);
-    let mut new = compaction::summarise(http, c, summary.as_deref(), &history[..split])
+    let (mut new, stats) = compaction::summarise(http, c, summary.as_deref(), &history[..split])
         .await
         .map_err(|e| format!("Couldn't compact the chat: {e:#}"))?;
     if let Some(tasks) = compaction::carried_tasks(&history[..split], &history[split..]) {
@@ -483,6 +731,7 @@ async fn compact(
             tokens_before: tokens,
             manual,
         },
+        stats: Box::new(stats),
     });
     Ok(())
 }
@@ -576,6 +825,8 @@ mod tests {
             compaction: None,
             compact_only: false,
             approval_mode: Default::default(),
+            project: None,
+            memory: None,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -659,6 +910,8 @@ mod tests {
             compaction: None,
             compact_only: false,
             approval_mode: Default::default(),
+            project: None,
+            memory: None,
         }
     }
 
@@ -728,6 +981,232 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// One chat turn in the git repository `dir` where the mock model calls `git_commit` (with
+    /// the switch on). Returns the approval prompts asked, their previews, the tool result and
+    /// the tool names offered to the model.
+    async fn commit_turn(
+        dir: &std::path::Path,
+        mode: crate::approval::ApprovalMode,
+        auto_approve: bool,
+    ) -> (usize, Vec<String>, ChatMessage, Vec<String>) {
+        let mut settings = crate::config::Settings::default();
+        settings.general.builtin_tools.git_commit = true;
+        settings.general.auto_approve_tools = auto_approve;
+        let http = reqwest::Client::new();
+        let (base, log) = tool_calling_llm(
+            tools::workspace::GIT_COMMIT,
+            r#"{"message": "Agent commit"}"#,
+        )
+        .await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.to_path_buf());
+        req.approval_mode = mode;
+        req.selection = req.selection.clone().with_mode(mode);
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+        let (mut approvals, mut previews, mut result) = (0, Vec::new(), None);
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            match event {
+                ChatEvent::ToolApproval {
+                    respond, preview, ..
+                } => {
+                    approvals += 1;
+                    previews.extend(preview);
+                    respond.send(true).unwrap();
+                }
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                ChatEvent::Done => break,
+                _ => {}
+            }
+        }
+        agent.await.unwrap();
+        let first = log.lock().unwrap()[0].json();
+        let names = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        (approvals, previews, result.unwrap(), names)
+    }
+
+    /// A commit always asks, in every mode but Allow all (not even Auto in workspace, nor the
+    /// "run all tools" setting), and Read only doesn't offer it at all.
+    #[tokio::test]
+    async fn a_commit_asks_in_every_mode_but_allow_all() {
+        use crate::approval::ApprovalMode;
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-commit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        // Each case starts from a changed file, so the commit has something to record.
+        let reset = |dir: &std::path::Path| {
+            std::fs::write(dir.join("a.txt"), format!("{}\n", Uuid::new_v4())).unwrap();
+        };
+        for (mode, auto) in [
+            (ApprovalMode::Default, false),
+            (ApprovalMode::AutoWorkspace, false),
+            (ApprovalMode::Default, true),
+        ] {
+            reset(&dir);
+            let (approvals, previews, result, names) = commit_turn(&dir, mode, auto).await;
+            assert!(names.contains(&"git_commit".to_owned()), "{names:?}");
+            assert!(!result.is_error, "{mode:?}: {}", result.content);
+            assert_eq!(approvals, 1, "{mode:?} auto={auto} did not ask");
+            assert!(previews[0].contains("Agent commit"), "{}", previews[0]);
+            assert!(previews[0].contains(" M a.txt"), "{}", previews[0]);
+        }
+
+        // Allow all runs it without asking.
+        reset(&dir);
+        let (approvals, _, result, _) = commit_turn(&dir, ApprovalMode::AllowAll, false).await;
+        assert_eq!(approvals, 0);
+        assert!(
+            result.content.starts_with("Committed "),
+            "{}",
+            result.content
+        );
+
+        // Read only doesn't offer the tool, so the call fails and nothing is committed. (The
+        // agent still asks before an unoffered call, as it does for any tool; a Run answer
+        // can't commit, because the call is refused.)
+        reset(&dir);
+        let (_, _, result, names) = commit_turn(&dir, ApprovalMode::ReadOnly, false).await;
+        assert!(!names.contains(&"git_commit".to_owned()), "{names:?}");
+        assert!(result.is_error, "{}", result.content);
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let subjects = String::from_utf8_lossy(&log.stdout).into_owned();
+        // Four commits from the turns above, then the initial one.
+        assert_eq!(subjects.lines().count(), 5, "{subjects}");
+        assert!(subjects.ends_with("init\n"), "{subjects}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs one chat turn in `dir` with `hooks` on, where the mock model calls `tool`.
+    async fn run_with_hooks(
+        dir: &std::path::Path,
+        tool: &'static str,
+        args: &'static str,
+        hooks: Vec<crate::hooks::Hook>,
+    ) -> (usize, ChatMessage, Vec<serde_json::Value>) {
+        let mut settings = crate::config::Settings::default();
+        settings.general.hooks = crate::hooks::HookSettings {
+            enabled: true,
+            hooks,
+        };
+        let (base, log) = tool_calling_llm(tool, args).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.to_path_buf());
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let agent = tokio::spawn(run(req, http, mcp, tx, || {}));
+        let mut approvals = 0;
+        let mut result = None;
+        while let Some(AppEvent::Chat { event, .. }) = rx.recv().await {
+            match event {
+                ChatEvent::ToolApproval { respond, .. } => {
+                    approvals += 1;
+                    respond.send(true).unwrap();
+                }
+                ChatEvent::ToolResult(m) => result = Some(*m),
+                ChatEvent::Done => break,
+                _ => {}
+            }
+        }
+        agent.await.unwrap();
+        let bodies = log.lock().unwrap().iter().map(Request::json).collect();
+        (approvals, result.unwrap(), bodies)
+    }
+
+    #[tokio::test]
+    async fn a_before_tool_hook_blocks_a_workspace_write() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-hook-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = crate::hooks::Hook {
+            name: "guard".into(),
+            tools: "write_file".into(),
+            command: "exit 1".into(),
+            ..Default::default()
+        };
+        let (approvals, result, _) = run_with_hooks(
+            &dir,
+            tools::workspace::WRITE_FILE,
+            r#"{"path": "out.txt", "content": "hi"}"#,
+            vec![guard],
+        )
+        .await;
+        // The user is still asked first; the hook then refuses the call.
+        assert_eq!(approvals, 1);
+        assert!(result.is_error);
+        assert_eq!(result.content, "Blocked by hook \"guard\": exit code 1");
+        assert!(!dir.join("out.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_after_tool_hook_adds_to_the_result_the_model_sees() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-agent-hook-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), "remember the milk\n").unwrap();
+        let log = crate::hooks::Hook {
+            name: "log".into(),
+            event: crate::hooks::HookEvent::AfterTool,
+            command: "echo logged".into(),
+            ..Default::default()
+        };
+        let (approvals, result, bodies) = run_with_hooks(
+            &dir,
+            tools::workspace::READ_FILE,
+            r#"{"path": "notes.txt"}"#,
+            vec![log],
+        )
+        .await;
+        assert_eq!(approvals, 0);
+        assert!(!result.is_error);
+        assert!(
+            result.content.ends_with("\n\n[hook log]\nlogged"),
+            "{}",
+            result.content
+        );
+        // The second request carries that result to the model.
+        let sent = bodies[1]["messages"].as_array().unwrap();
+        assert!(
+            sent.iter().any(|m| m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("[hook log]"))),
+            "{sent:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn context_size_after_a_llama_cpp_reply_on_a_generic_provider() {
         let (base, _) = serve(|r| match (r.method.as_str(), r.path.as_str()) {
@@ -757,6 +1236,31 @@ mod tests {
             }
         }
         let stats = stats.unwrap();
+        assert_eq!(stats.context_use(), Some((102, 4096)));
+    }
+
+    #[tokio::test]
+    async fn the_provider_context_size_stands_in_when_the_server_reports_none() {
+        let (base, _) = serve(|_| {
+            Response::json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 2}
+            }))
+        })
+        .await;
+        let settings = crate::config::Settings::default();
+        let mut req = request(&base, &settings, &Default::default());
+        assert_eq!(req.provider.context_tokens, None);
+        req.provider.context_tokens = Some(4096);
+        let events = drive(req).await;
+        let stats = events
+            .iter()
+            .find_map(|e| match e {
+                ChatEvent::AssistantFinal(m) => m.stats.clone(),
+                _ => None,
+            })
+            .expect("a reply");
         assert_eq!(stats.context_use(), Some((102, 4096)));
     }
 
@@ -1023,6 +1527,362 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A project with instructions and a text file, loaded the way the app loads it.
+    fn project_with_file(dir: &std::path::Path) -> crate::projects::ProjectContext {
+        let notes = dir.join("units.txt");
+        std::fs::write(&notes, "Use metric units.").unwrap();
+        let mut project =
+            crate::projects::Project::new("Site", &crate::projects::ProjectSettings::default());
+        project.instructions = "Answer in French.".into();
+        project.files = vec![notes];
+        crate::projects::load_context(&project, 256)
+    }
+
+    #[tokio::test]
+    async fn project_instructions_and_files_join_the_system_prompt_unless_switched_off() {
+        let dir = temp_dir("agent-project");
+        let context = project_with_file(&dir);
+        let settings = crate::config::Settings::default();
+
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.project = Some(context.clone());
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(system.contains("Project: Site"), "{system}");
+        assert!(system.contains("Answer in French."), "{system}");
+        assert!(system.contains("Use metric units."), "{system}");
+
+        // The chat's own switch leaves the project out.
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::feature_key(tools::PROJECT),
+            false,
+            true,
+        );
+        let mut req = request(&base, &settings, &ov);
+        req.project = Some(context.clone());
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("Project: Site"), "{system}");
+
+        // So does turning projects off in Settings, even when the chat asks for them.
+        let mut off = settings.clone();
+        off.general.projects.enabled = false;
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &off, &Default::default());
+        req.project = Some(context);
+        drive(req).await;
+        let system = log.lock().unwrap()[0].json()["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!system.contains("Project"), "{system}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A request for a chat with memory on (or off, through `overrides`), with `store`'s
+    /// memories, and the names of the tools and the system prompt it sends first.
+    async fn memory_request(
+        store: &Arc<crate::memory::MemoryStore>,
+        settings: &crate::config::Settings,
+        overrides: &crate::tools::ToolOverrides,
+        tool: &'static str,
+        args: &'static str,
+    ) -> (Vec<ChatEvent>, String, Vec<String>) {
+        let (base, log) = tool_calling_llm(tool, args).await;
+        let conv = crate::types::Conversation {
+            tool_overrides: overrides.clone(),
+            ..crate::types::Conversation::new()
+        };
+        let mut req = request(&base, settings, overrides);
+        req.memory =
+            crate::memory::for_request(store, &req.selection, &settings.general.memory, &conv);
+        let events = drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+        let names = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        (events, system, names)
+    }
+
+    #[tokio::test]
+    async fn memories_join_the_prompt_and_the_tool_is_offered_unless_incognito() {
+        use crate::tools::{MEMORY_TOOL, ToolOverrides};
+        let dir = temp_dir("agent-memory");
+        let store = Arc::new(crate::memory::MemoryStore::at(&dir.join("memory.json")));
+        store
+            .add("Lives in Oslo", crate::memory::Scope::Global, None)
+            .unwrap();
+        let mut settings = crate::config::Settings::default();
+        settings.general.memory.enabled = true;
+
+        let (_, system, names) = memory_request(
+            &store,
+            &settings,
+            &ToolOverrides::default(),
+            tools::CALCULATE,
+            r#"{"expression": "1"}"#,
+        )
+        .await;
+        assert!(
+            system.contains("Things to remember about the user"),
+            "{system}"
+        );
+        assert!(system.contains("Lives in Oslo"), "{system}");
+        assert!(names.iter().any(|n| n == MEMORY_TOOL), "{names:?}");
+
+        // Incognito: neither the memories nor the tool reach the model.
+        let mut incognito = ToolOverrides::default();
+        incognito.set(ToolOverrides::feature_key(tools::MEMORY), false, true);
+        let (_, system, names) = memory_request(
+            &store,
+            &settings,
+            &incognito,
+            tools::CALCULATE,
+            r#"{"expression": "1"}"#,
+        )
+        .await;
+        assert!(!system.contains("Lives in Oslo"), "{system}");
+        assert!(!system.contains("Things to remember"), "{system}");
+        assert!(!names.iter().any(|n| n == MEMORY_TOOL), "{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn memory_saves_ask_before_saving_and_listing_never_does() {
+        use crate::tools::MEMORY_TOOL;
+        let dir = temp_dir("agent-memory-ask");
+        let store = Arc::new(crate::memory::MemoryStore::at(&dir.join("memory.json")));
+        let mut settings = crate::config::Settings::default();
+        settings.general.memory.enabled = true;
+        let none = Default::default();
+        let asked = |events: &[ChatEvent]| {
+            events.iter().any(
+                |e| matches!(e, ChatEvent::ToolApproval { call, .. } if call.name == MEMORY_TOOL),
+            )
+        };
+
+        // Asking is the default: a save waits for approval, and `drive` approves it.
+        let save = r#"{"action": "save", "text": "Likes tea"}"#;
+        let (events, _, _) = memory_request(&store, &settings, &none, MEMORY_TOOL, save).await;
+        assert!(asked(&events));
+        assert_eq!(store.all().len(), 1);
+        assert!(
+            events.iter().any(
+                |e| matches!(e, ChatEvent::ToolResult(m) if m.content.contains("Saved memory"))
+            )
+        );
+
+        let (events, _, _) = memory_request(
+            &store,
+            &settings,
+            &none,
+            MEMORY_TOOL,
+            r#"{"action": "list"}"#,
+        )
+        .await;
+        assert!(!asked(&events));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolResult(m) if m.content.contains("Likes tea")))
+        );
+
+        // A save that repeats a memory is refused politely, and the reply still goes on.
+        let (events, _, _) = memory_request(&store, &settings, &none, MEMORY_TOOL, save).await;
+        assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolResult(m) if !m.is_error && m.content.contains("already remembered"))));
+        assert_eq!(store.all().len(), 1);
+
+        // With the question switched off in Settings, a save runs unasked.
+        settings.general.memory.ask_before_saving = false;
+        let (events, _, _) = memory_request(
+            &store,
+            &settings,
+            &none,
+            MEMORY_TOOL,
+            r#"{"action": "save", "text": "Owns a bike"}"#,
+        )
+        .await;
+        assert!(!asked(&events));
+        assert_eq!(store.all().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_chat_with_memory_gets_no_memory_tool_or_memories_when_none_are_given() {
+        // Without a memory run (the default for every request), nothing about memory is sent.
+        let settings = crate::config::Settings::default();
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let req = request(&base, &settings, &Default::default());
+        assert!(req.memory.is_none());
+        drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        assert!(!first.to_string().contains("builtin__memory"));
+    }
+
+    #[test]
+    fn a_chat_uses_its_own_provider_and_model_over_the_active_one() {
+        let mut settings = crate::config::Settings::default();
+        let other = ProviderConfig {
+            id: "other".into(),
+            name: "Other".into(),
+            base_url: "http://other.example/v1".into(),
+            model: "other-model".into(),
+            ..Default::default()
+        };
+        settings.providers.push(other);
+        let mut conv = crate::types::Conversation::new();
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.base_url, settings.provider().base_url);
+
+        conv.provider = Some("other".into());
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.base_url, "http://other.example/v1");
+        assert_eq!(req.provider.model, "other-model");
+
+        // The chat's model replaces its provider's; a scheduled task's provider still wins.
+        conv.model = Some(" chat-model ".into());
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.model, "chat-model");
+        let req = AgentRequest::for_chat(
+            &settings,
+            &conv,
+            None,
+            false,
+            false,
+            Some(&settings.providers[0].id),
+        );
+        assert_eq!(req.provider.base_url, settings.providers[0].base_url);
+        assert_eq!(req.provider.model, "chat-model");
+    }
+
+    #[tokio::test]
+    async fn plan_mode_adds_the_plan_prompt_and_offers_only_read_tools() {
+        use crate::approval::ApprovalMode;
+        let dir = temp_dir("agent-plan");
+        let settings = crate::config::Settings::default();
+        // The first request of a run in `mode`: its system prompt and tool names.
+        let first_request = |mode: ApprovalMode, settings: crate::config::Settings| {
+            let dir = dir.clone();
+            async move {
+                let (base, log) =
+                    tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+                let mut conv = crate::types::Conversation::with_permission_mode(mode);
+                conv.workspace = Some(dir);
+                conv.messages
+                    .push(ChatMessage::new(Role::User, "plan the change"));
+                let mut req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+                req.provider.base_url = format!("{base}/v1");
+                req.provider.stream = false;
+                drive(req).await;
+                let first = log.lock().unwrap()[0].json();
+                let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+                let names: Vec<String> = first["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+                    .collect();
+                (system, names)
+            }
+        };
+
+        let (system, names) = first_request(ApprovalMode::Plan, settings.clone()).await;
+        assert!(system.contains(crate::plan::PLAN_PROMPT), "{system}");
+        assert!(
+            names.iter().any(|n| n == tools::workspace::READ_FILE),
+            "{names:?}"
+        );
+        for write in [
+            tools::workspace::WRITE_FILE,
+            tools::workspace::EDIT_FILE,
+            tools::workspace::SHELL,
+        ] {
+            assert!(
+                !names.iter().any(|n| n == write),
+                "{write} offered: {names:?}"
+            );
+        }
+
+        // The same tools as Read only, with the same prompt absent.
+        let (read_system, read_names) =
+            first_request(ApprovalMode::ReadOnly, settings.clone()).await;
+        assert!(!read_system.contains(crate::plan::PLAN_PROMPT));
+        assert_eq!(read_names, names);
+
+        // Plan mode off in Settings: the chat is read only.
+        let mut off = settings.clone();
+        off.general.plan.enabled = false;
+        let (system, off_names) = first_request(ApprovalMode::Plan, off).await;
+        assert!(!system.contains(crate::plan::PLAN_PROMPT));
+        assert_eq!(off_names, read_names);
+
+        let (system, names) = first_request(ApprovalMode::Default, settings).await;
+        assert!(!system.contains(crate::plan::PLAN_PROMPT));
+        assert!(names.iter().any(|n| n == tools::workspace::WRITE_FILE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn workspace_skills_are_listed_and_offered_unless_switched_off() {
+        let dir = temp_dir("agent-skill");
+        let skill = crate::skills::workspace_root(&dir).join("notes");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\ndescription: Take meeting notes\n---\nWrite the notes.",
+        )
+        .unwrap();
+        let settings = crate::config::Settings::default();
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut req = request(&base, &settings, &Default::default());
+        req.workspace = Some(dir.clone());
+        drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+        assert!(system.contains("- notes: Take meeting notes"), "{system}");
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&tools::LOAD_SKILL), "{names:?}");
+
+        let (base, log) = tool_calling_llm(tools::CALCULATE, r#"{"expression": "1"}"#).await;
+        let mut ov = crate::tools::ToolOverrides::default();
+        ov.set(
+            crate::tools::ToolOverrides::builtin_key("skills"),
+            false,
+            true,
+        );
+        let mut req = request(&base, &settings, &ov);
+        req.workspace = Some(dir.clone());
+        drive(req).await;
+        let first = log.lock().unwrap()[0].json();
+        let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+        assert!(!system.contains("Skills available"), "{system}");
+        let has_tool = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["function"]["name"] == tools::LOAD_SKILL);
+        assert!(!has_tool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn file_edits_show_a_diff_before_approval_and_keep_a_checkpoint() {
         let dir = temp_dir("agent-edit");
@@ -1075,7 +1935,8 @@ mod tests {
                 "ok"
             };
             Response::json(serde_json::json!({
-                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
+                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 700, "completion_tokens": 30}
             }))
         })
         .await
@@ -1112,22 +1973,28 @@ mod tests {
         req.history = long_history(6);
         with_compaction(&mut req, &settings);
         let events = drive(req).await;
-        let (kept, summary) = events
+        let (kept, summary, stats) = events
             .iter()
             .find_map(|e| match e {
                 ChatEvent::Compacted {
                     kept,
                     summary,
                     info,
+                    stats,
                 } => {
                     assert_eq!(info.messages, 10);
                     assert!(!info.manual);
-                    Some((*kept, summary.clone()))
+                    Some((*kept, summary.clone(), stats.clone()))
                 }
                 _ => None,
             })
             .expect("compacted");
         assert_eq!((kept, summary.as_str()), (3, "SUMMARY-NOTES"));
+        // The summary request's usage travels with the event, for the chat's totals.
+        assert_eq!(
+            (stats.prompt_tokens, stats.completion_tokens),
+            (Some(700), Some(30))
+        );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2, "one summary request, then the reply");
         let reply = log[1].json();
@@ -1376,6 +2243,149 @@ mod tests {
         assert!(
             with_args > 0 && without_args > 0,
             "{with_args} / {without_args}"
+        );
+    }
+
+    #[test]
+    fn for_chat_asks_the_provider_for_its_search_when_the_setting_says_so() {
+        let mut settings = crate::config::Settings::default();
+        settings.providers[0] = ProviderConfig {
+            base_url: "http://127.0.0.1:9/v1".into(),
+            api: crate::config::ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        let mut conv = crate::types::Conversation::new();
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.native_search, None, "off by default");
+
+        settings.general.builtin_tools.search.native = crate::config::NativeSearch::PreferProvider;
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.native_search, Some(5));
+
+        // The chat's own switch turns the search off for that chat only.
+        conv.tool_overrides.set(
+            crate::tools::ToolOverrides::builtin_key("web_search"),
+            false,
+            settings.general.builtin_tools.web_search,
+        );
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        assert_eq!(req.provider.native_search, None);
+
+        // A provider without a search of its own keeps the built-in tool.
+        let generic = crate::types::Conversation::new();
+        settings.providers[0].api = crate::config::ProviderApi::ChatCompletions;
+        let req = AgentRequest::for_chat(&settings, &generic, None, false, false, None);
+        assert_eq!(req.provider.native_search, None);
+    }
+
+    #[tokio::test]
+    async fn provider_search_runs_through_a_paused_turn_and_keeps_its_sources() {
+        use crate::testutil::{Response, serve};
+        let (base, log) = serve(|r| {
+            let body = r.json();
+            let msgs = body["messages"].as_array().cloned().unwrap_or_default();
+            let searched = msgs.iter().any(|m| {
+                m["content"]
+                    .as_array()
+                    .is_some_and(|b| b.iter().any(|x| x["type"] == "server_tool_use"))
+            });
+            let events = if searched {
+                vec![
+                    serde_json::json!({"type": "message_start", "message": {"model": "c",
+                        "usage": {"input_tokens": 9, "output_tokens": 1}}}),
+                    serde_json::json!({"type": "content_block_start", "index": 0,
+                        "content_block": {"type": "text", "text": ""}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 0,
+                        "delta": {"type": "text_delta", "text": "Final answer."}}),
+                    serde_json::json!({"type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"}}),
+                    serde_json::json!({"type": "message_stop"}),
+                ]
+            } else {
+                vec![
+                    serde_json::json!({"type": "message_start", "message": {"model": "c",
+                        "usage": {"input_tokens": 9, "output_tokens": 1}}}),
+                    serde_json::json!({"type": "content_block_start", "index": 0,
+                        "content_block": {"type": "server_tool_use", "id": "srv_1",
+                            "name": "web_search", "input": {}}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 0,
+                        "delta": {"type": "input_json_delta",
+                            "partial_json": "{\"query\": \"news\"}"}}),
+                    serde_json::json!({"type": "content_block_stop", "index": 0}),
+                    serde_json::json!({"type": "content_block_start", "index": 1,
+                        "content_block": {"type": "web_search_tool_result",
+                            "tool_use_id": "srv_1", "content": [{"type": "web_search_result",
+                            "url": "https://n.example/1", "title": "News",
+                            "encrypted_content": "enc"}]}}),
+                    serde_json::json!({"type": "content_block_stop", "index": 1}),
+                    serde_json::json!({"type": "content_block_start", "index": 2,
+                        "content_block": {"type": "text", "text": "", "citations": []}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 2,
+                        "delta": {"type": "text_delta", "text": "Looking."}}),
+                    serde_json::json!({"type": "content_block_delta", "index": 2,
+                        "delta": {"type": "citations_delta", "citation": {
+                            "type": "web_search_result_location", "url": "https://n.example/1",
+                            "title": "News", "cited_text": "x", "encrypted_index": "i"}}}),
+                    serde_json::json!({"type": "content_block_stop", "index": 2}),
+                    serde_json::json!({"type": "message_delta",
+                        "delta": {"stop_reason": "pause_turn"}}),
+                    serde_json::json!({"type": "message_stop"}),
+                ]
+            };
+            Response::sse(&events)
+        })
+        .await;
+        let mut settings = crate::config::Settings::default();
+        settings.providers[0] = ProviderConfig {
+            base_url: format!("{base}/v1"),
+            model: "claude".into(),
+            api: crate::config::ProviderApi::Anthropic,
+            ..Default::default()
+        };
+        settings.general.builtin_tools.search.native = crate::config::NativeSearch::PreferProvider;
+        let mut conv = crate::types::Conversation::new();
+        conv.messages
+            .push(ChatMessage::new(Role::User, "what's new?"));
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
+        let http = llm::build_http_client();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run(req, http, mcp, tx, || {}).await;
+
+        let mut replies = Vec::new();
+        while let Ok(AppEvent::Chat { event, .. }) = rx.try_recv() {
+            if let ChatEvent::AssistantFinal(m) = event {
+                replies.push(*m);
+            }
+        }
+        // The paused turn continues in a second request: two replies, the first cites
+        // its source and says it searched.
+        assert_eq!(replies.len(), 2);
+        assert!(replies[0].searched);
+        assert_eq!(replies[0].sources[0].url, "https://n.example/1");
+        assert_eq!(replies[1].content, "Final answer.");
+        assert!(replies[1].sources.is_empty());
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 2, "one request for the pause, one to continue");
+        let first = log[0].json();
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"web_search"),
+            "the provider's search is offered"
+        );
+        assert!(
+            !names.contains(&tools::WEB_SEARCH),
+            "the built-in one is not"
+        );
+        assert_eq!(
+            first["tools"].as_array().unwrap().last().unwrap()["type"],
+            "web_search_20250305"
         );
     }
 }

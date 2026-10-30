@@ -18,7 +18,25 @@ images and Dockerfiles, a custom network with host, protocol and port rules, and
 containers) in **v0.9.0**, and context compaction, project instructions, diffs and undo for
 file edits, web search, the live web page preview (macOS and Windows), sharing a chat as HTML,
 reasoning and sampling options per provider, model and chat, the Anthropic Messages and OpenAI
-Responses APIs, and per-chat permission modes in **v0.9.1**.
+Responses APIs, and per-chat permission modes in **v0.9.1**, and forking a chat, slash
+commands and reviewing changes in **v0.9.2-dev.1**, and compaction in the chat's stats, review
+strictness, a context size per provider, a default permission mode, Kagi search, the changed
+files list and read-only git tools in **v0.9.2-dev.2**, and skills and background replies (a
+limit on replies at once with a queue, a time limit, desktop notifications, the Background
+settings, and keeping running in the menu bar or system tray), scheduled tasks, hooks around
+tool calls and when a reply is done, and the command-line mode (`cleanrstai exec`, with its
+settings on the Background tab) in **v0.9.2-dev.4**, and projects, memory, plan mode, committing
+from the chat, the provider's own web search (Anthropic, OpenAI Responses and OpenRouter),
+saving replies and artifacts as Word, PDF and Excel files, OCR for scanned PDFs, Cloudflare
+Access in front of a named tunnel, conversation branches, voice input and reading replies
+aloud, and the live web page preview on Linux (in a window of its own, when WebKitGTK is
+installed) in **v0.9.2-dev.5**, and the new desktop design (a dark-first neutral palette, the
+sidebar with pages and a title row with back/forward and a Chat/Code switch, the home screen with
+a serif greeting and recent artifacts, the strip of pickers under the message box, skills in the
+slash menu, voice mode and a microphone picker, Settings as a modal with an Appearance page, and
+reduce motion) in **v0.9.2-dev.6**, and the Scheduled page for scheduled agents in
+**v0.9.2-dev.7**, and the title row fitting beside the macOS traffic lights in **v0.9.2-dev.8**; all of them reached the stable release in **v0.9.2**. Signed builds are
+not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
@@ -45,6 +63,14 @@ Unticked items are still open.
   greeting on new chats, user messages in bubbles and the model picker under the message box
 - [x] Compact tool-call cards, with arguments and results expandable
 - [x] Settings as a full page with a search box
+- [x] New desktop design in **v0.9.2-dev.6**: dark-first neutral greys with one warm accent, a
+  serif greeting, a fixed sidebar (New, Search, Projects, Artifacts, Scheduled, Design,
+  Customize, collapsible Recents with status marks, an account footer), a title row with
+  back/forward and a Chat/Code switch (traffic lights in the sidebar on macOS), a home screen with
+  the composer in the middle and recent artifact cards, Projects and Artifacts pages, a strip of
+  text pickers under the composer (project or folder, model, effort, permission mode), skills in
+  the slash menu, voice mode and a microphone picker, Settings as a dimmed modal with grouped
+  pages, live search and an Appearance page, and Reduce motion
 - [x] Command palette (⌘K) and keyboard shortcuts
 - [x] Screen-reader labels on icon-only buttons
 - [x] Accessibility pass: focus order and a high-contrast check. A visible focus ring while
@@ -121,8 +147,9 @@ source):
 - [x] macOS signing and notarization in the release workflow (Developer ID, hardened runtime,
   stapled app and DMG)
 - [x] Windows Authenticode signing of the `.exe` and `.msi` in the release workflow
-- [ ] Add the Apple and Windows certificates as repository secrets and ship a signed release
-  (see the README for the secret names)
+- Not planned: add the Apple and Windows certificates as repository secrets and ship a signed
+  release. This project doesn't ship signed builds; the signing steps stay in the workflow,
+  unused (see the README for the secret names).
 - [x] macOS `.dmg`
 - [x] Windows `.msi` installer
 - [x] In-app update check against GitHub Releases
@@ -220,7 +247,7 @@ Later, beyond the first version:
   with a token for a named tunnel, so the server is reachable from outside the network without
   opening a port on the router; show the public address, and keep the login required. Also
   quick tunnels (`trycloudflare.com`, no account, optional email check)
-- [ ] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
+- [x] Cloudflare Access in front of the tunnel (optional), for single sign-on before the login
 
 ## 14. Docker sandbox for tools
 
@@ -270,8 +297,8 @@ in them follows the same rule:
   alternative, switched separately
 - [x] Use the context size the provider reports (llama.cpp, LiteLLM, Ollama, LM Studio, vLLM,
   OpenRouter), or one set in Settings when the server doesn't report one
-- [ ] A context size per provider or model, instead of the one setting
-- [ ] Count compaction requests in the chat's stats and cost
+- [x] A context size per provider, instead of the one setting
+- [x] Count compaction requests in the chat's stats and cost
 
 ## 16. Project instructions
 
@@ -283,18 +310,18 @@ in them follows the same rule:
 
 ## 17. Projects
 
-- [ ] Group chats into projects with shared instructions, attached files and a default
+- [x] Group chats into projects with shared instructions, attached files and a default
   workspace folder, provider, model and tool switches
-- [ ] Settings: on/off (off hides projects from the sidebar), and the default for new projects
-- [ ] Move chats in and out of a project; export and import projects with the chats
+- [x] Settings: on/off (off hides projects from the sidebar), and the default for new projects
+- [x] Move chats in and out of a project; export and import projects with the chats
 
 ## 18. Memory
 
-- [ ] Facts the model saves across chats (a `memory` built-in tool and a list in Settings),
+- [x] Facts the model saves across chats (a `memory` built-in tool and a list in Settings),
   added to the system prompt of new chats
-- [ ] Settings: on/off, saving with or without approval, a size limit, and global or per-project
+- [x] Settings: on/off, saving with or without approval, a size limit, and global or per-project
   scope
-- [ ] View, edit and delete memories in Settings; per chat: turn memory off (an "incognito" chat)
+- [x] View, edit and delete memories in Settings; per chat: turn memory off (an "incognito" chat)
 
 ## 19. Safe file edits
 
@@ -302,36 +329,40 @@ in them follows the same rule:
   tool card
 - [x] Checkpoints: keep the files' previous content for each turn, with **Undo file edits** under
   the turn's reply (and in ⌘K); files changed again since are left alone
-- [ ] A list of the files a chat changed, with their diffs together
+- [x] A list of the files a chat changed, with their diffs together
 - [x] Settings: diff preview on/off, checkpoints on/off, how long and how much to keep; per chat
   in the tools menu
-- [ ] Optional Git awareness when the workspace is a repository: `git_status` and `git_diff`
-  tools, and commit (with approval), each switched separately
+- [x] Read-only `git_status` and `git_diff` workspace tools
+- [x] Commit from the chat (with approval): a `git_commit` workspace tool (off by default, in
+  Settings and per chat) that commits the chosen paths, or every change, locally and never
+  pushes; every commit asks, in every mode but Allow all; and a **Commit…** dialog in the
+  changed files window and the command palette
 
 ## 20. Approval modes
 
 - [x] Named modes: **Read only** (no writes or commands), **Ask** (today's behaviour), **Auto in
   workspace** (writes and sandboxed commands run freely, the rest asks) and **Full access**
-- [ ] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
+- [x] A plan mode: the model only reads and proposes a plan, then waits for **Approve plan**
   before it changes anything
-- [ ] Settings: the default mode and which modes are offered; per chat: pick the mode under
-  the message box (and with ⌘K)
+- [x] Settings: the default mode for new chats; per chat: pick the mode in the tools menu and
+  with ⌘K
 
 ## 21. Web search
 
 - [x] A built-in `web_search` tool with a choice of backend (DuckDuckGo without a key, SearXNG,
   Brave, Tavily), with the API key in the keychain
-- [ ] More backends: Kagi, and the provider's own search when it has one
+- [x] Kagi Search API backend
+- [x] The provider's own search when it has one
 - [x] Settings: on/off, backend, result count, safe search, approval (like `fetch`), and whether
   subagents may use it
 - [x] Per chat: on/off in the tools menu, like the other built-in tools
 
 ## 22. Conversation branching
 
-- [ ] Keep the old reply when regenerating and the old turns when editing a message, as
+- [x] Keep the old reply when regenerating and the old turns when editing a message, as
   branches, with ‹ 1/3 › arrows to switch between them
-- [ ] Fork a chat from any message into a new chat
-- [ ] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
+- [x] Fork a chat from any message into a new chat
+- [x] Settings: on/off (off restores today's behaviour of replacing the reply), and a limit on
   branches kept per message
 
 ## 23. Model options
@@ -348,44 +379,50 @@ in them follows the same rule:
 - [x] Live HTML preview in the artifact panel on macOS (WebKit) and Windows (WebView2): a switch
   to keep "Open in browser" only, and settings for whether scripts may run and whether the page
   may load from the network (off by default); links open in the browser
-- [ ] Live HTML preview on Linux (WebKitGTK, which the release builds don't link yet)
-- [ ] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
+- [x] Live HTML preview on Linux in a window of its own, when WebKitGTK is installed (it is
+  loaded at run time, as the release builds link neither GTK nor WebKitGTK; without it, or a
+  display, pages open in the browser)
+- [x] Voice input (a local Whisper model or an OpenAI-compatible transcription endpoint) and
   reading replies aloud (a TTS endpoint or the OS voice), each with its own switch, provider
   and shortcut
-- [ ] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
+- [x] Save replies or artifacts as `.docx`, `.pdf` or `.xlsx`, switched in Settings
 
 ## 25. Commands, skills and hooks
 
-- [ ] Slash commands: saved prompts with arguments, typed as `/name` in the message box, kept in
+- [x] Slash commands: saved prompts with arguments, typed as `/name` in the message box, kept in
   Settings and optionally in the workspace (`.cleanrstai/commands/`)
-- [ ] Skills: folders of instructions and files the model loads when a task matches, each
+- [x] Skills: folders of instructions and files the model loads when a task matches, each
   with its own on/off switch
-- [ ] Hooks: run a command before or after a tool call, or when a reply finishes (for example
+- [x] Hooks: run a command before or after a tool call, or when a reply finishes (for example
   a formatter after `edit_file`), each with its own switch, in the sandbox when it is on
-- [ ] Settings: each of the three on/off, and the list of commands, skills and hooks
+- [x] Settings: each of the three on/off, and the list of commands, skills and hooks
 
 ## 26. Headless and background work
 
-- [ ] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
+- [x] A command-line mode (`cleanrstai exec "…"`) that runs one request with the saved
   settings and prints the reply, for scripts and CI; turned on in Settings, with its own
   approval mode (read only by default)
-- [ ] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and
-  Windows/Linux system-tray icons to reopen the window or quit
-- [ ] Background tasks: start a request that keeps running when the chat is closed, and notify
-  when it finishes or needs approval
-- [ ] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
-- [ ] Settings: on/off for each, and limits (how many at once, time limit)
+- [x] Keep CleanRSTAI running when its window is closed, with a macOS menu-bar icon and a
+  Windows system-tray icon to reopen the window or quit (a Linux tray is still to come)
+- [x] Background tasks: a request keeps running when another chat is open, and notifies when
+  it finishes, fails or needs approval
+- [x] Scheduled tasks: run a saved prompt on a schedule into a chat, with on/off per task
+- [x] A **Scheduled** page for scheduled agents in **v0.9.2-dev.7**: cards with their schedule, next and last run,
+  **Run now**, an editor, duplicate and delete, each agent's recent runs with their state, a
+  switch to pause them all, and templates to start from
+- [x] Settings and limits for background replies: notifications on or off, how many run at once
+  (the rest queue) and a time limit.
 
 ## 27. Code review
 
-- [ ] **Review changes**: send the workspace's uncommitted diff, or a branch against its base,
+- [x] **Review changes**: send the workspace's uncommitted diff, or a branch against its base,
   to the model with a review prompt and show findings as a list
-- [ ] Settings: on/off, review prompt, model (the chat's or a provider profile) and how strict
-  to be
+- [x] Settings: on/off, review prompt, model (the chat's or a provider profile), how strict to
+  be, base branch and diff size
 
 Smaller items from the same comparison:
 
-- [ ] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
+- [x] OCR for scanned PDFs without a text layer (a local engine or a vision model), switched in
   Settings
 - [x] Share a chat as a single HTML file alongside the Markdown export
 

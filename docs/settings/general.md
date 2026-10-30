@@ -7,7 +7,8 @@ nav_order: 1
 # General
 {: .no_toc }
 
-Appearance, behaviour, secrets and data.
+Behaviour, secrets, remote access, updates and data. Theme, size, motion and how replies look
+are on the [Appearance](appearance.html) page.
 
 1. TOC
 {:toc}
@@ -15,15 +16,6 @@ Appearance, behaviour, secrets and data.
 ## System prompt
 
 The instructions sent at the start of every chat. Default: *You are a helpful assistant.*
-
-## Theme
-
-**System** (default) follows your operating system; **Light** and **Dark** fix it. You can
-also switch from the command palette.
-
-## UI scale
-
-Scales the whole interface from 0.5× to 2.5× (default 1.0×).
 
 ## Sending
 
@@ -78,6 +70,12 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
     **Show** toggle. It is kept in the keychain like your API keys.
   - **Public hostname** (named tunnel): optional, the hostname of the tunnel's route, such as
     `chat.example.com`. The app also learns it from `cloudflared` once the tunnel connects.
+  - **Cloudflare Access** (named tunnel only): tick *Require Cloudflare Access in front of the
+    tunnel's hostname* to require an Access login before the app's login page. Enter the **Team
+    domain** (`name.cloudflareaccess.com`) and the **Audience (AUD) tag** of the Access application.
+    *Sign in with Access* also signs the browser in, so the app password is not asked. The status
+    line shows the last Access error or a missing team domain or tag. See
+    [Cloudflare Access](../using/cloudflare-tunnel.html#cloudflare-access-sign-in-before-the-login).
   - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
     with **Browse…**.
   - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy
@@ -100,39 +98,38 @@ logs browsers out; a change to the tunnel settings alone restarts only the tunne
 
 See [Updates](../using/updates.html).
 
-## Reasoning
-
-How a reasoning model's **Thought process** section starts out:
-
-- **Collapsed** (default)
-- **Expanded**
-- **Expanded while thinking**: open while the model reasons, collapsed once it answers.
-
-## Stats
-
-**Show prefill/decode speed and token counts under responses** (default on).
-
-## Images
-
-**Load web images in replies** (default off). When off, images from the web show as links.
-Loading them tells the image's server that the chat was opened, and a reply could put chat
-contents in the image address.
-
 ## Artifacts
 
-**Open web pages, drawings and long code in a side panel** (default on). When a reply makes an
-[artifact](../using/chats.html#artifacts), the panel opens beside the chat. When off, open it with
-**Open in panel** by its link in the reply, or the panel button in the top bar.
+How the artifact panel opens is on the [Appearance](appearance.html) page.
 
 ### Web page preview
 
 | Setting | Default | Description |
 |---|---|---|
-| **Show web pages live in the panel** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). Off: the panel shows the code, and **Open in browser** opens the page. Linux builds have no web view, so pages open in the browser there. |
+| **Show web pages live in the panel** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). On Linux the panel's **Open live preview** button shows the page in a window of its own, when WebKitGTK is installed (see below). Off: the panel shows the code, and **Open in browser** opens the page. |
 | **Let pages run their scripts** | on | Off blocks every script in the page. |
 | **Let pages load from the network** | off | Off: scripts, styles, fonts, images and requests from the web are blocked, so a page can't send chat content anywhere; what is written into the page itself still works. Pages that load a library from a CDN need this on. |
 
-Links in a previewed page open in your browser, never in the panel.
+On Linux the page opens in its own window, with the same settings for scripts and the network.
+WebKitGTK is not part of the release files, so install it first: `libwebkit2gtk-4.1-0` on Debian
+and Ubuntu, `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch. The checkbox's note says whether
+it was found. Without it, or without a display, **Open live preview** opens the page in your
+browser instead, with a notice the first time.
+
+Links in a previewed page open in your browser, never in the panel or the Linux window.
+
+## Save as files
+
+Which formats the **Save as…** menu of a [reply or artifact](../using/chats.html#saving-as-files)
+offers. The menu lists only the checked formats that suit the content.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Word document (.docx)** | on | Replies and Markdown, code and CSV artifacts can be saved as Word documents. |
+| **PDF (.pdf)** | on | Replies and Markdown, code and CSV artifacts can be saved as PDF files on A4 pages. |
+| **Excel workbook (.xlsx)** | on | Replies with a table, and CSV and TSV artifacts, can be saved as Excel workbooks: one sheet per table. |
+
+With all three off, no reply or artifact offers **Save as…**.
 
 ## Tool calls
 
@@ -141,6 +138,36 @@ Links in a previewed page open in your browser, never in the panel.
 {: .warning }
 > This skips every approval, including web fetch and the workspace tools that write files and
 > run shell commands.
+
+**New chats start in** (default **Default permissions**) picks the [permission mode](../using/tools.html#permissions)
+a new chat starts in: Default permissions, Auto in workspace, Allow all or Read only. Each chat
+can change its own mode in the tools menu or with ⌘K; chats that already exist keep theirs.
+
+## Plan mode
+
+**Offer Plan in the permission menus** (default on) lists Plan in the permission menus, for a chat or
+a new one; off, Plan is hidden and a chat set to it is read only. A Plan chat uses the
+[Plan permission](../using/tools.html#permissions): the model reads, searches and proposes a numbered
+plan, and changes nothing until you press **Approve plan** under the reply.
+
+**Mode after approval** (default **Default permissions**) is the mode the chat switches to when you
+approve a plan. Plan and Read only are not offered, since the plan is meant to run.
+
+**Approval message** (default "The plan is approved. Carry it out.") is the message sent to the model
+on approval. An empty message restores the default.
+
+**Plan instructions** is the system prompt section a Plan chat gets, in place of the default text;
+an empty field restores it, and **Reset** does the same.
+
+## Branches
+
+**Keep the version a reply replaces** (default on): retrying a reply or editing a message keeps
+the version it replaces, and arrows switch between the versions. See
+[Editing and retrying](../using/chats.html#branches). Off, the replaced version is dropped as
+before; versions already kept stay switchable. A chat's **Branches** switch overrides this.
+
+**Versions kept per message** is how many older versions of one message are kept: 1 to 50,
+default 10. The oldest is dropped beyond that.
 
 ## Max tool rounds
 

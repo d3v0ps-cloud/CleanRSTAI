@@ -20,9 +20,10 @@ workspace tools (when a chat has a folder) and [MCP servers](mcp.html).
 |---|---|---|
 | **Time & date** | The current date, time, weekday and time zone, and the time at other UTC offsets. | No |
 | **Calculator** | Exact arithmetic and functions: powers, roots, logarithms, trigonometry, rounding, min/max/avg. | No |
+| **Skills** | Loads a skill (a folder of instructions, see [Skills & hooks](../settings/skills-and-hooks.html#skills)) by name, or one of its other files. Offered only when skills exist. | No |
 | **Task list** | For multi-step requests the model breaks the work into tasks, shows them as a checklist in the chat and ticks them off. | No |
 | **Web fetch** | Reads an http(s) URL. Pages come back as readable text with their links, plain text and JSON as they are, images as images. Long pages are read in parts; downloads stop at 5 MB. | Yes |
-| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave or Tavily) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search) |
+| **Web search** | Searches the web (DuckDuckGo by default, or SearXNG, Brave, Tavily or Kagi) and lists the results with their addresses and snippets; the model then reads the useful pages with web fetch. With **Search with** set to the provider's own search, Anthropic, OpenAI (Responses) or OpenRouter searches instead, and the reply lists the pages it cited under "Searched the web". | Yes, unless turned off in [Built-in Tools](../settings/built-in-tools.html#web-search). The provider's own search doesn't ask |
 
 Web fetch only reaches public internet addresses: not localhost, private networks or cloud
 metadata endpoints, also after a redirect. To reach those, turn on *Let web fetch reach this
@@ -30,7 +31,8 @@ computer and private networks* in [Built-in Tools](../settings/built-in-tools.ht
 
 ## Workspace
 
-Click **Set working directory** under the message box and choose a folder. The model then gets
+Click **Project or folder** under the message box and pick a recent folder or **Choose a
+folder…** (in [Code mode](chats.html#chat-and-code) a new chat starts in the last folder used). The model then gets
 these tools for that chat:
 
 | Tool | What it does | Asks first? |
@@ -39,12 +41,48 @@ these tools for that chat:
 | `file_glob_search` | Find files by glob pattern | No |
 | `grep_search` | Search file contents with a regular expression | No |
 | `get_info` | The workspace's path, OS, shell, git branch and top-level contents, or a file's or folder's details | No |
+| `git_status` | The repository's status: the branch, and the changed, staged and untracked files | No |
+| `git_diff` | The repository's diff: unstaged changes, or staged ones with `staged`; optionally one `path` or against a `base` branch, tag or commit | No |
+| `git_commit` | Commit the folder's changes, or only the `paths` given, as one local commit. Off unless turned on (see [Commits](#commits)) | Yes, every time |
 | `write_file` | Create or overwrite a file | Yes |
 | `edit_file` | Replace exact text in a file | Yes |
 | `exec_shell_command` | Run a command in the folder (`sh`, or `cmd` on Windows); 120 s by default, at most 600 s | Yes |
 
 Every path stays inside the folder: `..`, absolute paths outside it and symlinks that lead out
 are refused. Searches skip files ignored by `.gitignore`.
+
+`git_status` and `git_diff` only read, so they run on this computer even when the Docker sandbox
+is on. A repository's own config can't make them run programs: its fsmonitor hook, external diff
+drivers, textconv filters and clean, smudge and process filters are switched off, submodules are
+left out, and repository hooks never run.
+
+### Commits
+
+`git_commit` records the folder's changes as one commit in its git repository, with a message the
+model writes. It is off by default: turn it on under **Settings → Built-in Tools** (**Commit
+(git_commit)**, which needs the workspace tools on) or per chat in the tools menu, where it sits
+with the other workspace tools. In **Read only** mode it isn't offered.
+
+- **Approval.** Every commit asks, even in **Auto in workspace** mode and with **Run all tools
+  without asking** on. The prompt shows the message, the files that would be committed and the
+  diff summary. **Always allow** isn't offered for commits. Only **Allow all** runs one without
+  asking.
+- **What is committed.** Without `paths`, every change in the folder, including new files and
+  deletions. With `paths`, only those files (relative to the folder; a path outside it is
+  refused). Files you staged yourself elsewhere stay staged, so they don't end up in the commit.
+- **What never happens.** Nothing is pushed, and commits are never amended. Git hooks don't run,
+  so a `pre-commit` script in the repository doesn't. Commits aren't signed unless **Allow signed
+  commits** is on in Settings, and then only where the repository's git config asks for signing.
+- **Identity.** Git needs a name and an email for the commit. If they aren't set, the tool says
+  how: `git config user.name "Your Name"` and `git config user.email you@example.com`.
+- **Limits.** Files with a git filter driver (such as Git LFS) are committed as they are on disk,
+  because the app doesn't run the repository's filters. Subagents can't commit.
+
+**Commit…** in the **Changed files** window, or **Commit changes…** in the command palette, opens
+a dialog for you to commit by hand: a message, the folder's changed files with a checkbox each
+(all checked to start), and a **Commit** button. Clicking **Commit** is your approval, so the
+dialog works in Read only mode too. It waits while a reply is running in the chat. It needs the
+folder to be a git repository.
 
 Hover over the folder name to see the full path; click it to choose another folder, or click
 **×** to stop using it.
@@ -68,6 +106,22 @@ an undone edit says **Undone**. **Undo the last turn's file edits** in the comma
 the same for the latest turn. Both can be turned off in
 [Context & files](../settings/context.html#workspace-file-edits).
 
+**Changed files** in the tools menu (under **Chat features**), or **Show files changed in this
+chat** in the command palette, opens a read-only window listing every file the current chat's
+edits changed. Each file has a collapsible section with the number of lines added and removed,
+and each edit to it shows its diff, marked **Undone** where it was undone. It follows the chat
+you have open, and it has no undo buttons: use **Undo file edits** for that. Its **Commit…**
+button opens the [Commit dialog](#commits) for the folder's changes.
+
+### Reviewing changes
+
+**Review changes** (the sliders button next to the message box, or the command palette) sends
+the working folder's git diff to a model with a review prompt. The diff is attached as
+`changes.diff`, and the model's findings come back as a normal reply in the chat, so you can
+follow up on them there. It reads the uncommitted changes by default, or the branch against its
+base. The review model, the prompt and the diff size limit are set under
+[Context & files](../settings/context.html#code-review).
+
 ## Docker sandbox
 
 With the [Docker sandbox](../settings/docker.html) on, **Run command** (`exec_shell_command`)
@@ -82,22 +136,32 @@ your computer.
 
 ## Per-chat tool switches
 
-The tools menu (sliders icon) next to the message box lists the built-in tools, the workspace
+The tools menu (**Tools** in the message box's **+** menu) lists the built-in tools, the workspace
 tools when the chat has a folder, and every MCP server and its tools, each with a switch. The
 switches apply to the current chat from the next message. Defaults for new chats are in
 [Settings → Built-in Tools](../settings/built-in-tools.html) and
 [MCP Servers](../settings/mcp-servers.html).
 
 Under **Chat features**, the same menu switches **Context compaction**, **Project
-instructions** and **Undo for file edits** for the chat (defaults in
-[Context & files](../settings/context.html)), and **Compact now** summarises the chat's older
-messages straight away.
+instructions**, **Undo for file edits**, **Hooks**, **Branches** and **Memory** for the chat (defaults in
+[Context & files](../settings/context.html) and [Skills & hooks](../settings/skills-and-hooks.html)),
+and **Compact now** summarises the chat's older messages straight away. Memory switched off makes
+the chat [incognito](memory.html#incognito-chats).
+
+## Hooks
+
+Hooks are commands you set in [Skills & hooks](../settings/skills-and-hooks.html#hooks). They
+run on your computer (or in the Docker sandbox, when it is on) before a tool call, after one, or
+when a reply is done. A hook can block a call, such as a `write_file` you don't want, and an
+after-tool hook's output is added to the tool's result, where the model reads it. The **Hooks**
+switch under **Chat features** turns them off for the current chat; a chat that has them off
+runs none.
 
 ## Approving tool calls
 
 Tools that reach outside the app or change things ask first: MCP tools, web fetch, web
-search (unless turned off), `delegate` (subagents) and the workspace tools that write files or
-run commands. The card shows the tool and its arguments (or, for `write_file` and `edit_file`,
+search (unless turned off; not the provider's own search, which runs on the provider's side),
+`delegate` (subagents) and the workspace tools that write files or run commands. The card shows the tool and its arguments (or, for `write_file` and `edit_file`,
 the change as a diff) and asks **Allow this tool to run?**:
 
 - **Run**: run this call.
@@ -112,13 +176,17 @@ the change as a diff) and asks **Allow this tool to run?**:
 
 **Permissions** at the top of the tools menu picks how this chat's tool calls are approved,
 from the next call on. The tools menu icon turns the accent colour when a chat changes it.
+New chats start in the mode set under [Settings → General](../settings/general.html#tool-calls)
+(Default permissions unless changed). The ⌘K command palette has a "Permissions: …" entry for
+each mode, which sets the current chat's mode (or the next chat's, before a chat is open).
 
 | Mode | What happens |
 |---|---|
 | **Default permissions** (default) | Calls ask as described above, unless the setting below or "Always allow" says otherwise. |
-| **Auto in workspace** | `write_file`, `edit_file` and commands in the Docker sandbox run without asking; commands on this computer, MCP tools, web fetch and `delegate` still ask. |
+| **Auto in workspace** | `write_file`, `edit_file` and commands in the Docker sandbox run without asking; commands on this computer, commits (`git_commit`), MCP tools, web fetch and `delegate` still ask. |
 | **Allow all** | Every tool call runs without asking, as with the setting below but for this chat only. |
 | **Read only** | The workspace tools that write files or run commands are off (also for subagents); other tools ask as by default. |
+| **Plan** | Read only, plus a plan: the model investigates with the read-only tools and replies with a numbered plan. Under the reply, **Approve plan** switches the chat to the mode set in [Settings → General](../settings/general.html#plan-mode) (Default permissions unless changed) and sends the approval message; **Keep planning** leaves the chat as it is. Plan is listed only while Plan mode is on in Settings; with it off, a chat set to Plan is read only. |
 
 **Sandboxing for terminal** (on when the [Docker sandbox](#docker-sandbox) is on) runs this
 chat's commands in the sandbox. Turn it off to run them on this computer; subagents then get no

@@ -21,7 +21,7 @@ endpoint and gives the model tools through **MCP servers** (stdio and Streamable
 macOS is the primary platform and Linux is fully supported. Windows builds are released
 too, as an installer and a portable `.exe`.
 
-![A chat working in a project folder: the model searches the code, reads a file and suggests a fix](docs/screenshot.png)
+![A chat in Code mode: the model searches the code, reads a file and suggests a fix](docs/screenshot.png)
 
 ## Features
 
@@ -33,7 +33,7 @@ too, as an installer and a portable `.exe`.
   (reasoning summaries, reasoning kept between tool calls) and Anthropic's **Messages** API
   (extended thinking, prompt caching).
 - **Reasoning effort and sampling**: reasoning effort, thinking budget, temperature, top-p,
-  max tokens and stop sequences per provider, per model and per chat (from the sparkle menu
+  max tokens and stop sequences per provider, per model and per chat (from the effort label
   under the message box), each left to the server until you set it.
 - **Model discovery**: *Fetch models* calls `GET /models` and fills the model picker.
 - **Streaming** responses (SSE), with a non-streaming fallback for servers that don't support it.
@@ -52,7 +52,7 @@ too, as an installer and a portable `.exe`.
   server reports (load state, GPU memory, quantization, queue and KV cache, prices, credit
   left). Set **Server type** on a provider (or click **Detect**) to get these extras.
 - **Reasoning display**: `reasoning_content` / `reasoning` output appears in a *Thought
-  process* section, collapsed by default. **Settings → General → Reasoning** can keep it expanded, or
+  process* section, collapsed by default. **Settings → Appearance → Reasoning** can keep it expanded, or
   expanded only while the model is thinking.
 - **Built-in tools** that work without any MCP server:
   - **Time & date**: the current date, time, weekday and time zone, and the time at other UTC
@@ -68,30 +68,57 @@ too, as an installer and a portable `.exe`.
     *Let web fetch reach this computer and private networks* is on.
   - **Web search**: searches the web and lists the results (title, address, snippet) for the
     model to read with web fetch. DuckDuckGo works without an account; a SearXNG instance
-    (your own, even on localhost), the Brave Search API or Tavily can be chosen instead, with
-    the result count, safe search and whether to ask before each search.
+    (your own, even on localhost), the Brave Search API, Tavily or the Kagi Search API can be
+    chosen instead, with the result count, safe search and whether to ask before each search.
+    Anthropic, OpenAI (Responses API) and OpenRouter can search with their own search instead,
+    and the reply lists the pages it cites.
 
   Time, calculator and task list run locally without asking. Web fetch and web search reach the
   internet, so they ask for approval like MCP tools do ("Always allow this tool" skips that for
   the rest of the chat). Switch each one in **Settings → Built-in Tools**.
-- **Workspace**: give a chat a local working folder with **Set working directory** under the
-  message box, and the model gets tools to work in it: `read_file`, `file_glob_search`,
-  `grep_search` and `get_info` run freely; `write_file`, `edit_file` and
+- **Workspace**: give a chat a local working folder with **Project or folder** under the
+  message box (or switch the title row to **Code**), and the model gets tools to work in it: `read_file`, `file_glob_search`,
+  `grep_search`, `get_info`, `git_status` and `git_diff` run freely; `write_file`, `edit_file` and
   `exec_shell_command` ask for approval first. Every path is kept inside the folder (no `..`,
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
   **Settings → Built-in Tools** or per chat.
+  - **Commits**: with **Commit (git_commit)** on (off by default), the model can commit the
+    folder's changes, or chosen files, to its git repository locally. Every commit asks for
+    approval, nothing is pushed, and a **Commit…** dialog does the same by hand.
   - **Project instructions**: an `AGENTS.md` or `CLAUDE.md` in the folder (names, order,
     parent folders and size limit are configurable) goes into the system prompt.
   - **Diffs and undo**: `write_file` and `edit_file` show their change as a diff on the
     approval prompt and in the tool card, and keep a checkpoint, so **Undo file edits** puts
-    back the files a turn changed (files changed again since are left alone).
+    back the files a turn changed (files changed again since are left alone). **Changed files**
+    lists every file a chat changed, with its diffs.
+- **Slash commands**: saved prompts typed as `/name` in the message box, with `{{args}}`
+  filled in, kept in Settings or as `.cleanrstai/commands/*.md` files in the chat's folder.
+- **Skills**: folders of instructions (a `SKILL.md` file, optionally with a name and a
+  description in front matter) from your skills folder or the chat's `.cleanrstai/skills`
+  folder. The model sees their names and descriptions and loads one with `load_skill` when a
+  task matches; other files in a skill's folder can be read the same way. Each skill can be
+  switched off, and **Settings → Skills & hooks** has the size limit and an **Open skills
+  folder** button.
+- **Hooks**: commands from Settings that run before a tool call (a non-zero exit blocks the
+  call), after one (the output is added to the result), or when a reply is done (the output is
+  a notice), with a tool-name filter, a timeout and a per-chat switch. They run in the chat's
+  folder, or in its Docker sandbox when that is on.
+- **Projects**: group chats, listed as cards on the **Projects** page. A project's instructions and reference files go to
+  every chat in it, and its folder, provider, model, tool switches and permission mode are what
+  a new chat starts with. Export a project with its chats to one file, and import it again.
+- **Memory** (off by default): the model can save facts about you (with your approval, if you
+  like) and delete them, and the saved facts go into the system prompt of new replies. Global or
+  per project, with a size limit, and an incognito chat with no memory at all.
 - **Context compaction**: when a chat nears the model's context size, the older messages are
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
   older tool results can be shortened instead. Threshold, kept messages, context size and the
   summary instructions are in **Settings → Context & files**; every one of these features can
   be switched per chat under **Chat features** in the tools menu.
+- **Code review**: **Review changes** sends the working folder's git diff (uncommitted changes,
+  or a branch against its base) to a model with a review prompt, as a normal chat reply. The
+  review model, prompt and size limit are in **Settings → Context & files**.
 - **Docker sandbox** (off by default): run the workspace shell commands in a Docker container
   with only the chat's folder mounted, no network by default (or only the hosts, ports and
   protocols you allow), and CPU, memory and process limits. Use a published image or a custom
@@ -106,6 +133,27 @@ too, as an installer and a portable `.exe`.
   model for simple tasks), system prompt, tool access, how many run at once, round limit and
   time limit. With the Docker sandbox on, subagents can also use the workspace, each running
   commands in a container of its own on the chat's network.
+- **Voice**: dictate into the message box with the microphone (⌘/Ctrl+Shift+M, with a
+  menu to pick the input device) through a cloud transcription service or a local Whisper server,
+  and have replies read aloud (⌘/Ctrl+Shift+S) with the system voice or a speech endpoint. **Voice
+  mode** (the waveform) sends what you say, reads the reply aloud and listens again. Both are off
+  by default; see **Settings → Voice**.
+- **Background replies**: a reply keeps running when you open another chat. The sidebar shows
+  which chats are replying, waiting for approval, queued or finished. Desktop notifications say
+  when a reply finishes, fails or needs approval (each chat can turn its own off). **Settings →
+  Background** sets those notifications, how many replies run at once (the rest wait in a
+  queue) and a time limit per reply. On macOS and Windows, closing the window can keep the app
+  running in the menu bar or system tray (not on Linux yet).
+- **Scheduled agents**: a saved prompt sent at set times (every so many minutes, daily or
+  weekly) into a new chat or a chat you pick, while the app is open. Each agent sets its approval
+  mode (read only by default), folder, provider and whether a missed run catches up. The
+  **Scheduled** page lists them as cards with their next and last run, **Run now**, an editor,
+  their recent runs and templates to start from; Settings → Background lists them too, and the
+  command palette runs one at once.
+- **Command line**: `cleanrstai exec "question"` runs one request with your saved settings and
+  prints the reply, for scripts and pipes (`git diff | cleanrstai exec --mode read-only "review this" -`).
+  Calls the approval mode doesn't allow are denied rather than asked. `--json` gives
+  one object with the reply, the tool calls and the stats. Turned on in **Settings → Background**.
 - **Per-chat tool switches**: the sliders menu next to the message box lists the built-in tools,
   the workspace tools when the chat has a folder, and every MCP server and tool, each with a
   switch for the current chat. Settings keeps the defaults for new chats.
@@ -130,15 +178,26 @@ too, as an installer and a portable `.exe`.
   approval prompt, **Always allow this tool** or **Always allow this server** skips approval
   for that tool or MCP server for the rest of the chat (until the app quits). **Permissions**
   in each chat's tools menu picks Default, Auto in workspace (file edits and sandboxed commands
-  run without asking), Allow all or Read only, and can switch the terminal sandbox off for it.
-- **Interface**: warm charcoal (dark) and warm paper (light) themes with a muted terracotta
-  accent; Instrument Sans for the interface and the model's replies. A new chat opens on a greeting with the message box centred under it and
-  the model picker beneath; your messages sit in bubbles on the right, replies run full
-  width, and tool calls show as collapsible cards. A collapsible sidebar with search, pinned
-  chats and recents, a full-page searchable settings screen and a ⌘K command palette. Fonts
-  are bundled (SIL OFL, see `assets/fonts`).
+  run without asking), Allow all, Read only or Plan. In Plan, the model reads and proposes a
+  numbered plan, and **Approve plan** under the reply carries it out in the chat's chosen mode.
+  It can switch the terminal sandbox off for the chat.
+- **Interface**: dark first, flat and quiet: near-black neutral greys (or near-white ones),
+  hairline borders and one warm orange accent for the brand mark; Instrument Sans for the
+  interface and replies, Newsreader (a serif) for the greeting. A fixed sidebar (New, Search,
+  Projects, Artifacts, Scheduled, Customize, Recents and your name) with a title row for
+  back/forward (⌘[ and ⌘]) and a **Chat / Code** switch (Code lists the chats with a working
+  folder); on macOS the window has no title bar and the traffic lights sit in the sidebar. A new
+  chat opens on a greeting with the message box in the middle, a strip under it for the project
+  or folder, model, effort and permission mode, and cards for your newest artifacts; once it
+  starts, the chat is a narrow centred column with the box docked at the bottom. Typing **/**
+  lists slash commands and skills. Settings opens as a dimmed modal with grouped pages and live
+  search, and **Reduce motion** turns off the fades. A ⌘K command palette. Fonts are bundled
+  (SIL OFL, see `assets/fonts`).
 - **Conversations** are saved automatically and can be searched, renamed and deleted. You can
-  edit and resend a message, regenerate a reply, or stop a generation.
+  edit and resend a message, regenerate a reply, fork a chat from any message into a new chat,
+  or stop a generation.
+- **Branches**: regenerating a reply or editing a message keeps the version it replaces, and
+  **‹ k/N ›** arrows switch between the versions (up to 10 kept per message by default).
 - **Markdown rendering** with syntax-highlighted code blocks, tables and images. ```` ```mermaid ````
   blocks are drawn as diagrams, and ```` ```svg ```` blocks and inline `<svg>` markup as images;
   click one to enlarge it, or copy its source or save it as an SVG file. Images from the web
@@ -146,8 +205,11 @@ too, as an installer and a portable `.exe`.
 - **Artifacts**: web pages, SVGs, Mermaid diagrams, Markdown documents and longer code in a
   reply show in a side panel beside the chat, with preview and code tabs, versions, copy and
   save; the reply keeps a link that expands them inline. On macOS and Windows web pages run
-  live in the panel (scripts on, network off by default; both switchable), and any page can
-  open in your browser.
+  live in the panel, and on Linux in a window of their own when WebKitGTK is installed (scripts
+  on, network off by default; both switchable), and any page can open in your browser.
+- **Save as files**: a reply or a Markdown, code or CSV artifact can be saved as a Word document,
+  a PDF or an Excel workbook (one sheet per table, numbers as numbers), each format switched on
+  or off in Settings → General.
 - **Attachments**: attach files with the **+** button under the message box or by dropping
   them on the window.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to
@@ -155,8 +217,8 @@ too, as an installer and a portable `.exe`.
   - **Documents** are sent as their text: PDF (`.pdf`), Word (`.docx`, `.doc`), Excel
     (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`), PowerPoint (`.pptx`, `.ppt`, with speaker notes),
     OpenDocument (`.odt`, `.ods`, `.odp`) and RTF. Spreadsheets become one CSV block per
-    sheet and slides are numbered. Scanned PDFs without a text layer and password-protected
-    files can't be read.
+    sheet and slides are numbered. Scanned PDFs without a text layer are read by OCR when it is
+    on (a vision model, or Tesseract on your computer); password-protected files can't be read.
   - **Text files** of any kind (code, Markdown, CSV, JSON, logs…) are included inline, in
     UTF-8, UTF-16 or Windows-1252.
 
@@ -179,19 +241,20 @@ too, as an installer and a portable `.exe`.
   from anywhere through a Cloudflare Tunnel that the app runs for you (a quick
   `trycloudflare.com` address, or your own domain with a tunnel you set up in Cloudflare). API
   keys and MCP secrets stay on this computer, and the app must stay open. See
+  A named tunnel can also require Cloudflare Access sign-in before the login.
   [Remote access](https://d3v0ps-cloud.github.io/CleanRSTAI/using/remote-access.html) and
   [Cloudflare Tunnel](https://d3v0ps-cloud.github.io/CleanRSTAI/using/cloudflare-tunnel.html).
 - **Everything is configurable in the UI**: providers, MCP servers, system prompt, theme
-  (system/light/dark), UI scale, send key, tool approval, round limit and timeouts.
+  (system/light/dark), UI scale, reduce motion, send key, tool approval, round limit and timeouts.
 
 ### Screenshots
 
 | | |
 |---|---|
-| ![A new chat: greeting, message box and model picker](docs/new-chat.png) | ![The tools menu with built-in, workspace and MCP tools](docs/tools-menu.png) |
-| A new chat | Per-chat tool switches |
-| ![Subagents, the calculator and the task list in a chat](docs/tools-subagents.png) | ![MCP server settings](docs/settings-mcp.png) |
-| Subagents, calculator and task list | MCP server settings |
+| ![The home screen: greeting, message box and recent artifacts](docs/new-chat.png) | ![The + menu with this chat's tools](docs/tools-menu.png) |
+| The home screen | Per-chat tool switches |
+| ![The Scheduled page with two agents and their recent runs](docs/scheduled.png) | ![MCP server settings](docs/settings-mcp.png) |
+| Scheduled agents | MCP server settings |
 
 ## Build & run
 
@@ -304,15 +367,20 @@ console window.
 
 ## Configuration
 
-Open **Settings** (gear icon) (or press ⌘/Ctrl + ,); it opens on **General**.
+Open **Settings** from the menu on your name in the sidebar (or press ⌘/Ctrl + ,); it opens over
+the window on **General**.
 
 | Tab | What you can set |
 |---|---|
-| General | System prompt, theme, UI scale, send key, reasoning display, web images, auto-approve tools, max tool rounds, tool timeout, updates (and their source), remote access and Cloudflare Tunnel, export |
+| General | System prompt, send key, the live web page preview, auto-approve tools, max tool rounds, tool timeout, branches (keep the replaced version, versions kept per message), updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
+| Appearance | Theme, UI scale, your name, reduce motion, reasoning display, speed stats, web images, the artifact panel |
 | Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
 | MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| Built-in Tools | Time & date, calculator, task list, web fetch and workspace tools on or off by default |
+| Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
+| Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
+| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), projects (on or off, file size limit, and the defaults for new projects), memory (on or off, asking before saving, size limit, scope, and the saved memories), diffs and undo for file edits |
 | Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
+| Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up); command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
 | Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
 
 Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
@@ -400,7 +468,10 @@ Tools are shown to the model as `<server>__<tool>`, so give servers short, descr
 | ⌘/Ctrl + N | New chat |
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |
+| ⌘/Ctrl + [ / ] | Back / forward through the chats and pages you opened |
 | ⌘/Ctrl + , | Settings (Esc closes it when there are no unsaved changes) |
+| ⌘/Ctrl + Shift + M | Start or stop voice input (dictation into the message box) |
+| ⌘/Ctrl + Shift + S | Read the latest reply aloud, or stop reading |
 | Tab / Shift+Tab | Move between controls, with a visible focus outline; Space or Enter presses the focused button |
 
 ## Development
@@ -426,8 +497,10 @@ Source layout:
 ```
 src/
   main.rs         startup: PATH fix, tokio runtime, eframe window
-  app.rs          main UI: sidebar, chat view, input, event handling
-  ui/             theme and icons, chat view, markdown and drawings, settings page, palette
+  app.rs          main UI: chat view, input, event handling
+  app/shell.rs    the window's frame: title row, sidebar, home, Projects/Artifacts pages
+  ui/             theme and icons, window chrome (rows, cards, toggles), chat view, markdown
+                  and drawings, settings modal, palette
   agent.rs        generation loop: stream, run tool calls, repeat
   approval.rs     tool-call approvals and the per-chat "Always allow" list
   tools/          built-in tools (time, calculator, task list, fetch, workspace), per-chat switches
@@ -442,6 +515,8 @@ src/
   secrets.rs      OS keychain storage for API keys and tokens
   attach.rs       image, document and text file attachments
   documents.rs    text extraction for PDF, Office, OpenDocument and RTF files
+  ocr.rs          OCR for scanned PDFs: page images, a vision model or Tesseract
+  save_as.rs      Word, PDF and Excel files from replies and artifacts
   stats.rs        prefill / decode speed and token statistics
   update.rs       GitHub Releases update check and in-place install
   remote/         remote access: web server, login sessions, TLS, Cloudflare Tunnel, browser client

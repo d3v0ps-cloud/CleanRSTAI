@@ -12,18 +12,61 @@ nav_order: 1
 
 ## The window
 
-- **Sidebar** (left): **New chat**, a search box, pinned chats and recent chats, and
-  **Settings** at the bottom. Hide or show it with **⌘/Ctrl + B**.
-- **Top bar**: the sidebar, settings, command palette and [artifact panel](#artifacts) buttons,
-  plus an **Update to …**
-  link when a new version is out and a warning when an MCP server needs attention.
+The window is dark first and quiet: a sidebar on the left and a large canvas holding the chat,
+with hairline dividers and greys rather than colour. On macOS the window has no title bar of its
+own: the traffic lights sit at the top of the sidebar, and the strip along the top (the *title
+row*) moves the window when dragged and zooms it on a double click.
+
+- **Title row**: show or hide the sidebar (**⌘/Ctrl + B**), **Back** and **Forward**
+  (**⌘/Ctrl + [** and **⌘/Ctrl + ]**) through the chats and pages you opened, and the
+  **Chat / Code** switch ([below](#chat-and-code)). At the top right of the canvas, the ghost
+  starts an [incognito chat](memory.html#incognito-chats) (it is lit while one is open), with the
+  [artifact panel](#artifacts) button beside it in a chat that has artifacts, an **Update to …**
+  link when a new version is out, and the MCP status when servers are set up.
+- **Sidebar**: **New** (a new chat), then **Search** (a box that filters chats by title and text,
+  in both modes), **Projects**, **Artifacts** and **Scheduled** (pages in the canvas, below)
+  and **Customize**
+  ([Skills & hooks](../settings/skills-and-hooks.html)). **Recents** (click the label to fold it
+  away) lists the chats, pinned ones first; a long title fades out on the right, and a mark at the
+  right edge shows a chat's state ([below](#running-chats-in-the-background)) or, with a document
+  icon, that it has artifacts. The footer shows your name and the active provider, with a menu for
+  Settings, the command palette, shortcuts, the documentation and **Check for updates**; the
+  laptop button beside it opens [remote access](remote-access.html) (green while it runs).
+- **Home**: a new chat opens on a greeting (with your name from
+  [Appearance](../settings/appearance.html), or your account's), the message box in the middle,
+  and your three newest artifacts under it. The app starts here. Once the chat has a message, the
+  greeting and cards give way to the conversation: a narrow centred column, with the message box at
+  the bottom.
+- **Chat**: your messages sit in bubbles on the right; replies run the column's width, and tool
+  calls show as collapsible cards.
+- **Message box**: **+** opens a menu to attach files, this chat's **Tools** (switches,
+  permissions, compaction and review), MCP **Resources & prompts**, and **Commands and skills**.
+  On the right, the microphone (with a menu to pick the input device), then the waveform for
+  [voice mode](voice.html#voice-mode); once you type, the send button takes the waveform's place.
+  Typing **/** lists the [slash commands](../settings/skills-and-hooks.html) and skills that
+  match. The box grows with what you type, then scrolls.
+- **Under the message box**: **Project or folder** picks the chat's working folder (recent
+  folders, **Choose a folder…**, **No folder**) and its [project](projects.html); on the right,
+  the model, its reasoning effort (**· Medium**, or **· Default**) and the permission mode
+  (**Ask**, **Auto**, **Allow all**, **Read only** or **Plan**), each opening its own menu.
 - **Artifact panel** (right): web pages, drawings and longer code from replies.
-- **Chat**: your messages sit in bubbles on the right; replies run full width, and tool calls
-  show as collapsible cards.
-- **Message box** (bottom, or centred under the greeting in a new chat): **+** to attach
-  files, the tools menu (sliders icon), the model options menu (sparkle icon), the MCP menu
-  (books icon), the model picker and
-  **Set working directory**.
+- **Settings** opens over the window, which dims behind it; click outside or press **Esc** to
+  close it when nothing is unsaved.
+
+### Chat and Code
+
+The switch in the title row splits your chats in two: **Chat** lists the chats without a working
+folder, and **Code** the ones with one. A new chat in Code mode starts in the folder you used last
+(change it under the message box), and one in Chat mode has none. Opening a chat (from search,
+the palette or a project) switches to its mode, and the switch is remembered between runs.
+
+### Projects and Artifacts pages
+
+**Projects** lists each [project](projects.html) as a card with its folder, the first line of
+its instructions and its newest chats (**Show all** for the rest), **New chat** and a menu to
+**Edit**, **Export** or **Delete** it; **New project** and **Import…** sit at the top.
+**Artifacts** shows the artifacts of your recent chats (the 200 most recent) as cards with a
+preview, newest first; click one to open it in its chat's panel.
 
 ## Sending messages
 
@@ -33,13 +76,14 @@ While a reply is streaming, the send button becomes **Stop**.
 
 ### Choosing a model
 
-The model picker under the message box lists your provider profiles and the models fetched
-for each, and you can type a model name. **⌘/Ctrl + K** opens the command palette, where you
+The model's name under the message box (shown without an `org/` prefix) opens the picker: your
+provider profiles and the models fetched for each, and you can type a model name. **⌘/Ctrl + K** opens the command palette, where you
 can also switch provider or model.
 
 ### Model options
 
-The sparkle menu under the message box sets **Reasoning effort**, **Thinking budget**,
+The effort label under the message box (**· Default** until one is set) opens the model
+options for this chat: **Reasoning effort**, **Thinking budget**,
 **Temperature**, **Top-p**, **Max tokens** and **Stop sequences** for this chat only. Unset
 options show the default they inherit from the provider and model
 ([Settings → Providers](../settings/providers.html#reasoning-and-sampling)), or "server default".
@@ -152,6 +196,17 @@ the context is full, the server may drop older parts of the chat or refuse the r
 start a new chat before it gets there, or let the app compact it (below). Other server types
 don't report their context size, so no figure is shown for them.
 
+### Slash commands
+
+A saved prompt can be sent by typing its name after a slash: `/explain fn main() {}` sends the
+*explain* prompt with `fn main() {}` filled in. Type `/` in the message box and the matching
+commands are listed above it; click one to put its name in the box. The message in the chat is
+the expanded prompt, not the command. Commands come from
+[Settings → Skills & hooks](../settings/skills-and-hooks.html#slash-commands), and from
+`.cleanrstai/commands/` in the chat's working folder: each `<name>.md` file there is a command,
+and a first line `description: …` gives its description. A folder command replaces a setting
+with the same name. A `/name` that matches no command is sent as typed.
+
 ## Long chats
 
 When a request would fill most of the model's context, the app *compacts* the chat: a model
@@ -159,7 +214,8 @@ summarises the older messages, and from then on only that summary (in the system
 the latest messages are sent. A marker in the chat, **Earlier messages summarised**, shows
 where; it says how many messages it stands for and how many tokens the request had, and
 expands to show the summary. Everything above it stays in the chat for you to read, but the
-model no longer sees it. While the summary is written, *Summarising older messages…* shows.
+model no longer sees it. While the summary is written, *Summarising older messages…* shows. The
+request that writes the summary counts in the chat's totals and cost.
 
 **Compact now** in the tools menu (under **Chat features**) or **Compact this chat** in the
 command palette does it straight away. Switch automatic compaction off for a chat in the tools
@@ -171,8 +227,35 @@ their context size, set **Context size** there, or compaction only happens when 
 
 Each message has small action icons:
 
-- Your messages: **Edit and resend**, **Copy**.
-- Replies: **Copy**, and **Retry** to generate the reply again.
+- Your messages: **Edit and resend**, **Copy**, and **Fork from here**.
+- Replies: **Copy**, **Retry** to generate the reply again (the latest reply only), and
+  **Fork from here**. A reply with other versions shows the **‹ k/N ›** arrows.
+
+**Fork from here** copies the chat up to that message into a new chat, titled with
+"(fork)" after the original title. The new chat keeps the original's workspace folder, tool
+switches, model options and permissions, and the original is left as it was. The workspace
+folder is shared, not copied, so file edits made in either chat change the same files. The
+file edits copied into the fork can't be undone from the fork, only from the original chat.
+Forking is not available while a reply is being generated in that chat. Only the version
+of the chat that is shown is copied (see [Branches](#branches)).
+
+### Branches
+
+**Retry** and **Edit and resend** keep what they replace as a branch instead of losing it.
+A message with other versions shows arrows, **‹ k/N ›**: N is the number of versions and k
+the one shown. The arrows switch to the previous or next version, and the replies after that
+message then come from the version you picked. Editing keeps the turn from the edited message
+on (its reply and what followed) as a version; the edit takes effect when you send it, so the
+chat still shows the turn until then. Stopping a retry puts back the reply it was replacing.
+
+Only the version shown is sent to the model, exported, compacted, forked and shown in the
+browser client. Switching doesn't change files, and **Undo file edit** only undoes the edits
+of the version shown. Arrows are unavailable while a reply runs or waits in the chat.
+
+Settings → General → Branches keeps up to **Versions kept per message** (default 10) older
+versions per message and drops the oldest beyond that. Turn it off there, or with **Branches**
+under **Chat features** in the tools menu for one chat: off, Retry and Edit replace the
+version as they always did (versions already kept stay switchable).
 
 ## Replies
 
@@ -185,6 +268,8 @@ tables and images.
 - Images from the web show as links unless **Load web images in replies** is on in
   [General](../settings/general.html#images). Loading them tells the image's server that the
   chat was opened, so it is off by default.
+- **Save as…** (the download icon under the reply) saves it as a Word document, a PDF or an
+  Excel workbook; see [Saving as files](#saving-as-files).
 
 ## Artifacts
 
@@ -194,8 +279,10 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
 - **Click the link** to expand the artifact in the chat as well, and again to fold it away.
 - **Open in panel** after the link shows that artifact in the panel ("in the panel" marks
   the one shown).
-- **The panel button** in the top bar, beside the command palette, shows and hides the panel
-  (it opens on the newest artifact, and is greyed out in a chat without any).
+- **The panel button** at the top right, beside the ghost, shows and hides the panel (it opens
+  on the newest artifact, and only shows in a chat that has one).
+- **Cards** for the newest artifacts sit under the message box on the home screen, and the
+  **Artifacts** page in the sidebar lists them all; a card opens its artifact in its chat.
 
 - **What counts**: closed top-level code blocks marked ```` ```html ````, ```` ```svg ````,
   ```` ```mermaid ```` or ```` ```markdown ```` (an SVG or web page in an ```` ```xml ```` or
@@ -212,14 +299,40 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   on. Made-up names like "Flowchart" never make versions.
 - **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
   that runs the page's scripts but, by default, blocks everything from the network (set in
-  [General](../settings/general.html#web-page-preview)); links open in your browser. **Open in
-  browser** writes the page to a temporary file and opens it in your default browser, where its
-  scripts run as in any local file and it can load anything; on Linux that is the only way to
-  see a page. SVGs can open there too.
+  [General](../settings/general.html#web-page-preview)); links open in your browser. On Linux,
+  **Open live preview** shows the page in a window of its own, with the same settings, when
+  WebKitGTK is installed; the window follows the page as a reply streams. Without WebKitGTK it
+  opens in your browser, with a notice. **Open in browser** writes the page to a temporary file
+  and opens it in your default browser, where its scripts run as in any local file and it can
+  load anything. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
   panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar
   button still open it.
+- **Save as…** in the panel's title row saves Markdown documents, code, and CSV or TSV
+  artifacts as a Word document, a PDF or (for CSV and TSV) an Excel workbook.
+
+## Saving as files
+
+A reply or a Markdown, code or CSV artifact can be saved as a file from its **Save as…** menu.
+Each format is switched on or off in [General](../settings/general.html#save-as-files); the menu
+offers only the enabled ones that suit the content. The file dialog suggests the chat's name (or
+the artifact's title) with the new extension.
+
+- **Word (.docx)**: headings, paragraphs with bold, italic and `code`, links as their text
+  followed by the address, bulleted and numbered lists (nested too), code blocks in a monospace
+  font on a grey background, block quotes, tables with a bold header row, and rules.
+- **PDF (.pdf)**: the same elements on A4 pages, with word wrap and page breaks. Text is set in
+  Instrument Sans and code in IBM Plex Mono, both embedded. The PDF has no italic face, so
+  italic text is upright. Characters the fonts lack (most non-Latin scripts) are left out.
+- **Excel (.xlsx)**: offered when the reply has a table, and for CSV and TSV artifacts. Each
+  Markdown table becomes a sheet named "Table 1", "Table 2" and so on, with a bold header row;
+  a CSV or TSV file becomes one sheet, "Sheet1". Cells that read as numbers (plain digits with
+  an optional sign and point) are stored as numbers, so they sum and sort; codes with leading
+  zeros, numbers with separators or exponents, and numbers longer than 15 digits stay text.
+
+Images in a reply are saved as their alt text and address, and raw HTML is left out. The files
+are written only where you choose; nothing is sent anywhere.
 
 ## Attachments
 
@@ -229,7 +342,7 @@ attached; text beyond a million characters is cut, with a note saying so.
 | Kind | Sent as |
 |---|---|
 | Images (PNG, JPEG, GIF, WebP) | images for vision models; click one to enlarge it |
-| PDF (`.pdf`) | its text; scanned PDFs without a text layer can't be read |
+| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Context & files](../settings/context.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
 | Word (`.docx`, `.doc`) | its text |
 | Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`) | one CSV block per sheet |
 | PowerPoint (`.pptx`, `.ppt`) | numbered slides, with speaker notes |
@@ -239,11 +352,68 @@ attached; text beyond a million characters is cut, with a note saying so.
 Documents are recognised by their content, not their extension. Password-protected files
 can't be read.
 
+## Running chats in the background
+
+A reply keeps running when you open another chat, so you can start several and come back to them.
+The sidebar row shows what each one is doing:
+
+- a spinning hourglass: the reply is running;
+- a shield: the reply is waiting for your approval of a tool;
+- a clock: the reply is **queued**, because the limit on replies at once is reached;
+- a check mark: the reply ended while you were in another chat, until you open it;
+- a pin: the chat is pinned; a document: the chat has artifacts.
+
+A [scheduled](#scheduled-tasks) run that starts when the limit is reached waits in the queue the
+same way, and a run whose chat is still replying is skipped that time.
+
+The chat shows **Queued** with how many replies are ahead of it. Stop cancels a queued reply.
+When the window is in the background, or another chat is open, a desktop notification says when a
+reply finishes, fails or needs approval. Each chat can switch its notifications off from the tools
+menu. How many run at once, the notifications and a time limit are set in
+[Background](../settings/background.html) settings.
+
+With **Keep running in the menu bar or system tray when the window is closed** on (macOS and
+Windows), closing the window hides it and replies keep running. Show the window again from the
+icon's menu (on Windows, a left click on the icon also works); Quit there ends the app.
+
+## Scheduled agents
+
+A scheduled agent (a *scheduled task*) is a saved prompt that CleanRSTAI sends at set times: every
+so many minutes, every day, or every week. Each run opens a new chat titled with the agent's name
+and the time (or adds the prompt to a chat you picked), and the reply runs like any other, with the
+tools the chat has: the defaults from Settings, plus the folder's tools when the agent has a
+folder. Agents run only while the app is open; a run that was due while it was closed is skipped
+unless the agent catches up.
+
+**Scheduled** in the sidebar opens the agents' page:
+
+![The Scheduled page with two agents and their recent runs]({{ '/scheduled.png' | relative_url }})
+
+- **New agent** opens the editor: a name, the prompt, **Repeats** (an interval, every day or
+  every week, and the time), **Runs in** (a new chat each time, or a chat you pick), **Approvals**
+  (read only by default), a **Folder**, a **Provider**, and whether a missed run catches up.
+  **Create agent** saves it. With no agents yet, three templates start one for you: a morning
+  news briefing, a daily check of a repository and a weekly review of its dependencies (the last
+  two in the folder you used last).
+- Each agent is a card: its switch, name, **Run now**, **Edit**, and a menu to **Duplicate** (the
+  copy starts switched off) or **Delete** it. Under the name: the schedule, the next and last run,
+  its permissions, where it runs, its folder and provider, and the start of its prompt.
+- **Recent runs** lists the chats the agent's newest runs made, with a mark for running, waiting
+  for approval, queued, failed or finished; click one to open it.
+- **Run agents** at the top pauses or resumes all of them.
+
+Nobody watches a run, so a tool that asks for approval waits for you (with a notification). Give
+an agent the permission mode it needs and no more. Changes on this page are saved at once; the
+same agents are also listed in [Background](../settings/background.html#scheduled-tasks) settings.
+**Run scheduled task: …** in the command palette starts one at once. Runs share the queue and the
+limits of background replies.
+
 ## Managing chats
 
 Chats are saved automatically. In the sidebar:
 
-- Type in the search box to filter chats.
+- Click **Search** and type to filter chats (titles and text, in Chat and Code mode alike);
+  **Esc** closes the box.
 - Right-click a chat for **Pin** / **Unpin**, **Rename**, **Export as Markdown…**,
   **Share as HTML…** and **Delete**.
 
@@ -255,8 +425,10 @@ once, use **Export conversations…** in [General](../settings/general.html#expo
 ## Command palette
 
 **⌘/Ctrl + K** opens a searchable list of commands: new chat, attach files, export this chat,
-compact this chat, undo the last turn's file edits, toggle the sidebar, change theme, open each
-settings page, export and import, check for updates, switch provider or model, and open any
-chat.
+compact this chat, undo the last turn's file edits, show files changed in this chat, fork this
+chat, set this chat's permissions (one entry per [mode](tools.html#permissions)), share this chat
+as HTML, toggle the sidebar, go to Projects or Artifacts, back and forward, switch to Chat or
+Code mode, voice mode on or off, change theme, open each settings page, export and import, check
+for updates, switch provider or model, run a scheduled task now, and open any chat.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.html) for the rest.

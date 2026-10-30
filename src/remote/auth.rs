@@ -112,10 +112,16 @@ impl Auth {
     /// The `Set-Cookie` value that starts a session.
     pub fn session_cookie(&self, token: &str) -> String {
         format!(
-            "{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
+            "{}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
+            Self::cookie_pair(token),
             SESSION_ABSOLUTE.as_secs(),
             self.secure_attr()
         )
+    }
+
+    /// The `name=value` part of the session cookie, as a `Cookie` header carries it.
+    pub fn cookie_pair(token: &str) -> String {
+        format!("{COOKIE_NAME}={token}")
     }
 
     /// The `Set-Cookie` value that removes the session cookie.

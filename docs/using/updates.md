@@ -12,7 +12,7 @@ choose **Check for updates** in the command palette.
 
 ## Installing an update
 
-When a new version is out, the top bar shows **Update to vX.Y.Z**:
+When a new version is out, the top right of the window shows **Update to vX.Y.Z**:
 
 - **macOS, Linux and portable Windows**: click it to download the release, check it against
   the release's `SHA256SUMS.txt` and replace the installed app. The app keeps working while

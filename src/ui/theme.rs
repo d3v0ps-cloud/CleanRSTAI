@@ -1,6 +1,8 @@
-//! Visual design: a warm charcoal (dark) or warm paper (light) palette with one muted
-//! terracotta accent; Instrument Sans for the interface, the greeting, and the model's
-//! replies, IBM Plex Mono for code. Soft 8px corners, quiet borders, no shadows or glows.
+//! Visual design: dark first, flat and quiet. Near-black neutral greys (or near-white ones in
+//! the light theme) carry the hierarchy, with one warm orange accent kept mostly for the brand
+//! glyph. Instrument Sans for the interface and the model's replies, Newsreader (a serif) for
+//! the greeting and empty-state headlines, IBM Plex Mono for code. 8px corners on rows and
+//! buttons, 12px on cards, 14px on the composer and modals; hairline borders, no shadows.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
@@ -67,6 +69,25 @@ pub mod icon {
     pub const SHIELD_CHECK: &str = "\u{E40C}";
     pub const LIGHTNING: &str = "\u{E2DE}";
     pub const EYE: &str = "\u{E220}";
+    pub const MICROPHONE: &str = "\u{E326}";
+    pub const SPEAKER: &str = "\u{E44A}";
+    pub const GHOST: &str = "\u{E62A}";
+    pub const CLOUD: &str = "\u{E1AA}";
+    pub const WAVEFORM: &str = "\u{E802}";
+    pub const CALENDAR: &str = "\u{E7B4}";
+    pub const FOLDERS: &str = "\u{E260}";
+    pub const SHAPES: &str = "\u{EC5E}";
+    pub const PALETTE: &str = "\u{E6C8}";
+    pub const SLIDERS_H: &str = "\u{E434}";
+    pub const CHAT_CIRCLE: &str = "\u{E168}";
+    pub const LAPTOP: &str = "\u{E586}";
+    pub const KEYBOARD: &str = "\u{E2D8}";
+    pub const DOTS: &str = "\u{E1FE}";
+}
+
+/// The serif display face (Newsreader), for the greeting and empty-state headlines only.
+pub fn serif(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("serif".into()))
 }
 
 /// The colours of one mode. Every text colour (ink to error) reads at WCAG AA contrast,
@@ -96,6 +117,12 @@ pub struct Palette {
     pub ok: Color32,
     pub warn: Color32,
     pub error: Color32,
+    /// A faint fill under hovered rows, buttons and cards (over any surface).
+    pub hover: Color32,
+    /// The fill of the active row or segment (over any surface).
+    pub active: Color32,
+    /// Hairline borders: dividers, the composer and cards at rest.
+    pub hairline: Color32,
 }
 
 /// The window (and taskbar/dock) icon for the light or dark theme, from `assets/icon` (made by
@@ -114,35 +141,43 @@ pub fn window_icon(dark: bool) -> std::sync::Arc<egui::IconData> {
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
-            paper: Color32::from_rgb(0x15, 0x15, 0x15),
-            shelf: Color32::from_rgb(0x11, 0x11, 0x11),
-            raised: Color32::from_rgb(0x20, 0x20, 0x1F),
+            paper: Color32::from_rgb(0x1A, 0x1A, 0x1A),
+            shelf: Color32::from_rgb(0x1E, 0x1E, 0x1E),
+            raised: Color32::from_rgb(0x2A, 0x2A, 0x2A),
             selected: Color32::from_rgb(0x35, 0x35, 0x35),
-            ink: Color32::from_rgb(0xF0, 0xEF, 0xED),
-            ink2: Color32::from_rgb(0xB9, 0xB9, 0xAF),
-            pencil: Color32::from_rgb(0x8A, 0x89, 0x84),
-            rule: Color32::from_rgb(0x29, 0x29, 0x29),
-            outline: Color32::from_rgb(0x4D, 0x4D, 0x4C),
-            signal: Color32::from_rgb(0xBC, 0x81, 0x5F),
+            ink: Color32::from_rgb(0xEC, 0xEC, 0xEC),
+            ink2: Color32::from_rgb(0xA1, 0xA1, 0xA1),
+            // The spec's #6f6f6f tertiary reads at about 3:1 on the composer; this keeps
+            // placeholders and hints at AA.
+            pencil: Color32::from_rgb(0x94, 0x94, 0x94),
+            rule: Color32::from_rgb(0x2E, 0x2E, 0x2E),
+            outline: Color32::from_rgb(0x3A, 0x3A, 0x3A),
+            signal: Color32::from_rgb(0xD9, 0x77, 0x57),
             ok: Color32::from_rgb(0x8F, 0xB0, 0x78),
             warn: Color32::from_rgb(0xD9, 0xA8, 0x5B),
             error: Color32::from_rgb(0xE0, 0x7A, 0x6A),
+            hover: Color32::from_white_alpha(15),
+            active: Color32::from_white_alpha(26),
+            hairline: Color32::from_white_alpha(20),
         }
     } else {
         Palette {
-            paper: Color32::from_rgb(0xFA, 0xF9, 0xF5),
-            shelf: Color32::from_rgb(0xF3, 0xF1, 0xEA),
+            paper: Color32::from_rgb(0xFA, 0xFA, 0xFA),
+            shelf: Color32::from_rgb(0xF3, 0xF3, 0xF3),
             raised: Color32::from_rgb(0xFF, 0xFF, 0xFF),
-            selected: Color32::from_rgb(0xE6, 0xE3, 0xD9),
-            ink: Color32::from_rgb(0x1F, 0x1E, 0x1D),
-            ink2: Color32::from_rgb(0x3D, 0x3C, 0x38),
-            pencil: Color32::from_rgb(0x6F, 0x6C, 0x64),
-            rule: Color32::from_rgb(0xE3, 0xE0, 0xD7),
-            outline: Color32::from_rgb(0xD3, 0xCF, 0xC4),
-            signal: Color32::from_rgb(0x9E, 0x5A, 0x38),
+            selected: Color32::from_rgb(0xE4, 0xE4, 0xE4),
+            ink: Color32::from_rgb(0x1A, 0x1A, 0x1A),
+            ink2: Color32::from_rgb(0x4A, 0x4A, 0x4A),
+            pencil: Color32::from_rgb(0x6B, 0x6B, 0x6B),
+            rule: Color32::from_rgb(0xE6, 0xE6, 0xE6),
+            outline: Color32::from_rgb(0xD4, 0xD4, 0xD4),
+            signal: Color32::from_rgb(0xB0, 0x4E, 0x2C),
             ok: Color32::from_rgb(0x4C, 0x76, 0x32),
             warn: Color32::from_rgb(0x94, 0x62, 0x0F),
             error: Color32::from_rgb(0xB0, 0x3A, 0x2E),
+            hover: Color32::from_black_alpha(10),
+            active: Color32::from_black_alpha(20),
+            hairline: Color32::from_black_alpha(22),
         }
     }
 }
@@ -155,10 +190,14 @@ pub fn success(dark: bool) -> Color32 {
     palette(dark).ok
 }
 
-/// The text style for prose: the model's replies. Uses the same sans as the interface.
+/// The text style for prose: the model's replies. Uses the same sans as the interface, at
+/// [`READING_SIZE`] where replies are drawn (`markdown::show` sets it around them).
 pub fn reading() -> TextStyle {
     TextStyle::Body
 }
+
+/// Replies read at 16px; the interface around them is 14px.
+pub const READING_SIZE: f32 = 16.0;
 
 /// Instrument Sans for the interface and prose, Plex Mono for code, and
 /// Phosphor icons as a fallback for each.
@@ -181,6 +220,14 @@ pub fn install_fonts(ctx: &egui::Context) {
         "phosphor",
         include_bytes!("../../assets/fonts/Phosphor.ttf"),
     );
+    add(
+        "newsreader",
+        include_bytes!("../../assets/fonts/Newsreader-Latin.ttf"),
+    );
+    add(
+        "newsreader-ext",
+        include_bytes!("../../assets/fonts/Newsreader-LatinExt.ttf"),
+    );
     // egui's defaults stay last, for scripts and emoji these fonts don't cover.
     let families = [
         (
@@ -201,6 +248,18 @@ pub fn install_fonts(ctx: &egui::Context) {
     for (family, list) in lists {
         fonts.families.insert(family, list);
     }
+    // The display serif falls back to the interface sans for anything it doesn't cover.
+    let mut serif = vec!["newsreader".to_owned(), "newsreader-ext".to_owned()];
+    serif.extend(
+        fonts
+            .families
+            .get(&FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    fonts
+        .families
+        .insert(FontFamily::Name("serif".into()), serif);
     ctx.set_fonts(fonts);
 }
 
@@ -211,11 +270,10 @@ pub fn apply(ctx: &egui::Context) {
             let dark = theme == egui::Theme::Dark;
             let p = palette(dark);
             style.text_styles = [
-                (TextStyle::Heading, FontId::proportional(23.0)),
-                (TextStyle::Body, FontId::proportional(14.5)),
-                (reading(), FontId::proportional(17.0)),
+                (TextStyle::Heading, FontId::proportional(22.0)),
+                (TextStyle::Body, FontId::proportional(14.0)),
                 (TextStyle::Button, FontId::proportional(14.0)),
-                (TextStyle::Small, FontId::proportional(12.5)),
+                (TextStyle::Small, FontId::proportional(12.0)),
                 (TextStyle::Monospace, FontId::monospace(13.0)),
             ]
             .into();
@@ -227,6 +285,8 @@ pub fn apply(ctx: &egui::Context) {
             s.window_margin = Margin::same(16);
             s.menu_margin = Margin::same(6);
             s.indent = 16.0;
+            // A thin bar that widens under the pointer, on every scroll area.
+            s.scroll = egui::style::ScrollStyle::thin();
 
             let v = &mut style.visuals;
             v.panel_fill = p.paper;
@@ -235,7 +295,7 @@ pub fn apply(ctx: &egui::Context) {
             v.faint_bg_color = p.raised;
             v.code_bg_color = p.raised;
             v.window_stroke = Stroke::new(1.0, p.outline);
-            v.window_corner_radius = CornerRadius::same(12);
+            v.window_corner_radius = CornerRadius::same(14);
             v.menu_corner_radius = CornerRadius::same(10);
             v.window_shadow = Shadow::NONE;
             v.popup_shadow = Shadow::NONE;
@@ -265,14 +325,14 @@ pub fn apply(ctx: &egui::Context) {
             }
             v.widgets.noninteractive.bg_fill = p.paper;
             v.widgets.noninteractive.weak_bg_fill = p.paper;
-            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.rule);
+            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.hairline);
             v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.ink);
             // Buttons are quiet: a hairline outline, filled on hover.
             v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
             v.widgets.inactive.bg_fill = p.selected;
             v.widgets.inactive.bg_stroke = Stroke::new(1.0, p.outline);
             v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.ink);
-            v.widgets.hovered.weak_bg_fill = p.selected.gamma_multiply(0.7);
+            v.widgets.hovered.weak_bg_fill = p.hover;
             v.widgets.hovered.bg_fill = p.selected;
             v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.outline);
             v.widgets.hovered.fg_stroke = Stroke::new(1.0, p.ink);
@@ -285,6 +345,11 @@ pub fn apply(ctx: &egui::Context) {
             v.widgets.open.bg_stroke = Stroke::new(1.0, p.outline);
         });
     }
+}
+
+/// How long hover and fill transitions take: 140 ms, or none with "Reduce motion" on.
+pub fn set_motion(ctx: &egui::Context, reduce: bool) {
+    ctx.all_styles_mut(|style| style.animation_time = if reduce { 0.0 } else { 0.14 });
 }
 
 /// The primary action: light-on-dark ink, like a filled pill.

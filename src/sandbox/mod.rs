@@ -92,6 +92,20 @@ impl Place {
         }
     }
 
+    /// [`Place::exec`] with `env` set for the command (hooks pass their CLEANRSTAI_* variables).
+    pub async fn exec_env(
+        &self,
+        root: &Path,
+        command: &str,
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<SandboxRun, String> {
+        match self {
+            Self::Chat(sandbox, chat) => sandbox.exec_env(*chat, root, command, env, timeout).await,
+            Self::Subagent(sub) => sub.exec_env(root, command, env, timeout).await,
+        }
+    }
+
     /// A new subagent container in the same chat. It shares the chat's network container.
     pub fn for_subagent(&self) -> Self {
         let chat = match self {
@@ -118,12 +132,23 @@ impl Subagent {
         command: &str,
         timeout: Duration,
     ) -> Result<SandboxRun, String> {
+        self.exec_env(root, command, &[], timeout).await
+    }
+
+    pub async fn exec_env(
+        &self,
+        root: &Path,
+        command: &str,
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<SandboxRun, String> {
         self.sandbox
             .run(
                 self.chat,
                 &self.name,
                 root,
                 command,
+                env,
                 timeout,
                 docker::OUTPUT_CAP,
             )
@@ -201,32 +226,55 @@ impl Sandbox {
         command: &str,
         timeout: Duration,
     ) -> Result<SandboxRun, String> {
-        self.exec_capped(chat, root, command, timeout, docker::OUTPUT_CAP)
+        self.exec_env(chat, root, command, &[], timeout).await
+    }
+
+    /// [`Sandbox::exec`] with `env` set for the command.
+    pub async fn exec_env(
+        &self,
+        chat: Uuid,
+        root: &Path,
+        command: &str,
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<SandboxRun, String> {
+        self.exec_capped(chat, root, command, env, timeout, docker::OUTPUT_CAP)
             .await
     }
 
-    /// [`Sandbox::exec`], keeping at most `cap` bytes of each output stream.
+    /// [`Sandbox::exec_env`], keeping at most `cap` bytes of each output stream.
     async fn exec_capped(
         &self,
         chat: Uuid,
         root: &Path,
         command: &str,
+        env: &[(String, String)],
         timeout: Duration,
         cap: usize,
     ) -> Result<SandboxRun, String> {
-        self.run(chat, &container_name(chat), root, command, timeout, cap)
-            .await
+        self.run(
+            chat,
+            &container_name(chat),
+            root,
+            command,
+            env,
+            timeout,
+            cap,
+        )
+        .await
     }
 
     /// Runs `command` in the container `name` of `chat`, creating it first when needed. The
     /// chat's own container keeps the chat lock while the command runs; a subagent's lets go
     /// once its container is ready, so subagents run in parallel.
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         chat: Uuid,
         name: &str,
         root: &Path,
         command: &str,
+        env: &[(String, String)],
         timeout: Duration,
         cap: usize,
     ) -> Result<SandboxRun, String> {
@@ -271,8 +319,13 @@ impl Sandbox {
         if name != container_name(chat) {
             turn = None;
         }
-        let out =
-            docker::docker_capped(&program, &docker::exec_args(name, command), timeout, cap).await;
+        let out = docker::docker_capped(
+            &program,
+            &docker::exec_args(name, env, command),
+            timeout,
+            cap,
+        )
+        .await;
         drop(turn);
         let out = match out {
             Ok(out) => out,
@@ -1230,7 +1283,7 @@ mod tests {
         // With a cap of 1000 bytes each stream keeps 500 from each end.
         let cmd = "head -c 5000 /dev/zero | tr '\\0' x; head -c 300 /dev/zero | tr '\\0' e >&2";
         let run = sb
-            .exec_capped(Uuid::new_v4(), &fake.dir, cmd, LONG, 1000)
+            .exec_capped(Uuid::new_v4(), &fake.dir, cmd, &[], LONG, 1000)
             .await
             .unwrap();
         assert_eq!(run.stdout.len(), 1000);

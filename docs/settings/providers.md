@@ -55,8 +55,11 @@ Which API the provider speaks:
 | API | Request | Notes |
 |---|---|---|
 | **Chat Completions (OpenAI-compatible)** (default) | `POST /chat/completions` | Works with OpenAI and almost every other server. |
-| **OpenAI Responses** | `POST /responses` | OpenAI's newer API, also served by some local servers. Shows reasoning summaries and keeps the model's (encrypted) reasoning between tool calls when a reasoning effort is set. Nothing is stored on OpenAI's side (`store: false`). Stop sequences aren't supported. |
-| **Anthropic Messages** | `POST /messages` | Base URL `https://api.anthropic.com/v1`. Extended thinking (kept between tool calls, as the API requires) and prompt caching. The key goes in the `x-api-key` header. Without **Max tokens**, replies may use up to 8,192 tokens (plus the thinking budget). |
+| **OpenAI Responses** | `POST /responses` | OpenAI's newer API, also served by some local servers. Shows reasoning summaries and keeps the model's (encrypted) reasoning between tool calls when a reasoning effort is set. Nothing is stored on OpenAI's side (`store: false`). Stop sequences aren't supported. Its own web search can replace CleanRSTAI's ([Built-in Tools](built-in-tools.html#web-search)). |
+| **Anthropic Messages** | `POST /messages` | Base URL `https://api.anthropic.com/v1`. Extended thinking (kept between tool calls, as the API requires) and prompt caching. The key goes in the `x-api-key` header. Without **Max tokens**, replies may use up to 8,192 tokens (plus the thinking budget). Its own web search can replace CleanRSTAI's ([Built-in Tools](built-in-tools.html#web-search)); the search results are kept with the chat, as the API requires. |
+
+Only these three support the provider's own web search: the two APIs above and OpenRouter
+(below). Other servers always use CleanRSTAI's search service.
 
 The server type's extra statistics still apply when they come from the server's own endpoints.
 
@@ -91,6 +94,15 @@ Decides which extra statistics are read:
 | **OpenRouter** | The provider that served each request and its cost, the model's context, prices and inputs, and your key's spend and credit left. |
 
 **Detect** probes the server and picks the type for you.
+
+### Context size
+
+**Context size** (off by default) is the model's context size in tokens, for a server that
+doesn't report it. Tick it and enter the size, from 1,024 to 10,000,000. A size the server
+reports (llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter) always wins over this one.
+The size is used for [context compaction](../settings/context.html#context-compaction) and the
+context-use figure in the chat's stats. When neither this nor the server gives a size, the
+**Context size** setting under Context & files is used.
 
 ### Token usage
 
@@ -128,7 +140,7 @@ default applies; tick an option's box to set it.
 Models that don't reason may reject a reasoning effort or budget: leave them unset for those.
 
 **Only for *model*** sets options for the provider's current model alone; they win over the
-provider's. Each chat can change them again from the sparkle menu under the message box (see
+provider's. Each chat can change them again from the effort label (**· Default**) under the message box (see
 [Model options](../using/chats.html#model-options)). Subagents and compaction use the provider
 and model options, not a chat's.
 
@@ -146,6 +158,9 @@ and model options, not a chat's.
 2. Paste your OpenRouter key.
 3. **Fetch models**, then pick a model such as `anthropic/claude-sonnet-4`. OpenRouter reports
    the cost of each reply, which shows in the stats.
+
+With **Built-in Tools → Search with → the provider's own search**, OpenRouter's web plugin searches
+for the model (up to **Searches per reply** results) and the reply lists the pages it cites.
 
 ### Anthropic
 

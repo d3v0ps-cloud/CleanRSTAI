@@ -1,5 +1,5 @@
 //! The web search tool: asks the service chosen in Settings (DuckDuckGo, a SearXNG instance,
-//! Brave or Tavily) and lists the results for the model, which can read a page with the fetch
+//! Brave, Tavily or Kagi) and lists the results for the model, which can read a page with the fetch
 //! tool. The service and its address come from Settings, never from the model, so the app's
 //! own HTTP client is used (a SearXNG instance may well run on this computer).
 
@@ -15,6 +15,7 @@ use crate::config::{MAX_SEARCH_RESULTS, SearchBackend, WebSearchSettings};
 const DUCKDUCKGO: &str = "https://html.duckduckgo.com";
 const BRAVE: &str = "https://api.search.brave.com";
 const TAVILY: &str = "https://api.tavily.com";
+const KAGI: &str = "https://kagi.com";
 const MAX_SNIPPET_CHARS: usize = 400;
 
 pub fn spec_description(settings: &WebSearchSettings) -> String {
@@ -57,6 +58,7 @@ pub async fn run(
         SearchBackend::Searxng => settings.searxng_url.as_str(),
         SearchBackend::Brave => BRAVE,
         SearchBackend::Tavily => TAVILY,
+        SearchBackend::Kagi => KAGI,
     };
     run_at(http, settings, base, args, timeout).await
 }
@@ -97,6 +99,7 @@ async fn run_at(
         SearchBackend::Searxng => searxng(http, base, query, settings, timeout).await?,
         SearchBackend::Brave => brave(http, base, query, count, settings, timeout).await?,
         SearchBackend::Tavily => tavily(http, base, query, count, settings, timeout).await?,
+        SearchBackend::Kagi => kagi(http, base, query, count, settings, timeout).await?,
     };
     hits.truncate(count);
     Ok(describe(query, settings.backend, &hits))
@@ -280,6 +283,36 @@ async fn tavily(
     let text = get_text(req, "Tavily").await?;
     let v: Value = serde_json::from_str(&text).context("Tavily didn't answer with JSON")?;
     Ok(hits_from(&v["results"], "title", "url", "content"))
+}
+
+async fn kagi(
+    http: &reqwest::Client,
+    base: &str,
+    query: &str,
+    count: usize,
+    settings: &WebSearchSettings,
+    timeout: Duration,
+) -> Result<Vec<Hit>> {
+    let req = http
+        .get(format!("{base}/api/v0/search"))
+        .query(&[("q", query), ("limit", &count.to_string())])
+        .header(
+            header::AUTHORIZATION,
+            format!("Bot {}", settings.api_key.trim()),
+        )
+        .header(header::ACCEPT, "application/json")
+        .timeout(timeout);
+    let text = get_text(req, "Kagi").await?;
+    let v: Value = serde_json::from_str(&text).context("Kagi didn't answer with JSON")?;
+    // Items with `t` 1 are related-search lists, not results.
+    let results: Vec<Value> = v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["t"] == 0)
+        .cloned()
+        .collect();
+    Ok(hits_from(&Value::Array(results), "title", "url", "snippet"))
 }
 
 fn hits_from(list: &Value, title: &str, url: &str, snippet: &str) -> Vec<Hit> {
@@ -477,6 +510,54 @@ mod tests {
         let tavily = log.iter().find(|r| r.method == "POST").unwrap();
         assert_eq!(tavily.header("authorization"), Some("Bearer key-1"));
         assert_eq!(tavily.json()["query"], "rust lang");
+    }
+
+    #[tokio::test]
+    async fn kagi_takes_only_results_with_the_bot_token() {
+        let (base, log) = serve(|r| match r.path.split('?').next().unwrap() {
+            "/api/v0/search" => Response::json(json!({
+                "meta": {"id": "x"},
+                "data": [
+                    {"t": 1, "list": ["related search"]},
+                    {"t": 0, "url": "https://k1.example/", "title": "K1", "snippet": "<b>one</b>"},
+                    {"t": 0, "url": "https://k2.example/", "title": "K2"},
+                    {"t": 0, "url": "https://k3.example/", "title": "K3", "snippet": "three"}
+                ]
+            })),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = reqwest::Client::new();
+        let t = Duration::from_secs(5);
+        let out = run_at(
+            &http,
+            &settings(SearchBackend::Kagi),
+            &base,
+            &json!({"query": "rust lang"}),
+            t,
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("(Kagi Search API)"), "{out}");
+        assert!(
+            out.contains("1. K1\n   https://k1.example/\n   one"),
+            "{out}"
+        );
+        assert!(out.contains("2. K2\n   https://k2.example/"), "{out}");
+        assert!(
+            !out.contains("related search") && !out.contains("K3"),
+            "{out}"
+        );
+
+        let log = log.lock().unwrap();
+        let r = &log[0];
+        assert!(r.path.starts_with("/api/v0/search?"), "{}", r.path);
+        assert!(
+            r.path.contains("q=rust+lang") && r.path.contains("limit=2"),
+            "{}",
+            r.path
+        );
+        assert_eq!(r.header("authorization"), Some("Bot key-1"));
     }
 
     #[tokio::test]

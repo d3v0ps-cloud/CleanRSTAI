@@ -95,6 +95,11 @@ impl Delegation {
         }
         force(&mut selection, "tasks", false);
         force(&mut selection, "subagents", false);
+        // Subagents don't load skills either (the instructions would reach them only through
+        // their own tool, which they don't have).
+        force(&mut selection, "skills", false);
+        // Subagents never commit: their tool calls don't ask for approval.
+        force(&mut selection, ws_tools::GIT_COMMIT, false);
         for id in &sa.excluded_servers {
             selection
                 .overrides
@@ -494,6 +499,16 @@ mod tests {
     }
 
     #[test]
+    fn subagents_never_get_the_commit_tool() {
+        let mut s = Settings::default();
+        s.general.builtin_tools.git_commit = true;
+        let chat = ToolSelection::new(&s, &ToolOverrides::default());
+        assert!(chat.builtin_on(ws_tools::GIT_COMMIT));
+        let d = Delegation::new(&s, &chat).unwrap();
+        assert!(!d.selection.builtin_on(ws_tools::GIT_COMMIT));
+    }
+
+    #[test]
     fn respects_chat_selection() {
         let s = Settings::default();
         let mut ov = ToolOverrides::default();
@@ -646,6 +661,33 @@ mod tests {
         assert!(!del.selection.builtin_on(ws_tools::EDIT_FILE));
         assert!(del.selection.builtin_on(ws_tools::SHELL));
         assert!(del.tool_description().contains("container of their own"));
+    }
+
+    #[tokio::test]
+    async fn subagents_never_get_the_memory_tool_or_memories() {
+        let (base, log) = serve(|_| reply("done")).await;
+        let mut s = settings_with(&format!("{base}/v1"));
+        s.general.memory.enabled = true;
+        // The parent chat has memory on, so the subagents' selection has the feature on too.
+        let sel = ToolSelection::new(&s, &ToolOverrides::default());
+        assert!(sel.feature_on(crate::tools::MEMORY));
+        let d = Delegation::new(&s, &sel).unwrap();
+        let http = reqwest::Client::new();
+        let mcp = McpManager::new(tokio::runtime::Handle::current(), http.clone());
+        let args = json!({"tasks": [{"task": "alpha"}]}).to_string();
+        let (out, reports) = d.run(&http, &mcp, &args, &|_| {}).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(reports.len(), 1);
+        let requests = log.lock().unwrap();
+        assert!(!requests.is_empty());
+        for request in requests.iter() {
+            let body = request.json();
+            assert!(
+                !body.to_string().contains(crate::tools::MEMORY_TOOL),
+                "{body}"
+            );
+            assert!(!body.to_string().contains("Things to remember"), "{body}");
+        }
     }
 
     #[cfg(unix)]

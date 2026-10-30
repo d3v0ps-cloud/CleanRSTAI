@@ -1,7 +1,7 @@
 ---
 title: Context & files
 parent: Settings
-nav_order: 5
+nav_order: 6
 ---
 
 # Context & files
@@ -22,7 +22,7 @@ summary starts (see [Chats → Long chats](../using/chats.html#long-chats)).
 |---|---|---|
 | **Compact at** | 80% | Compact once a request would fill this share of the context (50–95%). |
 | **Keep word for word** | 6 latest messages | Messages at the end of the chat that are always sent in full (2–50). A tool result stays with the call that asked for it, so a few more may be kept. |
-| **Context size** | 0 | The context size, in tokens, to assume when the server doesn't report one. With 0, automatic compaction only happens when it does: llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter report it (set **Server type** on the provider). For other servers, enter the model's context size. |
+| **Context size** | 0 | The context size, in tokens, to assume when neither the server nor the provider's own **Context size** ([Providers](providers.html#context-size)) gives one. With 0, automatic compaction only happens when one of them does: llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter report it (set **Server type** on the provider). For other servers, enter the model's context size on the provider. |
 | **Summary by** | The chat's provider | The provider profile that writes the summary. |
 | **Summary model** | the provider's selected model | A model for the summary, such as a cheaper or faster one. |
 | **Older tool results** | off, 2000 characters | **Shorten long results of older tool calls in what is sent**: results older than the kept messages are cut to this many characters (200–100,000). This is a cheaper step that sends less with every request; the chat keeps the results whole. |
@@ -35,6 +35,9 @@ How the size is worked out: after a reply the server reports how many tokens it 
 adds about one token per four characters for what came after. Once a chat has a summary, the
 whole estimate is by characters, since the server's counts covered messages that are no longer
 sent.
+
+The request that writes a summary counts in the chat's totals and cost, and its line shows under
+the summary marker. Its size doesn't count as the chat's context use.
 
 ## Project instructions
 
@@ -50,6 +53,36 @@ menu shows which files the latest request read.
 | **Parent folders** | off | Also read them from the folders above the workspace, outermost first, so the workspace's own file reads as the most specific. |
 | **Size limit** | 64 KB | Text beyond this, in all the files together, is left out (1–1024 KB). |
 
+## Projects
+
+**Projects** (default on) groups chats on the **Projects** page, with the instructions and files
+each project adds to its chats. Off hides the projects (the page offers to turn them on) and stops
+adding their
+context to requests; a chat can also leave the project context out from the tools menu. See
+[Projects](../using/projects.html).
+
+| Setting | Default | Description |
+|---|---|---|
+| **Files size limit** | 256 KB | The text of a project's files sent with each request, in all (16–4096 KB). Longer files are cut. |
+| **New projects: folder** | None | The working folder a new project starts with. |
+| **New projects: provider** | Settings' active provider | The provider a new project's chats start with. |
+| **New projects: instructions** | Empty | The instructions a new project starts with. |
+
+## Memory
+
+**Memory** (default off) lets the model keep facts about you across chats. The saved memories are
+listed on this tab, where you can edit, delete and add them. See [Memory](../using/memory.html).
+
+| Setting | Default | Description |
+|---|---|---|
+| **New chats use memory** | Off | Chats have memory on unless switched off for one chat (incognito). |
+| **Ask before saving or deleting a memory** | On | A save or delete waits for your approval. Listing never asks. |
+| **Size limit** | 8 KB | The text of the memories sent with each request, newest first (1–64 KB). |
+| **Scope** | Global | Global: one set of memories for every chat. Per project: a project's chats also see and save that project's memories. |
+
+A memory is one line of at most 500 characters. The list shows each memory's scope and the date it
+was saved, and **Delete all memories** asks first.
+
 ## Workspace file edits
 
 | Setting | Default | Description |
@@ -64,3 +97,47 @@ turn changed, newest first. A file that changed again after the edit (by you, a 
 a shell command) is left alone, and the notice says so. Commands run with
 `exec_shell_command` aren't undone. Checkpoints are saved in the chat's file, so they survive a
 restart and are deleted with the chat.
+
+## Code review
+
+**Review changes** in the tools menu, and in the command palette (⌘/Ctrl + K), reads the
+working folder's git diff and sends it to a model with the instructions below, as a new message
+in the chat. The diff goes as the attached file `changes.diff`. The review runs with the provider
+chosen here, for that one reply; the chat's own provider is unchanged. The button is enabled
+when the chat has a working folder and no reply is running. Turn **Code review** off to hide
+both entries.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Code review** | on | Shows **Review changes** in the tools menu and the command palette. |
+| **Uncommitted changes** or **This branch against its base** | Uncommitted changes | Uncommitted: everything since the last commit (staged, unstaged, and new files, which are listed by name only). Branch: the commits on this branch since it forked from its base, plus nothing uncommitted. |
+| **Base branch** | auto | The branch for the branch scope. Empty uses `origin/HEAD`, then `main`, then `master`. |
+| **Review by** | The chat's provider | The provider profile that writes the review. |
+| **Review model** | the provider's selected model | A model for the review, such as a stronger one. |
+| **Largest diff** | 200 KB | A longer diff is cut to this size (16–4096 KB), and the model is told where it was cut. |
+| **How strict** | Normal | **Lenient** reports only problems that would cause bugs, data loss or security issues, and skips style and minor suggestions. **Normal** sends the instructions as written. **Strict** also reports style, naming, readability, missing tests and documentation, and any risky assumption. The chosen level is added to the instructions. |
+| **Review instructions** | (built in) | What the model is asked to look for. **Reset** restores the built-in text. |
+
+The working folder must be a git repository. If there are no changes, or the base branch can't
+be found, the app says so and sends nothing.
+
+## OCR for scanned PDFs
+
+A PDF with no text layer (a scan, or a photo of pages) has almost no text when the app reads it.
+With **Read scanned PDFs (OCR)** on, its page images are read when the file is attached, and the
+text comes back page by page under `--- Page N ---` headings, with a note that it came from OCR.
+The reading shows "Reading scanned PDF… (OCR)" until it is done. With it off, such a PDF is
+attached with the note "No text layer; turn on OCR in Settings → Context & files to read the
+scanned pages."
+
+| Setting | Default | Description |
+|---|---|---|
+| **Read scanned PDFs (OCR)** | off | Reads the page images of PDFs that have no text layer. |
+| **Read with** | A vision model | **A vision model** sends each page image to a provider, one request per page. **Tesseract** runs the `tesseract` program on this computer. |
+| **Vision model by** | The chat's provider | The provider profile for the vision model. The model must accept images. |
+| **Tesseract program** | `tesseract` | A name on PATH, or the full path of the program. |
+| **Languages** | `eng` | Tesseract language codes joined with `+`, such as `eng+deu`. Each must be installed with Tesseract. |
+| **Pages per PDF** | 20 (1–200) | Pages past this are not read, and the text says how many were left out. |
+
+Images in encodings this reader doesn't handle (JPEG 2000, CCITT fax, JBIG2, CMYK) are skipped,
+with a note in the text. Images that are inside form XObjects are not read.

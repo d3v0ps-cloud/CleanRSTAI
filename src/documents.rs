@@ -143,10 +143,24 @@ pub fn detect(bytes: &[u8]) -> Result<Option<Format>> {
     Ok(None)
 }
 
-/// The text of a document in `format`.
-pub fn extract(format: Format, bytes: &[u8]) -> Result<String> {
+/// What extraction found: the text, or a PDF with no text layer (to be read by OCR).
+#[derive(Debug, PartialEq)]
+pub enum Extracted {
+    Text(String),
+    Scanned { pages: usize },
+}
+
+/// The text of a document in `format`. A PDF whose text is (nearly) empty comes back as
+/// `Scanned`, for OCR.
+pub fn extract_or_scanned(format: Format, bytes: &[u8]) -> Result<Extracted> {
     let text = match format {
-        Format::Pdf => pdf(bytes)?,
+        Format::Pdf => {
+            let pages = pdf_pages(bytes)?;
+            if crate::ocr::is_scanned(&pages) {
+                return Ok(Extracted::Scanned { pages: pages.len() });
+            }
+            pdf_join(&pages)
+        }
         Format::Docx => docx(bytes)?,
         Format::Pptx => pptx(bytes)?,
         Format::Odt | Format::Odp => {
@@ -163,12 +177,9 @@ pub fn extract(format: Format, bytes: &[u8]) -> Result<String> {
     };
     let text = tidy(&text);
     if text.is_empty() {
-        if format == Format::Pdf {
-            bail!("it has no text layer (a scanned PDF?); attach page images instead");
-        }
         bail!("it has no text");
     }
-    Ok(text)
+    Ok(Extracted::Text(text))
 }
 
 /// Trim trailing spaces on each line and collapse runs of blank lines.
@@ -190,16 +201,21 @@ fn tidy(text: &str) -> String {
     out
 }
 
-fn pdf(bytes: &[u8]) -> Result<String> {
+/// The text of each page, in order (empty for a page with no text).
+fn pdf_pages(bytes: &[u8]) -> Result<Vec<String>> {
     // pdf-extract can panic on malformed files; treat that as an unreadable PDF.
-    let pages = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes))
+    std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes))
         .map_err(|_| anyhow!("the PDF couldn't be read"))?
         .map_err(|e| match e {
             pdf_extract::OutputError::PdfError(pdf_extract::Error::Decryption(_)) => {
                 anyhow!("it is password-protected")
             }
             e => anyhow!("the PDF couldn't be read: {e}"),
-        })?;
+        })
+}
+
+/// The pages' text; with several pages, each non-empty one follows a `--- Page N ---` line.
+fn pdf_join(pages: &[String]) -> String {
     let mut out = String::new();
     for (n, page) in pages.iter().enumerate() {
         if page.trim().is_empty() {
@@ -210,7 +226,7 @@ fn pdf(bytes: &[u8]) -> Result<String> {
         }
         out.push_str(page);
     }
-    Ok(out)
+    out
 }
 
 fn zip_entry<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<String> {
@@ -1004,6 +1020,14 @@ fn rtf(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of a document that has one; panics on a scanned PDF.
+    fn extract(format: Format, bytes: &[u8]) -> Result<String> {
+        match extract_or_scanned(format, bytes)? {
+            Extracted::Text(text) => Ok(text),
+            Extracted::Scanned { pages } => panic!("{pages} pages read as scanned"),
+        }
+    }
 
     #[test]
     fn oversized_entries_fail_instead_of_truncating() {

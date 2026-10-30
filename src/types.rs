@@ -67,6 +67,34 @@ pub struct ChatMessage {
     /// request (Anthropic's signed thinking blocks, the Responses API's reasoning items).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeItems>,
+    /// For an assistant message whose reply was searched with the provider's own search: the
+    /// pages it cites, shown under the reply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Source>,
+    /// The provider's own search ran for this reply (even when it cites nothing).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub searched: bool,
+    /// The other versions of the tail that starts at this message (a replaced reply, or an
+    /// edited prompt and what followed it), each a complete tail. Only the first message of a
+    /// tail holds them (see `branches`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<Vec<ChatMessage>>,
+    /// Where this tail is among its versions, in creation order (`alternatives` with this one
+    /// inserted at this index).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub alt_index: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// A web page a provider's own search cited.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Source {
+    #[serde(default)]
+    pub title: String,
+    pub url: String,
 }
 
 /// Provider-specific output kept so it can be sent back, only to the API that made it.
@@ -145,6 +173,37 @@ pub fn results_after(
         .collect()
 }
 
+/// The messages a fork up to message `idx` keeps: everything through `idx`, and for an
+/// assistant message with tool calls, the tool results that directly follow it, so the
+/// fork never ends on a call without its results. Empty if `idx` is out of range.
+///
+/// The fork shares the original's workspace folder, so its copied file edits must not be
+/// undoable from the fork: their checkpoints are dropped (`checkpoint` false, `before` None)
+/// while the diff is kept for the tool card. Other versions of the tail (branches) are left
+/// out too: a fork starts from the current tail only.
+pub fn fork_messages(messages: &[ChatMessage], idx: usize) -> Vec<ChatMessage> {
+    let Some(msg) = messages.get(idx) else {
+        return Vec::new();
+    };
+    let mut end = idx + 1;
+    if msg.role == Role::Assistant && !msg.tool_calls.is_empty() {
+        end += messages[end..]
+            .iter()
+            .take_while(|m| m.role == Role::Tool)
+            .count();
+    }
+    let mut kept = messages[..end].to_vec();
+    for m in &mut kept {
+        if let Some(edit) = &mut m.edit {
+            edit.checkpoint = false;
+            edit.before = None;
+        }
+        m.alternatives.clear();
+        m.alt_index = 0;
+    }
+    kept
+}
+
 impl ChatMessage {
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {
@@ -163,6 +222,10 @@ impl ChatMessage {
             edit: None,
             compaction: None,
             native: None,
+            sources: Vec::new(),
+            searched: false,
+            alternatives: Vec::new(),
+            alt_index: 0,
         }
     }
 
@@ -204,6 +267,19 @@ pub struct Conversation {
         skip_serializing_if = "crate::approval::ChatPermissions::is_default"
     )]
     pub permissions: crate::approval::ChatPermissions,
+    /// The project this chat belongs to (see `projects`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<Uuid>,
+    /// The provider profile (by id) this chat uses instead of the active one; set from its
+    /// project, or picked for the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The model this chat uses instead of its provider's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The scheduled task whose run started this chat (see `schedule`), for its run list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_task: Option<Uuid>,
 }
 
 impl Conversation {
@@ -220,7 +296,18 @@ impl Conversation {
             workspace: None,
             model_options: Default::default(),
             permissions: Default::default(),
+            project: None,
+            provider: None,
+            model: None,
+            scheduled_task: None,
         }
+    }
+
+    /// A new chat that starts in `mode` (Settings' default for new chats).
+    pub fn with_permission_mode(mode: crate::approval::ApprovalMode) -> Self {
+        let mut c = Self::new();
+        c.permissions.mode = mode;
+        c
     }
 
     fn dir() -> PathBuf {
@@ -291,6 +378,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_chat_takes_the_default_permission_mode() {
+        use crate::approval::ApprovalMode;
+        assert_eq!(Conversation::new().permissions.mode, ApprovalMode::Default);
+        let c = Conversation::with_permission_mode(ApprovalMode::AutoWorkspace);
+        assert_eq!(c.permissions.mode, ApprovalMode::AutoWorkspace);
+        assert!(!c.permissions.no_sandbox);
+    }
+
+    #[test]
+    fn a_chat_without_project_fields_loads_and_saves_without_them() {
+        let id = Uuid::new_v4();
+        let old = format!(
+            r#"{{"id":"{id}","title":"Old","created_at":"2026-01-01T00:00:00Z",
+                "updated_at":"2026-01-01T00:00:00Z","messages":[]}}"#
+        );
+        let c: Conversation = serde_json::from_str(&old).unwrap();
+        assert_eq!(
+            (c.project, c.provider.clone(), c.model.clone()),
+            (None, None, None)
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("project") && !json.contains("\"provider\""),
+            "{json}"
+        );
+
+        let mut c = c;
+        let project = Uuid::new_v4();
+        c.project = Some(project);
+        c.provider = Some("p1".into());
+        c.model = Some("m".into());
+        let back: Conversation = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.project, Some(project));
+        assert_eq!(back.provider.as_deref(), Some("p1"));
+        assert_eq!(back.model.as_deref(), Some("m"));
+    }
+
+    #[test]
     fn auto_title_from_attachment() {
         let mut c = Conversation::new();
         let mut m = ChatMessage::new(Role::User, "");
@@ -320,5 +445,128 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn fork_at_a_user_message_keeps_up_to_it() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "one"),
+            ChatMessage::new(Role::Assistant, "two"),
+            ChatMessage::new(Role::User, "three"),
+            ChatMessage::new(Role::Assistant, "four"),
+        ];
+        let forked = fork_messages(&messages, 2);
+        assert_eq!(forked, messages[..=2]);
+    }
+
+    #[test]
+    fn fork_at_a_tool_call_keeps_its_results() {
+        let mut call = ChatMessage::new(Role::Assistant, "");
+        call.tool_calls.push(ToolCall {
+            id: "c1".into(),
+            name: "time".into(),
+            arguments: "{}".into(),
+        });
+        let mut result = ChatMessage::new(Role::Tool, "12:00");
+        result.tool_call_id = Some("c1".into());
+        let messages = vec![
+            ChatMessage::new(Role::User, "what time is it?"),
+            call.clone(),
+            result.clone(),
+            ChatMessage::new(Role::Assistant, "It is noon."),
+            ChatMessage::new(Role::User, "thanks"),
+        ];
+        let forked = fork_messages(&messages, 1);
+        assert_eq!(forked, vec![messages[0].clone(), call, result]);
+    }
+
+    #[test]
+    fn fork_at_the_last_message_keeps_everything() {
+        let messages = vec![
+            ChatMessage::new(Role::User, "hi"),
+            ChatMessage::new(Role::Assistant, "hello"),
+        ];
+        assert_eq!(fork_messages(&messages, 1), messages);
+        assert!(fork_messages(&messages, 2).is_empty());
+    }
+
+    #[test]
+    fn a_fork_keeps_file_edit_diffs_but_not_their_checkpoints() {
+        let mut call = ChatMessage::new(Role::Assistant, "");
+        call.tool_calls.push(ToolCall {
+            id: "c1".into(),
+            name: "write_file".into(),
+            arguments: "{}".into(),
+        });
+        let mut result = ChatMessage::new(Role::Tool, "Wrote a.txt");
+        result.tool_call_id = Some("c1".into());
+        result.edit = Some(FileEdit {
+            path: "a.txt".into(),
+            abs: PathBuf::from("/work/a.txt"),
+            diff: "-old\n+new\n".into(),
+            created: false,
+            before: Some("old\n".into()),
+            checkpoint: true,
+            after_sha256: "abc".into(),
+            undone: false,
+        });
+        let messages = vec![ChatMessage::new(Role::User, "edit it"), call, result];
+        let forked = fork_messages(&messages, 1);
+        let edit = forked[2].edit.as_ref().expect("the edit is copied");
+        assert!(!edit.checkpoint);
+        assert_eq!(edit.before, None);
+        assert_eq!(edit.diff, "-old\n+new\n");
+        // The original is untouched.
+        assert!(messages[2].edit.as_ref().unwrap().checkpoint);
+    }
+
+    #[test]
+    fn a_fork_leaves_out_other_versions() {
+        let mut messages = vec![
+            ChatMessage::new(Role::User, "one"),
+            ChatMessage::new(Role::Assistant, "two"),
+        ];
+        messages[1].alternatives = vec![vec![ChatMessage::new(Role::Assistant, "old")]];
+        messages[1].alt_index = 1;
+        let forked = fork_messages(&messages, 1);
+        assert!(forked[1].alternatives.is_empty());
+        assert_eq!(forked[1].alt_index, 0);
+        // The original keeps them.
+        assert_eq!(messages[1].alternatives.len(), 1);
+    }
+
+    #[test]
+    fn messages_without_sources_still_load() {
+        let m: ChatMessage =
+            serde_json::from_str(r#"{"role": "assistant", "content": "hi"}"#).unwrap();
+        assert!(m.sources.is_empty() && !m.searched);
+        let mut m = ChatMessage::new(Role::Assistant, "x");
+        m.searched = true;
+        m.sources = vec![Source {
+            title: "T".into(),
+            url: "https://t.example".into(),
+        }];
+        let v = serde_json::to_value(&m).unwrap();
+        let back: ChatMessage = serde_json::from_value(v).unwrap();
+        assert_eq!(back.sources, m.sources);
+        assert!(back.searched);
+        // Plain replies stay as small as before.
+        let plain = serde_json::to_value(ChatMessage::new(Role::Assistant, "y")).unwrap();
+        assert!(plain.get("sources").is_none() && plain.get("searched").is_none());
+    }
+
+    #[test]
+    fn a_chat_from_before_branches_loads_and_saves_without_them() {
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000001","title":"Hi",
+            "created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z",
+            "messages":[{"role":"user","content":"q"},{"role":"assistant","content":"a"}]}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert!(
+            c.messages
+                .iter()
+                .all(|m| m.alternatives.is_empty() && m.alt_index == 0)
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("alternatives") && !json.contains("alt_index"));
     }
 }

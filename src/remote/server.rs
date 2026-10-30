@@ -28,6 +28,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 use uuid::Uuid;
 
+use super::access::{self, Claims, Gate, Policy};
 use super::auth::Auth;
 use super::{RemoteCommand, RemoteEvent, TunnelHosts};
 use crate::agent::{AppEvent, EventSender};
@@ -68,6 +69,8 @@ pub(crate) struct AppState {
     machine_host: Option<String>,
     /// Public hostnames of the running Cloudflare Tunnel; empty without one.
     tunnel_hosts: TunnelHosts,
+    /// Cloudflare Access checks for requests for the tunnel's hostnames.
+    access: Arc<Gate>,
 }
 
 /// Whether responses carry `Strict-Transport-Security`. Only for certificate files the user
@@ -89,6 +92,7 @@ pub(crate) async fn serve(
     events: broadcast::Sender<RemoteEvent>,
     hsts: bool,
     tunnel_hosts: TunnelHosts,
+    access: Arc<Gate>,
 ) {
     let state = Arc::new(AppState {
         auth,
@@ -99,6 +103,7 @@ pub(crate) async fn serve(
         hsts,
         machine_host: machine_host(),
         tunnel_hosts,
+        access,
     });
     let app = router(state).into_make_service_with_connect_info::<Peer>();
     let result = match tls {
@@ -140,6 +145,7 @@ fn router(state: Arc<AppState>) -> Router {
         .merge(protected)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(middleware::from_fn(csrf_guard))
+        .layer(middleware::from_fn_with_state(state.clone(), access_guard))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -179,6 +185,75 @@ async fn host_guard(State(state): State<Arc<AppState>>, req: Request, next: Next
     } else {
         ApiError::new(StatusCode::MISDIRECTED_REQUEST, "unknown host").into_response()
     }
+}
+
+/// Cloudflare Access in front of the tunnel. A request whose `Host` is the tunnel's hostname
+/// needs a valid Access token, whoever sent it, so a request that skipped Access is refused
+/// even when it comes from the local network. With `skip_password` the token also signs the
+/// browser in. Requests for other hosts are not affected.
+async fn access_guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let policy = state.access.policy();
+    let through_tunnel = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|host| tunnel_host(&state, host));
+    if policy == Policy::Off || !through_tunnel {
+        return next.run(req).await;
+    }
+    let claims = match state
+        .access
+        .verify(access::token_from_headers(req.headers()))
+        .await
+    {
+        Ok(claims) => claims,
+        Err(e) => {
+            // Anyone on the internet can send these, so they are logged quietly; the settings
+            // page shows the last one.
+            log::debug!("Remote access: refused a tunnel request: {e}");
+            return access_required();
+        }
+    };
+    match policy {
+        Policy::SignIn => sign_in_with_access(&state, req, next, claims).await,
+        _ => next.run(req).await,
+    }
+}
+
+fn access_required() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "Cloudflare Access is required",
+    )
+        .into_response()
+}
+
+/// Starts a login session for a browser that passed Access, unless it has one. The session is
+/// added to this request's cookies, so the handler already sees a logged-in browser, and to
+/// the response's `Set-Cookie`. The email is only logged.
+async fn sign_in_with_access(
+    state: &AppState,
+    mut req: Request,
+    next: Next,
+    claims: Claims,
+) -> Response {
+    if session_valid(state, req.headers()) {
+        return next.run(req).await;
+    }
+    let token = state.auth.create_session();
+    log::info!(
+        "Remote access: signed in {} through Cloudflare Access",
+        claims.email.as_deref().unwrap_or("a service token")
+    );
+    if let Ok(value) = HeaderValue::from_str(&Auth::cookie_pair(&token)) {
+        req.headers_mut().append(header::COOKIE, value);
+    }
+    let mut res = next.run(req).await;
+    if let Ok(value) = HeaderValue::from_str(&state.auth.session_cookie(&token)) {
+        res.headers_mut().append(header::SET_COOKIE, value);
+    }
+    res
 }
 
 /// True when `host` is one of the running tunnel's public hostnames.
@@ -891,6 +966,9 @@ mod tests {
     use chrono::Utc;
     use tokio::runtime::Handle;
 
+    use crate::remote::access::testkeys::{AUD, TEAM, jwks, token_now};
+    use crate::testutil;
+
     use super::super::{
         ApprovalView, ChatSummary, ChatView, ProviderView, RemoteHandle, StateView, start,
     };
@@ -909,6 +987,7 @@ mod tests {
                 updated_at: Utc::now(),
                 running: false,
                 approvals: 0,
+                project: None,
             }],
             providers: vec![ProviderView {
                 name: "Local".into(),
@@ -1003,6 +1082,14 @@ mod tests {
         cfg: &RemoteSettings,
         tunnel_hosts: TunnelHosts,
     ) -> Result<RemoteHandle, String> {
+        start_test_with_access(cfg, tunnel_hosts, Arc::new(Gate::new()))
+    }
+
+    fn start_test_with_access(
+        cfg: &RemoteSettings,
+        tunnel_hosts: TunnelHosts,
+        access: Arc<Gate>,
+    ) -> Result<RemoteHandle, String> {
         let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -1011,7 +1098,14 @@ mod tests {
                 }
             }
         });
-        start(&Handle::current(), cfg, tx, Arc::new(|| {}), tunnel_hosts)
+        start(
+            &Handle::current(),
+            cfg,
+            tx,
+            Arc::new(|| {}),
+            tunnel_hosts,
+            access,
+        )
     }
 
     fn expect_err(result: Result<RemoteHandle, String>) -> String {
@@ -1899,5 +1993,165 @@ mod tests {
 
         let other = post_json(&client, rename, &cookie, json!({ "title": "Fine" })).await;
         assert_eq!(other.status(), 200);
+    }
+
+    /// A gate that checks tokens against the test-only keys, served by a local server.
+    async fn access_gate(skip_password: bool) -> Arc<Gate> {
+        let (base, _) =
+            testutil::serve(|_| testutil::Response::with_type(200, "application/json", jwks()))
+                .await;
+        let gate = Gate::for_tests(&format!("{base}/certs"));
+        gate.configure(&crate::config::TunnelSettings {
+            enabled: true,
+            mode: crate::config::TunnelMode::Named,
+            access: crate::config::AccessSettings {
+                enabled: true,
+                team_domain: TEAM.into(),
+                audience: AUD.into(),
+                skip_password,
+            },
+            ..Default::default()
+        });
+        Arc::new(gate)
+    }
+
+    fn tunnel_hosts() -> TunnelHosts {
+        Arc::new(std::sync::RwLock::new(vec!["chat.example.com".into()]))
+    }
+
+    /// Through the tunnel, Access is a gate in front of the login: a request without a valid
+    /// token is refused, and a valid one still needs the app password. The LAN is unaffected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tunnel_requests_need_a_cloudflare_access_token() {
+        let gate = access_gate(false).await;
+        let handle =
+            start_test_with_access(&settings(RemoteTls::Off), tunnel_hosts(), gate).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let via_tunnel = |path: &str| {
+            client
+                .get(format!("{base}{path}"))
+                .header(header::HOST, "chat.example.com")
+        };
+
+        let refused = via_tunnel("api/session").send().await.unwrap();
+        assert_eq!(refused.status(), 403);
+        assert_eq!(
+            refused.text().await.unwrap(),
+            "Cloudflare Access is required"
+        );
+        assert_eq!(via_tunnel("").send().await.unwrap().status(), 403);
+        let forged = via_tunnel("api/session")
+            .header("Cf-Access-Jwt-Assertion", "a.b.c")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), 403);
+
+        let token = token_now();
+        let session: Value = via_tunnel("api/session")
+            .header("Cf-Access-Jwt-Assertion", token.as_str())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(session["logged_in"], json!(false));
+        let state = via_tunnel("api/state")
+            .header("Cf-Access-Jwt-Assertion", token.as_str())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(state.status(), 401, "the app password is still needed");
+
+        let login = client
+            .post(format!("{base}api/login"))
+            .header(header::HOST, "chat.example.com")
+            .header("Cf-Access-Jwt-Assertion", token.as_str())
+            .header("X-CleanRSTAI", "1")
+            .json(&json!({ "password": PASSWORD }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(login.status(), 200);
+        let cookie = session_pair(&login);
+        // The session cookie is not enough on its own: Access is checked on every request.
+        let no_token = via_tunnel("api/state")
+            .header(header::COOKIE, cookie.as_str())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(no_token.status(), 403);
+        let with_both = via_tunnel("api/state")
+            .header(header::COOKIE, cookie.as_str())
+            .header("Cf-Access-Jwt-Assertion", token.as_str())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(with_both.status(), 200);
+
+        // Off the tunnel nothing changes.
+        let lan = client
+            .get(format!("{base}api/session"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(lan.status(), 200);
+    }
+
+    /// With `skip_password`, a valid Access token signs the browser in: no app password.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_valid_access_token_can_sign_the_browser_in() {
+        let gate = access_gate(true).await;
+        let handle =
+            start_test_with_access(&settings(RemoteTls::Off), tunnel_hosts(), gate).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let token = token_now();
+
+        let session = client
+            .get(format!("{base}api/session"))
+            .header(header::HOST, "chat.example.com")
+            .header("Cf-Access-Jwt-Assertion", token.as_str())
+            .send()
+            .await
+            .unwrap();
+        let set_cookie = session
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            set_cookie.starts_with("cleanrstai_session="),
+            "{set_cookie}"
+        );
+        let body: Value = session.json().await.unwrap();
+        assert_eq!(body["logged_in"], json!(true));
+
+        // The browser keeps the session with the Access cookie, so the API answers without a
+        // password, and a logout ends the session.
+        let cookie = set_cookie.split(';').next().unwrap().to_owned();
+        let state = client
+            .get(format!("{base}api/state"))
+            .header(header::HOST, "chat.example.com")
+            .header(header::COOKIE, cookie.as_str())
+            .header("Cf-Access-Jwt-Assertion", token.as_str())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(state.status(), 200);
+
+        // A forged token signs nobody in.
+        let forged = client
+            .get(format!("{base}api/state"))
+            .header(header::HOST, "chat.example.com")
+            .header("Cf-Access-Jwt-Assertion", "a.b.c")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), 403);
+        assert!(forged.headers().get(header::SET_COOKIE).is_none());
     }
 }

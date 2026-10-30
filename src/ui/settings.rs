@@ -5,14 +5,43 @@ use eframe::egui;
 
 use super::theme::icon;
 use super::widgets::{code_block, icon_button, kv_editor, list_editor};
+use crate::approval::ApprovalMode;
+use crate::commands::SlashCommand;
 use crate::config::{
-    DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES, McpServerConfig,
-    McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings, RemoteTls,
-    SandboxImageSource, SandboxNetRule, SandboxNetwork, SandboxPull, SandboxSettings, Settings,
-    Theme, TunnelMode, import_mcp_json,
+    AccessSettings, DEFAULT_SANDBOX_DOCKERFILE, FULL_SANDBOX_DOCKERFILE, MAX_SANDBOX_NET_RULES,
+    McpServerConfig, McpTransportConfig, NetProtocol, ProviderConfig, RemoteBind, RemoteSettings,
+    RemoteTls, ReviewScope, ReviewStrictness, SandboxImageSource, SandboxNetRule, SandboxNetwork,
+    SandboxPull, SandboxSettings, Settings, SlashCommandSettings, Theme, TunnelMode,
+    import_mcp_json,
 };
+use crate::hooks::{Hook, HookEvent, HookSettings, MAX_TIMEOUT_SECS};
 use crate::mcp::manager::{ServerStatus, ServerView};
+use crate::memory::{MAX_KB, MIN_KB, Memory, MemoryScope, MemorySettings, Scope};
+use crate::ocr::OcrEngine;
 use crate::remote::{RemoteStatus, TunnelStatus};
+use crate::schedule::ScheduledTask;
+use std::collections::HashMap;
+use uuid::Uuid;
+
+/// A change to the saved memories, made in Settings → Context & files → Memory. These take
+/// effect at once, not with Apply.
+pub enum MemoryChange {
+    Add { text: String, scope: Scope },
+    Edit { id: Uuid, text: String },
+    Delete(Uuid),
+    DeleteAll,
+}
+
+/// What the Memory section keeps between frames: the text fields.
+#[derive(Default)]
+pub struct MemoryEditor {
+    /// The text of each memory being shown, until its field loses focus.
+    drafts: HashMap<Uuid, String>,
+    new_text: String,
+    /// The project a new memory goes to, in per-project scope (`None`: global).
+    new_scope: Option<Uuid>,
+    confirm_all: bool,
+}
 
 /// The rows of a custom sandbox network: host, protocol, ports and a remove button, with
 /// each rule's error under it.
@@ -103,15 +132,20 @@ fn protocol_label(protocol: NetProtocol) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     General,
+    Appearance,
     Providers,
     Mcp,
     Tools,
+    Extensions,
     Context,
     Docker,
     Subagents,
+    Background,
+    Voice,
 }
 
 pub enum SettingsAction {
+    Memory(MemoryChange),
     Apply(Box<Settings>),
     Close,
     FetchModels(ProviderConfig),
@@ -133,6 +167,8 @@ pub enum SettingsAction {
     CheckSandbox(SandboxSettings),
     /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
     PrepareSandbox(SandboxSettings),
+    /// Run a scheduled task now, as the draft has it (Settings → Background "Run now").
+    RunScheduledTask(Box<ScheduledTask>),
 }
 
 pub struct SettingsUi {
@@ -147,6 +183,9 @@ pub struct SettingsUi {
     import_text: String,
     import_error: Option<String>,
     search: String,
+    /// The microphones found when the Voice tab was first shown.
+    mic_devices: Option<Vec<String>>,
+    memory_ui: MemoryEditor,
     queued: Vec<SettingsAction>,
     pub fetching_models: bool,
     pub models_error: Option<String>,
@@ -164,8 +203,13 @@ pub struct SettingsUi {
     pub update_available: bool,
     /// A Docker test, pull or build is running.
     pub sandbox_busy: bool,
-    /// Outcome of the last Docker test, pull or build: Ok(message) or Err(error).
+    /// Outcome of the Docker test, pull or build: Ok(message) or Err(error).
     pub sandbox_status: Option<Result<String, String>>,
+    /// Skills in the app's skills folder, read when the Skills & hooks tab is first shown
+    /// (and again after "Refresh").
+    user_skills: Option<Vec<crate::skills::Skill>>,
+    /// Why the skills folder couldn't be opened.
+    skills_folder_error: Option<String>,
 }
 
 pub const FIELD_WIDTH: f32 = 420.0;
@@ -308,6 +352,8 @@ pub struct RemoteUiStatus<'a> {
     pub tunnel: &'a TunnelStatus,
     pub server_dirty: bool,
     pub tunnel_dirty: bool,
+    /// The last reason Cloudflare Access refused a tunnel request, or a failed key fetch.
+    pub access_error: Option<&'a str>,
 }
 
 /// The "Cloudflare Tunnel" rows, under the Remote access status.
@@ -486,9 +532,110 @@ fn tunnel_rows(
         }
     });
     ui.end_row();
+    access_rows(ui, &mut r.tunnel.access, r.tunnel.mode, status.access_error);
+}
+
+/// The "Cloudflare Access" rows of the tunnel: a login gate in front of a named tunnel's
+/// hostname, set up in the Cloudflare dashboard (see `remote::access`).
+fn access_rows(
+    ui: &mut egui::Ui,
+    access: &mut AccessSettings,
+    mode: TunnelMode,
+    error: Option<&str>,
+) {
+    ui.label("Cloudflare Access");
+    if mode == TunnelMode::Quick {
+        ui.weak("Only for named tunnels: a quick tunnel's address can't be put behind an Access application.");
+        ui.end_row();
+        return;
+    }
+    ui.checkbox(
+        &mut access.enabled,
+        "Require Cloudflare Access in front of the tunnel's hostname",
+    );
+    ui.end_row();
+    if !access.enabled {
+        return;
+    }
+
+    ui.label("Team domain");
+    ui.add(
+        egui::TextEdit::singleline(&mut access.team_domain)
+            .hint_text("myteam.cloudflareaccess.com")
+            .desired_width(FIELD_WIDTH - 100.0),
+    );
+    ui.end_row();
+
+    ui.label("Audience (AUD) tag");
+    ui.add(
+        egui::TextEdit::singleline(&mut access.audience)
+            .hint_text("from the Access application's overview")
+            .desired_width(FIELD_WIDTH - 100.0),
+    );
+    ui.end_row();
+
+    ui.label("Sign in with Access");
+    ui.checkbox(
+        &mut access.skip_password,
+        "A valid Access login also signs the browser in, so the app password is not asked",
+    );
+    ui.end_row();
+
+    ui.label("Access status");
+    ui.vertical(|ui| {
+        let warn = ui.visuals().warn_fg_color;
+        let team = crate::config::team_host(&access.team_domain);
+        if !crate::remote::valid_team_domain(&team) {
+            ui.colored_label(
+                warn,
+                "Enter the team domain, e.g. myteam.cloudflareaccess.com.",
+            );
+        }
+        if access.audience.trim().is_empty() {
+            ui.colored_label(warn, "Enter the application's audience (AUD) tag.");
+        }
+        match error {
+            Some(e) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            None => {
+                ui.weak("No Access errors so far.");
+            }
+        }
+        weak_note(
+            ui,
+            "In the Cloudflare Zero Trust dashboard, add a self-hosted application for the \
+             tunnel's public hostname, with a policy for who may sign in. Copy its Application \
+             Audience (AUD) tag here, and your team domain (the name.cloudflareaccess.com \
+             address your team signs in to). Requests that skip Access are refused.",
+        );
+    });
+    ui.end_row();
 }
 
 /// Weak text in a grid cell, wrapped at the width of the fields.
+/// A combo box for the provider a voice feature uses: None is the active provider.
+fn provider_choice(
+    ui: &mut egui::Ui,
+    id: &str,
+    choice: &mut Option<String>,
+    providers: &[(String, String)],
+) {
+    let shown = choice
+        .as_ref()
+        .and_then(|id| providers.iter().find(|(pid, _)| pid == id))
+        .map_or("Active provider", |(_, name)| name.as_str())
+        .to_owned();
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(choice, None, "Active provider");
+            for (pid, name) in providers {
+                ui.selectable_value(choice, Some(pid.clone()), name);
+            }
+        });
+}
+
 fn weak_note(ui: &mut egui::Ui, text: &str) {
     ui.scope(|ui| {
         ui.set_max_width(FIELD_WIDTH);
@@ -502,21 +649,56 @@ fn web_search_rows(
     s: &mut crate::config::WebSearchSettings,
     show_key: &mut bool,
 ) {
-    use crate::config::SearchBackend;
+    use crate::config::{MAX_NATIVE_SEARCH_USES, NativeSearch, SearchBackend};
     ui.strong("Web search");
+    // The provider's own search replaces the service below for providers that have one.
+    let native = s.native == NativeSearch::PreferProvider;
     egui::Grid::new("web-search-grid")
         .num_columns(2)
         .spacing([12.0, 10.0])
         .show(ui, |ui| {
-            ui.label("Service");
-            egui::ComboBox::from_id_salt("search-backend")
-                .selected_text(s.backend.label())
+            ui.label("Search with");
+            egui::ComboBox::from_id_salt("search-native")
+                .selected_text(s.native.label())
                 .width(FIELD_WIDTH)
                 .show_ui(ui, |ui| {
-                    for b in SearchBackend::ALL {
-                        ui.selectable_value(&mut s.backend, b, b.label());
+                    for n in NativeSearch::ALL {
+                        ui.selectable_value(&mut s.native, n, n.label());
                     }
                 });
+            ui.end_row();
+            if native {
+                ui.label("");
+                weak_note(
+                    ui,
+                    "Anthropic (Messages API), OpenAI (Responses API) and OpenRouter search \
+                     on the provider's side and cite the pages they used. Other providers \
+                     keep the service below. The service's settings are not used then.",
+                );
+                ui.end_row();
+                ui.label("Searches");
+                ui.add(
+                    egui::DragValue::new(&mut s.native_max_uses)
+                        .range(1..=MAX_NATIVE_SEARCH_USES)
+                        .suffix(" per reply"),
+                )
+                .on_hover_text("The most searches the model may run for one reply");
+                ui.end_row();
+            }
+
+            ui.add_enabled_ui(!native, |ui| {
+                ui.label("Service");
+            });
+            ui.add_enabled_ui(!native, |ui| {
+                egui::ComboBox::from_id_salt("search-backend")
+                    .selected_text(s.backend.label())
+                    .width(FIELD_WIDTH)
+                    .show_ui(ui, |ui| {
+                        for b in SearchBackend::ALL {
+                            ui.selectable_value(&mut s.backend, b, b.label());
+                        }
+                    });
+            });
             ui.end_row();
 
             match s.backend {
@@ -542,7 +724,7 @@ fn web_search_rows(
                     );
                     ui.end_row();
                 }
-                SearchBackend::Brave | SearchBackend::Tavily => {
+                SearchBackend::Brave | SearchBackend::Tavily | SearchBackend::Kagi => {
                     ui.label("API key");
                     ui.horizontal(|ui| {
                         ui.add(
@@ -558,7 +740,8 @@ fn web_search_rows(
             }
 
             ui.label("Results");
-            ui.add(
+            ui.add_enabled(
+                !native,
                 egui::DragValue::new(&mut s.max_results)
                     .range(1..=crate::config::MAX_SEARCH_RESULTS)
                     .suffix(" per search"),
@@ -569,7 +752,7 @@ fn web_search_rows(
             ui.label("Options");
             ui.vertical(|ui| {
                 ui.add_enabled(
-                    s.backend != SearchBackend::Tavily,
+                    !native && !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
                     egui::Checkbox::new(&mut s.safe_search, "Safe search"),
                 );
                 ui.checkbox(&mut s.ask, "Ask before each search")
@@ -577,6 +760,13 @@ fn web_search_rows(
                         "The query leaves this computer and can contain parts of the chat. \
                          Subagents and auto-approved calls never ask.",
                     );
+                if native {
+                    weak_note(
+                        ui,
+                        "Doesn't apply to the provider's own search: it runs on the provider's \
+                         side, so it can't ask before each search.",
+                    );
+                }
                 ui.checkbox(
                     &mut s.subagents,
                     "Subagents may search (when they may use the built-in tools)",
@@ -625,6 +815,7 @@ impl SettingsUi {
             import_text: String::new(),
             import_error: None,
             search: String::new(),
+            mic_devices: None,
             queued: Vec::new(),
             fetching_models: false,
             models_error: None,
@@ -638,6 +829,9 @@ impl SettingsUi {
             update_available: false,
             sandbox_busy: false,
             sandbox_status: None,
+            user_skills: None,
+            skills_folder_error: None,
+            memory_ui: MemoryEditor::default(),
         }
     }
 
@@ -656,6 +850,7 @@ impl SettingsUi {
     }
 
     /// Render the settings page into `ui` (it takes over the main area while open).
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -663,17 +858,31 @@ impl SettingsUi {
         servers: &[ServerView],
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
+        access_error: Option<&str>,
+        chats: &[(Uuid, String)],
+        memories: &[Memory],
+        projects: &[(Uuid, String)],
     ) -> Vec<SettingsAction> {
         let mut actions = Vec::new();
         let dark = ui.visuals().dark_mode;
 
-        egui::Panel::left("settings-nav")
-            .resizable(false)
-            .exact_size(220.0)
+        let p = super::theme::palette(dark);
+        egui::Panel::top("settings-header")
+            .show_separator_line(true)
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 20,
+                right: 12,
+                top: 12,
+                bottom: 10,
+            }))
             .show(ui, |ui| {
-                ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.heading("Settings");
+                    ui.label(
+                        egui::RichText::new("Settings")
+                            .size(16.0)
+                            .strong()
+                            .color(p.ink),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if super::widgets::icon_button(ui, icon::CLOSE, "Close settings (Esc)")
                             .clicked()
@@ -682,51 +891,73 @@ impl SettingsUi {
                         }
                     });
                 });
+            });
+
+        egui::Panel::left("settings-nav")
+            .resizable(false)
+            .exact_size(195.0)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 10)))
+            .show(ui, |ui| {
+                search_pill(ui, &mut self.search);
                 ui.add_space(6.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("search settings")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(6.0);
-                if self.search.trim().is_empty() {
-                    for (tab, label) in [
-                        (Tab::General, "General"),
-                        (Tab::Providers, "Providers"),
-                        (Tab::Mcp, "MCP servers"),
-                        (Tab::Tools, "Built-in tools"),
-                        (Tab::Context, "Context & files"),
-                        (Tab::Docker, "Docker sandbox"),
-                        (Tab::Subagents, "Subagents"),
-                    ] {
-                        if ui
-                            .add(
-                                egui::Button::selectable(self.tab == tab, label)
-                                    .right_text("")
-                                    .min_size(egui::vec2(ui.available_width(), 30.0)),
-                            )
-                            .clicked()
-                        {
-                            self.tab = tab;
-                        }
-                    }
+                let query = self.search.trim().to_owned();
+                let query = query.as_str();
+                let hits = if query.is_empty() {
+                    Vec::new()
                 } else {
-                    let hits = search_settings(&self.search);
-                    if hits.is_empty() {
-                        ui.weak("No matching settings");
-                    }
-                    for (tab, section, label) in hits {
-                        let resp = ui.add(
-                            egui::Button::selectable(self.tab == tab, label)
-                                .right_text(egui::RichText::new(section).small().weak())
-                                .min_size(egui::vec2(ui.available_width(), 28.0)),
-                        );
-                        if resp.clicked() {
-                            self.tab = tab;
-                            self.search.clear();
+                    search_settings(query)
+                };
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = super::chrome::ROW_GAP;
+                        let mut shown = 0;
+                        for (group, tabs) in NAV_GROUPS {
+                            // While searching, only the pages whose name or settings match.
+                            let tabs: Vec<_> = tabs
+                                .iter()
+                                .filter(|(tab, _, label)| {
+                                    query.is_empty()
+                                        || super::palette::score(query, label).is_some()
+                                        || hits.iter().any(|h| h.0 == *tab)
+                                })
+                                .collect();
+                            if tabs.is_empty() {
+                                continue;
+                            }
+                            super::chrome::section_label(ui, group);
+                            for (tab, glyph, label) in tabs {
+                                shown += 1;
+                                if super::chrome::nav_row(ui, glyph, label, self.tab == *tab, false)
+                                    .clicked()
+                                {
+                                    self.tab = *tab;
+                                }
+                            }
+                            ui.add_space(6.0);
                         }
-                    }
-                }
+                        if !query.is_empty() {
+                            if hits.is_empty() && shown == 0 {
+                                ui.add_space(6.0);
+                                ui.weak("No matching settings");
+                            }
+                            if !hits.is_empty() {
+                                super::chrome::section_label(ui, "Matching settings");
+                            }
+                            for (tab, section, label) in hits {
+                                let resp = ui.add(
+                                    egui::Button::selectable(self.tab == tab, label)
+                                        .right_text(egui::RichText::new(section).small().weak())
+                                        .truncate()
+                                        .min_size(egui::vec2(ui.available_width(), 28.0)),
+                                );
+                                if resp.clicked() {
+                                    self.tab = tab;
+                                    self.search.clear();
+                                }
+                            }
+                        }
+                    });
             });
 
         egui::Panel::bottom("settings-buttons")
@@ -761,34 +992,55 @@ impl SettingsUi {
                 ui.add_space(4.0);
             });
 
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            ui.heading(match self.tab {
+        egui::CentralPanel::no_frame()
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 24,
+                right: 16,
+                top: 16,
+                bottom: 8,
+            }))
+            .show(ui, |ui| {
+            ui.label(egui::RichText::new(match self.tab {
+                Tab::Appearance => "Appearance",
                 Tab::Providers => "Providers",
                 Tab::Mcp => "MCP Servers",
                 Tab::Tools => "Built-in Tools",
+                Tab::Extensions => "Skills & hooks",
                 Tab::Context => "Context & files",
                 Tab::Docker => "Docker sandbox",
                 Tab::Subagents => "Subagents",
+                Tab::Background => "Background",
+                Tab::Voice => "Voice",
                 Tab::General => "General",
-            });
+            }).size(18.0).color(p.ink));
             ui.weak(match self.tab {
+                Tab::Appearance => "Theme, size, motion, your name, and how replies look.",
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
                 Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
                 Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
-                Tab::Context => "Context compaction, project instructions from the workspace, and diffs and undo for file edits.",
+                Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
+                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), memory (facts kept across chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
                 Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
                 Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
-                Tab::General => "Appearance, behaviour, secrets and data.",
+                Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
+                Tab::Voice => "Dictate into the message box, and read replies aloud: the speech providers, models and voices.",
+                Tab::General => "Behaviour, secrets, remote access, updates and data.",
             });
             ui.add_space(8.0);
             match self.tab {
                 Tab::Providers => self.providers_tab(ui, &mut actions),
                 Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
                 Tab::Tools => self.tools_tab(ui),
-                Tab::Context => self.context_tab(ui),
+                Tab::Extensions => self.extensions_tab(ui),
+                Tab::Context => self.context_tab(ui, memories, projects, &mut actions),
                 Tab::Docker => self.docker_tab(ui, &mut actions),
                 Tab::Subagents => self.subagents_tab(ui),
-                Tab::General => self.general_tab(ui, live, remote, tunnel, &mut actions),
+                Tab::Background => self.background_tab(ui, chats, &mut actions),
+                Tab::Voice => self.voice_tab(ui),
+                Tab::Appearance => self.appearance_tab(ui),
+                Tab::General => {
+                    self.general_tab(ui, live, remote, (tunnel, access_error), &mut actions)
+                }
             }
         });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
@@ -940,6 +1192,20 @@ impl SettingsUi {
                             ui.colored_label(ui.visuals().error_fg_color, err);
                             ui.end_row();
                         }
+
+                        ui.label("Context size").on_hover_text(
+                            "Used when the server doesn't report the model's context size; for \
+                             compaction and the context-use figure",
+                        );
+                        super::widgets::inherited_value(
+                            ui,
+                            &mut p.context_tokens,
+                            None,
+                            8192,
+                            1024..=10_000_000,
+                            256.0,
+                        );
+                        ui.end_row();
 
                         ui.label("API");
                         ui.vertical(|ui| {
@@ -1480,13 +1746,13 @@ impl SettingsUi {
                         &mut b.web_search,
                         icon::SEARCH,
                         "Web search",
-                        "Searches the web with the service below and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
+                        "Searches the web with the service below (or the provider's own search, when Search with says so) and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
                     ),
                     (
                         &mut b.workspace,
                         icon::FOLDER,
                         "Workspace tools",
-                        "When a chat has a working folder (set below the message box): read_file, file_glob_search, grep_search and get_info run freely inside it; write_file, edit_file and exec_shell_command ask for approval. Paths can't leave the folder.",
+                        "When a chat has a working folder (set below the message box): read_file, file_glob_search, grep_search, get_info, git_status and git_diff run freely inside it; write_file, edit_file and exec_shell_command ask for approval. Paths can't leave the folder.",
                     ),
                 ] {
                     ui.horizontal(|ui| {
@@ -1497,6 +1763,31 @@ impl SettingsUi {
                     });
                     ui.add_space(8.0);
                 }
+                ui.add_enabled_ui(b.workspace, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut b.git_commit,
+                            egui::RichText::new(format!("{}  Commit (git_commit)", icon::CHECK_SQUARE))
+                                .strong(),
+                        );
+                    });
+                    ui.indent("git-commit", |ui| {
+                        ui.weak(
+                            "Lets the model commit the workspace's changes to its git repository as \
+                             one local commit. Every commit asks for approval, even in Auto in \
+                             workspace mode. Nothing is pushed, and git hooks don't run. Off by \
+                             default.",
+                        );
+                        ui.add_enabled_ui(b.git_commit, |ui| {
+                            ui.checkbox(&mut b.allow_signing, "Allow signed commits");
+                            ui.weak(
+                                "Off: commits are never signed. On: a repository set to sign its \
+                                 commits signs them, and gpg may ask for a passphrase.",
+                            );
+                        });
+                    });
+                    ui.add_space(8.0);
+                });
                 ui.add_enabled_ui(b.fetch, |ui| {
                     ui.checkbox(
                         &mut b.fetch_private_networks,
@@ -1518,13 +1809,140 @@ impl SettingsUi {
                 ui.add_space(8.0);
                 ui.weak(format!(
                     "{}  The subagent tool has its own page: Subagents. Context compaction, \
-                     project instructions and undo for file edits are on Context & files.",
+                     project instructions and undo for file edits are on Context & files. \
+                     Slash commands and skills are on Skills & hooks.",
                     icon::ROBOT
                 ));
             });
     }
 
-    fn context_tab(&mut self, ui: &mut egui::Ui) {
+    fn extensions_tab(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                slash_command_rows(ui, &mut self.draft.general.slash_commands);
+                ui.add_space(16.0);
+                self.skill_rows(ui);
+                ui.add_space(16.0);
+                hook_rows(ui, &mut self.draft.general.hooks);
+            });
+    }
+
+    /// Skills: the on/off switch, the workspace switch, the size limit, the skills folder and
+    /// the skills it holds, each with its own switch.
+    fn skill_rows(&mut self, ui: &mut egui::Ui) {
+        let s = &mut self.draft.general.skills;
+        ui.label(egui::RichText::new(format!("{}  Skills", icon::BOOKS)).strong());
+        ui.indent("skills-help", |ui| {
+            ui.weak(
+                "A skill is a folder with a SKILL.md file: instructions the model reads with \
+                 its load_skill tool when a task matches the skill's description. Only the \
+                 names and descriptions are sent with each message; the text is sent when the \
+                 model loads it.",
+            );
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut s.enabled, "Offer skills to the model");
+        ui.add_enabled_ui(s.enabled, |ui| {
+            ui.checkbox(
+                &mut s.workspace_skills,
+                "Load skills from the workspace's .cleanrstai/skills folder",
+            )
+            .on_hover_text(
+                "Each .cleanrstai/skills/<name>/SKILL.md in a chat's working folder is a skill. \
+                 It replaces a skill from your skills folder with the same name.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Size limit per load");
+                ui.add(
+                    egui::DragValue::new(&mut s.max_kb)
+                        .range(1..=1024)
+                        .suffix(" KB"),
+                )
+                .on_hover_text("Text beyond this is left out when the model loads a skill");
+            });
+        });
+        ui.add_space(8.0);
+
+        let folder = crate::skills::user_root();
+        ui.horizontal(|ui| {
+            if ui
+                .button(format!("{}  Open skills folder", icon::FOLDER))
+                .on_hover_text("Create the folder if it's missing and show it")
+                .clicked()
+            {
+                self.skills_folder_error = match std::fs::create_dir_all(&folder)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| open::that_detached(&folder).map_err(|e| e.to_string()))
+                {
+                    Ok(()) => None,
+                    Err(e) => Some(format!("Couldn't open {}: {e}", folder.display())),
+                };
+                self.user_skills = None;
+            }
+            if ui.button("Refresh").clicked() {
+                self.user_skills = None;
+            }
+        });
+        ui.weak(format!("Your skills folder: {}", folder.display()));
+        if let Some(e) = &self.skills_folder_error {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+        ui.add_space(6.0);
+
+        let found = self
+            .user_skills
+            .get_or_insert_with(|| {
+                // Listed without the disabled names, so switched-off skills can be switched on.
+                let all = crate::config::SkillSettings {
+                    disabled: Vec::new(),
+                    ..self.draft.general.skills.clone()
+                };
+                crate::skills::discover(&[(folder.clone(), crate::skills::SkillSource::User)], &all)
+            })
+            .clone();
+        if found.is_empty() {
+            ui.weak(
+                "No skills yet. Add a folder with a SKILL.md file to the skills folder above, \
+                 then press Refresh.",
+            );
+        }
+        let disabled = &mut self.draft.general.skills.disabled;
+        for skill in &found {
+            ui.push_id(("skill", &skill.dir), |ui| {
+                let mut on = !disabled.contains(&skill.name);
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut on, egui::RichText::new(&skill.name).strong())
+                        .changed()
+                    {
+                        if on {
+                            disabled.retain(|n| *n != skill.name);
+                        } else if !disabled.contains(&skill.name) {
+                            disabled.push(skill.name.clone());
+                        }
+                    }
+                    ui.weak(skill.source.label());
+                });
+                ui.indent("skill-desc", |ui| {
+                    if skill.description.is_empty() {
+                        ui.weak("No description");
+                    } else {
+                        ui.weak(skill.description.as_str());
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+    }
+
+    fn context_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        memories: &[Memory],
+        projects: &[(Uuid, String)],
+        actions: &mut Vec<SettingsAction>,
+    ) {
         let providers: Vec<(String, String, Vec<String>)> = self
             .draft
             .providers
@@ -1759,6 +2177,114 @@ impl SettingsUi {
                     });
                 ui.add_space(16.0);
 
+                // ---- projects
+                let pr = &mut g.projects;
+                ui.checkbox(
+                    &mut pr.enabled,
+                    egui::RichText::new(format!("{}  Projects", icon::FOLDER)).strong(),
+                );
+                ui.indent("projects-help", |ui| {
+                    ui.weak(
+                        "Group chats into projects in the sidebar. A project's instructions and \
+                         files are added to the system prompt of each of its chats, and its \
+                         folder, provider, model, tool switches and permission mode are what a \
+                         new chat in it starts with. Off hides projects and stops adding their \
+                         context. Each chat can switch the project context off too.",
+                    );
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("projects-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Files size limit");
+                        ui.add(
+                            egui::DragValue::new(&mut pr.max_files_kb)
+                                .range(
+                                    crate::projects::MIN_FILES_KB..=crate::projects::MAX_FILES_KB,
+                                )
+                                .suffix(" KB"),
+                        )
+                        .on_hover_text(
+                            "The text of a project's files sent with each request, in all. \
+                             Longer files are cut.",
+                        );
+                        ui.end_row();
+
+                        ui.label("New projects: folder");
+                        ui.horizontal(|ui| {
+                            let shown = pr
+                                .default_workspace
+                                .as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| "None".into());
+                            ui.label(shown);
+                            if ui.small_button("Choose…").clicked()
+                                && let Some(dir) = rfd::FileDialog::new()
+                                    .set_title("Choose a default working folder")
+                                    .pick_folder()
+                            {
+                                pr.default_workspace = Some(dir);
+                            }
+                            if pr.default_workspace.is_some() && ui.small_button("Clear").clicked()
+                            {
+                                pr.default_workspace = None;
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("New projects: provider");
+                        let selected = match &pr.default_provider {
+                            None => "Settings' active provider".to_owned(),
+                            Some(id) => providers.iter().find(|(pid, ..)| pid == id).map_or(
+                                "A provider that no longer exists".into(),
+                                |(_, name, _)| name.clone(),
+                            ),
+                        };
+                        egui::ComboBox::from_id_salt("projects-default-provider")
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut pr.default_provider,
+                                    None,
+                                    "Settings' active provider",
+                                );
+                                for (id, name, _) in &providers {
+                                    ui.selectable_value(
+                                        &mut pr.default_provider,
+                                        Some(id.clone()),
+                                        name,
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("New projects: instructions");
+                    if !pr.default_instructions.is_empty() && ui.small_button("Clear").clicked() {
+                        pr.default_instructions.clear();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut pr.default_instructions)
+                        .hint_text("Nothing: a new project starts empty")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(16.0);
+
+                // ---- memory
+                memory_section(
+                    ui,
+                    &mut g.memory,
+                    &mut self.memory_ui,
+                    memories,
+                    projects,
+                    actions,
+                );
+                ui.add_space(16.0);
+
                 // ---- file edits
                 let fe = &mut g.file_edits;
                 ui.label(
@@ -1804,6 +2330,236 @@ impl SettingsUi {
                             });
                             ui.end_row();
                         });
+                });
+                ui.add_space(16.0);
+
+                // ---- code review
+                let r = &mut g.review;
+                ui.checkbox(
+                    &mut r.enabled,
+                    egui::RichText::new(format!("{}  Code review", icon::CODE)).strong(),
+                )
+                .on_hover_text("Adds Review changes to the tools menu and the command palette");
+                ui.indent("review-help", |ui| {
+                    ui.weak(
+                        "Review changes sends the working folder's git diff to a model with the \
+                         instructions below, as a new message in the chat. The diff leaves your \
+                         computer for the provider chosen here.",
+                    );
+                });
+                ui.add_enabled_ui(r.enabled, |ui| {
+                    ui.add_space(6.0);
+                    ui.label("Changes to review");
+                    ui.radio_value(
+                        &mut r.scope,
+                        ReviewScope::Uncommitted,
+                        "Uncommitted changes (staged, unstaged and new files)",
+                    );
+                    ui.radio_value(
+                        &mut r.scope,
+                        ReviewScope::Branch,
+                        "This branch against its base",
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("How strict");
+                        ui.radio_value(&mut r.strictness, ReviewStrictness::Lenient, "Lenient")
+                            .on_hover_text("Only bugs, data loss and security issues");
+                        ui.radio_value(&mut r.strictness, ReviewStrictness::Normal, "Normal")
+                            .on_hover_text("The review instructions below, as written");
+                        ui.radio_value(&mut r.strictness, ReviewStrictness::Strict, "Strict")
+                            .on_hover_text(
+                                "Also style, naming, readability, missing tests and \
+                                 documentation, and risky assumptions",
+                            );
+                    });
+                    ui.add_space(6.0);
+                    egui::Grid::new("review-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Base branch");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut r.base_branch)
+                                    .hint_text("auto: origin/HEAD, main or master")
+                                    .desired_width(FIELD_WIDTH),
+                            )
+                            .on_hover_text("Used by \"This branch against its base\"");
+                            ui.end_row();
+
+                            ui.label("Review by");
+                            let current = providers
+                                .iter()
+                                .find(|(id, ..)| *id == r.provider_id)
+                                .map_or("The chat's provider".to_owned(), |(_, n, _)| n.clone());
+                            egui::ComboBox::from_id_salt("review-provider")
+                                .selected_text(current)
+                                .width(FIELD_WIDTH)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut r.provider_id,
+                                        String::new(),
+                                        "The chat's provider",
+                                    );
+                                    for (id, name, _) in &providers {
+                                        ui.selectable_value(&mut r.provider_id, id.clone(), name);
+                                    }
+                                });
+                            ui.end_row();
+
+                            ui.label("Review model");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut r.model)
+                                        .hint_text("the provider's selected model")
+                                        .desired_width(FIELD_WIDTH - 40.0),
+                                );
+                                let models = providers
+                                    .iter()
+                                    .find(|(id, ..)| *id == r.provider_id)
+                                    .map(|(.., m)| m.clone())
+                                    .unwrap_or_default();
+                                if !models.is_empty() {
+                                    ui.menu_button(icon::CARET_DOWN, |ui| {
+                                        ui.set_max_height(320.0);
+                                        egui::ScrollArea::vertical().show(ui, |ui| {
+                                            for m in models {
+                                                if ui.button(&m).clicked() {
+                                                    r.model = m;
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Largest diff");
+                            ui.add(
+                                egui::DragValue::new(&mut r.max_diff_kb)
+                                    .range(16..=4096)
+                                    .suffix(" KB"),
+                            )
+                            .on_hover_text(
+                                "A longer diff is cut to this size, and the model is told so",
+                            );
+                            ui.end_row();
+                        });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.strong("Review instructions");
+                        if r.prompt != crate::config::DEFAULT_REVIEW_PROMPT
+                            && ui.small_button("Reset").clicked()
+                        {
+                            r.prompt = crate::config::DEFAULT_REVIEW_PROMPT.into();
+                        }
+                    });
+                    ui.add(
+                        egui::TextEdit::multiline(&mut r.prompt)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+
+                ui.add_space(16.0);
+
+                // ---- OCR for scanned PDFs
+                let o = &mut g.ocr;
+                ui.checkbox(
+                    &mut o.enabled,
+                    egui::RichText::new(format!("{}  Read scanned PDFs (OCR)", icon::FILE))
+                        .strong(),
+                );
+                ui.indent("ocr-help", |ui| {
+                    ui.weak(
+                        "A PDF with no text layer (a scan or a photo of pages) has its page \
+                         images read. A vision model reads each page, and the page image is sent \
+                         to the provider chosen here; Tesseract runs on this computer. Pages past \
+                         the limit are not read. Without OCR, such a PDF is attached with a note.",
+                    );
+                });
+                ui.add_enabled_ui(o.enabled, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Read with");
+                        ui.radio_value(&mut o.engine, OcrEngine::VisionModel, "A vision model");
+                        ui.radio_value(&mut o.engine, OcrEngine::Tesseract, "Tesseract");
+                    });
+                    ui.add_space(6.0);
+                    egui::Grid::new("ocr-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            if o.engine == OcrEngine::VisionModel {
+                                ui.label("Vision model by");
+                                let current = o
+                                    .provider
+                                    .as_ref()
+                                    .and_then(|id| providers.iter().find(|(pid, ..)| pid == id))
+                                    .map_or("The chat's provider".to_owned(), |(_, n, _)| {
+                                        n.clone()
+                                    });
+                                egui::ComboBox::from_id_salt("ocr-provider")
+                                    .selected_text(current)
+                                    .width(FIELD_WIDTH)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut o.provider,
+                                            None,
+                                            "The chat's provider",
+                                        );
+                                        for (id, name, _) in &providers {
+                                            ui.selectable_value(
+                                                &mut o.provider,
+                                                Some(id.clone()),
+                                                name,
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+                            } else {
+                                ui.label("Tesseract program");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.tesseract_path)
+                                        .hint_text("tesseract")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text("A name on PATH, or the full path of the program");
+                                ui.end_row();
+
+                                ui.label("Languages");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut o.languages)
+                                        .hint_text("eng")
+                                        .desired_width(FIELD_WIDTH),
+                                )
+                                .on_hover_text(
+                                    "Tesseract language codes joined with +, e.g. eng+deu; \
+                                     each must be installed with Tesseract",
+                                );
+                                ui.end_row();
+                            }
+
+                            ui.label("Pages per PDF");
+                            ui.add(
+                                egui::DragValue::new(&mut o.max_pages)
+                                    .range(1..=200)
+                                    .suffix(" pages"),
+                            )
+                            .on_hover_text(
+                                "Pages past this are not read, and the model is told so",
+                            );
+                            ui.end_row();
+                        });
+                    if o.engine == OcrEngine::VisionModel {
+                        ui.add_space(4.0);
+                        weak_note(
+                            ui,
+                            "The model must accept images. Pages are sent one at a time, so a \
+                             long scan takes a while.",
+                        );
+                    }
                 });
             });
     }
@@ -2020,6 +2776,318 @@ impl SettingsUi {
             });
     }
 
+    fn voice_tab(&mut self, ui: &mut egui::Ui) {
+        let providers: Vec<(String, String)> = self
+            .draft
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let devices = self
+            .mic_devices
+            .get_or_insert_with(crate::voice::record::input_devices)
+            .clone();
+        let voice = &mut self.draft.general.voice;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.checkbox(
+                    &mut voice.input.enabled,
+                    egui::RichText::new("Voice input").strong(),
+                );
+                ui.indent("voice-in", |ui| {
+                    ui.weak(
+                        "A microphone button under the message box records a clip, and the \
+                         transcript goes into the message box to read and edit before you \
+                         send it. Ctrl/⌘+Shift+M starts and stops a recording. The clip goes to \
+                         the transcription endpoint below: a cloud service, or a local server \
+                         such as whisper.cpp, faster-whisper-server, speaches or LocalAI.",
+                    );
+                    ui.add_enabled_ui(voice.input.enabled, |ui| {
+                        egui::Grid::new("voice-in-grid")
+                            .num_columns(2)
+                            .spacing([12.0, 10.0])
+                            .show(ui, |ui| {
+                                ui.label("Provider");
+                                provider_choice(
+                                    ui,
+                                    "voice-in-provider",
+                                    &mut voice.input.provider,
+                                    &providers,
+                                );
+                                ui.end_row();
+                                ui.label("Model");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut voice.input.model)
+                                        .desired_width(220.0),
+                                );
+                                ui.end_row();
+                                ui.label("Language");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut voice.input.language)
+                                        .hint_text("Detect")
+                                        .desired_width(220.0),
+                                );
+                                ui.end_row();
+                                ui.label("Longest recording (seconds)");
+                                ui.add(
+                                    egui::DragValue::new(&mut voice.input.max_secs)
+                                        .range(5..=crate::voice::MAX_RECORD_SECS),
+                                );
+                                ui.end_row();
+                                ui.label("Microphone");
+                                mic_picker(ui, &mut voice.input.device, &devices);
+                                ui.end_row();
+                            });
+                    });
+                });
+                ui.add_space(12.0);
+                ui.checkbox(
+                    &mut voice.output.enabled,
+                    egui::RichText::new("Read replies aloud").strong(),
+                );
+                ui.indent("voice-out", |ui| {
+                    ui.weak(
+                        "A speaker button under each reply reads it aloud, and Ctrl/⌘+Shift+S \
+                         reads the latest reply or stops the reading. Code blocks and tables are \
+                         announced rather than read, and links are read as their text.",
+                    );
+                    ui.add_enabled_ui(voice.output.enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.radio_value(
+                                &mut voice.output.engine,
+                                crate::voice::SpeechEngine::OsVoice,
+                                crate::voice::SpeechEngine::OsVoice.label(),
+                            );
+                            ui.radio_value(
+                                &mut voice.output.engine,
+                                crate::voice::SpeechEngine::Endpoint,
+                                crate::voice::SpeechEngine::Endpoint.label(),
+                            );
+                        });
+                        let endpoint = voice.output.engine == crate::voice::SpeechEngine::Endpoint;
+                        ui.weak(if endpoint {
+                            "Sent to the speech endpoint below as WAV audio, then played on this computer."
+                        } else {
+                            "Spoken by this computer: say on macOS, System.Speech on Windows, spd-say or espeak-ng on Linux. Nothing leaves the computer."
+                        });
+                        egui::Grid::new("voice-out-grid")
+                            .num_columns(2)
+                            .spacing([12.0, 10.0])
+                            .show(ui, |ui| {
+                                if endpoint {
+                                    ui.label("Provider");
+                                    provider_choice(
+                                        ui,
+                                        "voice-out-provider",
+                                        &mut voice.output.provider,
+                                        &providers,
+                                    );
+                                    ui.end_row();
+                                    ui.label("Model");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut voice.output.model)
+                                            .desired_width(220.0),
+                                    );
+                                    ui.end_row();
+                                    ui.label("Voice");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut voice.output.voice)
+                                            .desired_width(220.0),
+                                    );
+                                    ui.end_row();
+                                }
+                                ui.label("Speed");
+                                ui.add(
+                                    egui::Slider::new(&mut voice.output.speed, 0.5..=2.0)
+                                        .step_by(0.05),
+                                );
+                                ui.end_row();
+                                ui.label("Longest reply read (characters)");
+                                ui.add(
+                                    egui::DragValue::new(&mut voice.output.max_chars).range(
+                                        200..=crate::voice::MAX_SPEAK_CHARS,
+                                    ),
+                                );
+                                ui.end_row();
+                            });
+                    });
+                });
+            });
+    }
+
+    fn background_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        chats: &[(Uuid, String)],
+        actions: &mut Vec<SettingsAction>,
+    ) {
+        let providers: Vec<(String, String)> = self
+            .draft
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let plan_on = self.draft.general.plan.enabled;
+        let schedules = &mut self.draft.general.schedules;
+        let bg = &mut self.draft.general.background;
+        let ex = &mut self.draft.general.exec;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_enabled_ui(crate::tray::SUPPORTED, |ui| {
+                    ui.checkbox(&mut bg.keep_running, crate::tray::setting_label())
+                });
+                if crate::tray::SUPPORTED {
+                    ui.indent("bg-keep-running", |ui| {
+                        ui.weak(
+                            "Closing the window hides it, and replies and MCP servers keep \
+                             running. Show the window or quit from the icon's menu. On macOS, \
+                             Command-Q quits as usual.",
+                        );
+                    });
+                } else {
+                    ui.indent("bg-keep-running", |ui| {
+                        ui.weak("Not available on Linux yet.");
+                    });
+                }
+                ui.add_space(10.0);
+                ui.checkbox(
+                    &mut bg.notify,
+                    egui::RichText::new("Notify when a reply finishes, fails or needs approval")
+                        .strong(),
+                );
+                ui.indent("bg-notify", |ui| {
+                    let on = bg.notify;
+                    ui.add_enabled(
+                        on,
+                        egui::Checkbox::new(
+                            &mut bg.notify_only_unfocused,
+                            "Only while the CleanRSTAI window is in the background",
+                        ),
+                    );
+                    ui.weak(
+                        "Sent through the system's notifications. Each chat can also switch \
+                         its notifications off from the tools menu.",
+                    );
+                });
+                ui.add_space(10.0);
+                egui::Grid::new("background-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Replies at once");
+                        ui.add(
+                            egui::DragValue::new(&mut bg.max_parallel)
+                                .range(1..=crate::config::MAX_PARALLEL_RUNS),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        weak_note(
+                            ui,
+                            "Replies beyond this wait in a queue, marked Queued, and start in \
+                             the order they were sent as others finish. Stop on a queued chat \
+                             takes it out of the queue.",
+                        );
+                        ui.end_row();
+
+                        ui.label("Time limit");
+                        ui.add(
+                            egui::DragValue::new(&mut bg.time_limit_mins)
+                                .range(0..=crate::config::MAX_TIME_LIMIT_MINS)
+                                .suffix(" min"),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        weak_note(
+                            ui,
+                            "0 means no limit. A reply that runs longer is stopped and says \
+                             so. The time counts from when the reply starts, including any \
+                             wait for approval.",
+                        );
+                        ui.end_row();
+                    });
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("Command line").strong());
+                ui.checkbox(
+                    &mut ex.enabled,
+                    "Allow `cleanrstai exec` to run requests from a terminal or script",
+                );
+                ui.indent("exec-settings", |ui| {
+                    let on = ex.enabled;
+                    egui::Grid::new("exec-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.add_enabled(on, egui::Label::new("Approvals"));
+                            ui.add_enabled_ui(on, |ui| {
+                                egui::ComboBox::from_id_salt("exec-approval-mode")
+                                    .selected_text(ex.approval_mode.label())
+                                    .show_ui(ui, |ui| {
+                                        for m in ApprovalMode::offered(plan_on) {
+                                            ui.selectable_value(
+                                                &mut ex.approval_mode,
+                                                m,
+                                                m.label(),
+                                            )
+                                            .on_hover_text(m.description());
+                                        }
+                                    });
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            weak_note(
+                                ui,
+                                "The mode of a command-line request; --mode overrides it. Calls \
+                                 it doesn't allow are denied, not asked, and the model is told.",
+                            );
+                            ui.end_row();
+
+                            ui.add_enabled(on, egui::Label::new("MCP servers"));
+                            ui.add_enabled(
+                                on,
+                                egui::Checkbox::new(&mut ex.mcp, "Start them for each request"),
+                            );
+                            ui.end_row();
+
+                            ui.add_enabled(on, egui::Label::new("Wait for them"));
+                            ui.add_enabled(
+                                on,
+                                egui::DragValue::new(&mut ex.mcp_wait_secs)
+                                    .range(0..=crate::exec::MAX_MCP_WAIT_SECS)
+                                    .suffix(" s"),
+                            );
+                            ui.end_row();
+
+                            ui.label("");
+                            weak_note(
+                                ui,
+                                "How long a request waits for servers to connect before it \
+                                 starts. --no-mcp skips them.",
+                            );
+                            ui.end_row();
+
+                            ui.add_enabled(on, egui::Label::new("Chats"));
+                            ui.add_enabled(
+                                on,
+                                egui::Checkbox::new(&mut ex.save_chats, "Save each run's chat"),
+                            );
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    weak_note(
+                        ui,
+                        "Example: git diff | cleanrstai exec --mode read-only \"review this\" -\n\
+                         Replies go to stdout and tool calls to stderr. Run \
+                         `cleanrstai exec --help` for every option.",
+                    );
+                });
+                super::schedule_settings::section(
+                    ui, schedules, &providers, chats, plan_on, actions,
+                );
+            });
+    }
+
     fn subagents_tab(&mut self, ui: &mut egui::Ui) {
         let providers: Vec<(String, String, Vec<String>)> = self
             .draft
@@ -2202,12 +3270,115 @@ impl SettingsUi {
             });
     }
 
+    /// Theme, UI scale, motion, the name used in the greeting, and how replies look; each as
+    /// one row with the control on the right.
+    fn appearance_tab(&mut self, ui: &mut egui::Ui) {
+        use super::chrome::{segmented, setting_row};
+        let g = &mut self.draft.general;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                setting_row(ui, "Theme", "", |ui| {
+                    segmented(
+                        ui,
+                        &mut g.theme,
+                        &[
+                            (Theme::Dark, icon::MOON, "Dark"),
+                            (Theme::Light, icon::SUN, "Light"),
+                            (Theme::System, icon::MONITOR, "Match the system"),
+                        ],
+                    );
+                });
+                setting_row(
+                    ui,
+                    "UI scale",
+                    "Everything in the window, text included",
+                    |ui| {
+                        egui::ComboBox::from_id_salt("ui-scale")
+                            .selected_text(format!("{:.0}%", g.zoom * 100.0))
+                            .show_ui(ui, |ui| {
+                                for z in ZOOM_STEPS {
+                                    ui.selectable_value(
+                                        &mut g.zoom,
+                                        z,
+                                        format!("{:.0}%", z * 100.0),
+                                    );
+                                }
+                            });
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Your name",
+                    "For the greeting and the sidebar; empty uses your account name",
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut g.display_name)
+                                .hint_text("Account name")
+                                .desired_width(180.0),
+                        );
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Reduce motion",
+                    "No fades, sliding sidebar or zooming dialogs",
+                    |ui| {
+                        super::chrome::toggle(ui, &mut g.reduce_motion);
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Reasoning",
+                    "How the model's \"Thinking\" section starts out",
+                    |ui| {
+                        egui::ComboBox::from_id_salt("reasoning-display")
+                            .selected_text(g.reasoning_display.label())
+                            .show_ui(ui, |ui| {
+                                for mode in crate::config::ReasoningDisplay::ALL {
+                                    ui.selectable_value(
+                                        &mut g.reasoning_display,
+                                        mode,
+                                        mode.label(),
+                                    );
+                                }
+                            });
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Speed stats",
+                    "Prefill/decode speed and token counts under responses",
+                    |ui| {
+                        super::chrome::toggle(ui, &mut g.show_stats);
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Load web images in replies",
+                    "Off: they show as links. Loading one tells its server the chat was opened.",
+                    |ui| {
+                        super::chrome::toggle(ui, &mut g.load_remote_images);
+                    },
+                );
+                setting_row(
+                    ui,
+                    "Artifacts in a side panel",
+                    "Open web pages, drawings and long code beside the chat as they arrive",
+                    |ui| {
+                        super::chrome::toggle(ui, &mut g.open_artifacts);
+                    },
+                );
+            });
+    }
+
     fn general_tab(
         &mut self,
         ui: &mut egui::Ui,
         live: &Settings,
         remote: &RemoteStatus,
-        tunnel: &TunnelStatus,
+        (tunnel, access_error): (&TunnelStatus, Option<&str>),
         actions: &mut Vec<SettingsAction>,
     ) {
         let dirty = &self.draft != live;
@@ -2218,10 +3389,12 @@ impl SettingsUi {
             server_dirty: crate::remote::server_settings(draft_remote)
                 != crate::remote::server_settings(live_remote),
             tunnel_dirty: draft_remote.tunnel != live_remote.tunnel,
+            access_error,
         };
         // Applied after the scroll area, which holds a borrow of the draft.
         let mut import_choice: Option<Option<crate::export::ImportMode>> = None;
         let g = &mut self.draft.general;
+        let plan_on = g.plan.enabled;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2237,22 +3410,6 @@ impl SettingsUi {
                     .num_columns(2)
                     .spacing([12.0, 10.0])
                     .show(ui, |ui| {
-                        ui.label("Theme");
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut g.theme, Theme::System, "System");
-                            ui.radio_value(&mut g.theme, Theme::Light, "Light");
-                            ui.radio_value(&mut g.theme, Theme::Dark, "Dark");
-                        });
-                        ui.end_row();
-
-                        ui.label("UI scale");
-                        ui.add(
-                            egui::Slider::new(&mut g.zoom, 0.5..=2.5)
-                                .step_by(0.05)
-                                .suffix("×"),
-                        );
-                        ui.end_row();
-
                         ui.label("Sending");
                         ui.vertical(|ui| {
                             ui.radio_value(
@@ -2352,50 +3509,12 @@ impl SettingsUi {
                         });
                         ui.end_row();
 
-                        ui.label("Reasoning");
-                        ui.vertical(|ui| {
-                            for mode in crate::config::ReasoningDisplay::ALL {
-                                ui.radio_value(&mut g.reasoning_display, mode, mode.label());
-                            }
-                        })
-                        .response
-                        .on_hover_text("How the model's \"Thinking\" section starts out");
-                        ui.end_row();
-
-                        ui.label("Stats");
-                        ui.checkbox(
-                            &mut g.show_stats,
-                            "Show prefill/decode speed and token counts under responses",
-                        );
-                        ui.end_row();
-
-                        ui.label("Images");
-                        ui.checkbox(
-                            &mut g.load_remote_images,
-                            "Load web images in replies",
-                        )
-                        .on_hover_text(
-                            "When off, images from the web show as links. Loading them tells \
-                             the image's server that this chat was opened, and a reply could \
-                             put chat contents in the image address.",
-                        );
-                        ui.end_row();
-
-                        ui.label("Artifacts");
-                        ui.checkbox(
-                            &mut g.open_artifacts,
-                            "Open web pages, drawings and long code in a side panel",
-                        )
-                        .on_hover_text(
-                            "When a reply makes one, the panel opens beside the chat. Off: \
-                             click the card under the reply to open it.",
-                        );
-                        ui.end_row();
-
                         ui.label("Web page preview");
                         let hp = &mut g.html_preview;
                         ui.vertical(|ui| {
-                            ui.add_enabled_ui(crate::ui::webview::SUPPORTED, |ui| {
+                            ui.add_enabled_ui(
+                                crate::ui::webview::SUPPORTED || crate::ui::webview::OWN_WINDOW,
+                                |ui| {
                                 ui.checkbox(&mut hp.enabled, "Show web pages live in the panel")
                                     .on_hover_text(
                                         "Off: the panel shows the code and \"Open in browser\" \
@@ -2414,6 +3533,9 @@ impl SettingsUi {
                                     );
                                 });
                             });
+                            #[cfg(target_os = "linux")]
+                            weak_note(ui, &crate::ui::linux_preview::status());
+                            #[cfg(not(target_os = "linux"))]
                             if !crate::ui::webview::SUPPORTED {
                                 weak_note(
                                     ui,
@@ -2424,11 +3546,39 @@ impl SettingsUi {
                         });
                         ui.end_row();
 
+                        ui.label("Save as files");
+                        ui.vertical(|ui| {
+                            ui.checkbox(&mut g.save_as.docx, "Word document (.docx)");
+                            ui.checkbox(&mut g.save_as.pdf, "PDF (.pdf)");
+                            ui.checkbox(&mut g.save_as.xlsx, "Excel workbook (.xlsx)")
+                                .on_hover_text(
+                                    "Offered for replies with a table and for CSV or TSV \
+                                     artifacts",
+                                );
+                            weak_note(
+                                ui,
+                                "The Save as menu on a reply or artifact offers the checked \
+                                 formats.",
+                            );
+                        });
+                        ui.end_row();
+
                         ui.label("Tool calls");
                         ui.checkbox(
                             &mut g.auto_approve_tools,
                             "Run MCP tools and subagents without asking for approval",
                         );
+                        ui.end_row();
+
+                        ui.label("New chats start in");
+                        egui::ComboBox::from_id_salt("default-approval-mode")
+                            .selected_text(g.default_approval_mode.label())
+                            .show_ui(ui, |ui| {
+                                for m in ApprovalMode::offered(plan_on) {
+                                    ui.selectable_value(&mut g.default_approval_mode, m, m.label())
+                                        .on_hover_text(m.description());
+                                }
+                            });
                         ui.end_row();
 
                         ui.label("Max tool rounds");
@@ -2447,6 +3597,86 @@ impl SettingsUi {
                         ui.end_row();
                     });
 
+                ui.add_space(16.0);
+                ui.separator();
+                ui.strong("Plan mode");
+                ui.checkbox(&mut g.plan.enabled, "Offer Plan in the permission menus")
+                    .on_hover_text(
+                        "A Plan chat investigates with read-only tools and proposes a numbered \
+                         plan. Off, Plan is hidden, and a chat set to it is read only.",
+                    );
+                ui.add_enabled_ui(g.plan.enabled, |ui| {
+                    egui::Grid::new("plan-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Mode after approval");
+                            egui::ComboBox::from_id_salt("plan-after-approval")
+                                .selected_text(g.plan.after_mode().label())
+                                .show_ui(ui, |ui| {
+                                    for m in [
+                                        ApprovalMode::Default,
+                                        ApprovalMode::AutoWorkspace,
+                                        ApprovalMode::AllowAll,
+                                    ] {
+                                        ui.selectable_value(&mut g.plan.after_approval, m, m.label())
+                                            .on_hover_text(m.description());
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Approval message");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut g.plan.approve_message)
+                                    .desired_width(FIELD_WIDTH),
+                            )
+                            .on_hover_text("Sent as the user's message when a plan is approved");
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    weak_note(
+                        ui,
+                        "Under a finished plan, Approve plan switches the chat to the mode \
+                         above and sends the approval message. Plan and Read only can't be the \
+                         mode after approval.",
+                    );
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Plan instructions");
+                    if g.plan.prompt != crate::plan::PLAN_PROMPT
+                        && ui.small_button("Reset").clicked()
+                    {
+                        g.plan.prompt = crate::plan::PLAN_PROMPT.into();
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut g.plan.prompt)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(16.0);
+                ui.separator();
+                ui.strong("Branches");
+                ui.checkbox(&mut g.branching.enabled, "Keep the version a reply replaces")
+                    .on_hover_text(
+                        "Regenerating a reply, or editing a message, keeps the version it \
+                         replaces as a branch, with ‹ k/N › arrows to switch between them. Off, \
+                         the replaced version is dropped. Versions already kept stay switchable. \
+                         A chat's Branches switch overrides this.",
+                    );
+                ui.add_enabled_ui(g.branching.enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Versions kept per message");
+                        ui.add(
+                            egui::DragValue::new(&mut g.branching.max_per_message).range(1..=50),
+                        );
+                    });
+                    weak_note(
+                        ui,
+                        "Past this many, the oldest version of a message is dropped. Files \
+                         changed by a version are only undone while it is the one shown.",
+                    );
+                });
                 ui.add_space(16.0);
                 ui.separator();
                 ui.strong("Export & import");
@@ -2555,11 +3785,442 @@ impl SettingsUi {
     }
 }
 
+/// Slash commands: the on/off switches and the editable list of saved prompts.
+/// Settings → Context & files → Memory: the switches, then the saved memories. Their text and
+/// deletes are sent as [`MemoryChange`]s at once, not kept in the draft.
+fn memory_section(
+    ui: &mut egui::Ui,
+    m: &mut MemorySettings,
+    editor: &mut MemoryEditor,
+    memories: &[Memory],
+    projects: &[(Uuid, String)],
+    actions: &mut Vec<SettingsAction>,
+) {
+    let project_name = |id: Uuid| -> String {
+        projects
+            .iter()
+            .find(|(pid, _)| *pid == id)
+            .map_or_else(|| "Deleted project".to_owned(), |(_, name)| name.clone())
+    };
+    ui.label(egui::RichText::new(format!("{}  Memory", icon::EDIT)).strong());
+    ui.indent("memory-help", |ui| {
+        ui.weak(
+            "Facts the model saves when you ask it to remember something, or that you state about \
+             yourself. A chat with memory on gets them in its system prompt with every request, so \
+             they are sent to your provider. Off, or a chat switched to incognito, uses none of \
+             them and the model can't save any.",
+        );
+    });
+    ui.add_space(6.0);
+    ui.checkbox(&mut m.enabled, "New chats use memory")
+        .on_hover_text("Each chat can switch it off for itself (Chat features in the tools menu)");
+    ui.checkbox(
+        &mut m.ask_before_saving,
+        "Ask before saving or deleting a memory",
+    )
+    .on_hover_text("Off, the model saves and deletes memories without asking");
+    egui::Grid::new("memory-grid")
+        .num_columns(2)
+        .spacing([12.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Size limit");
+            ui.add(
+                egui::DragValue::new(&mut m.max_kb)
+                    .range(MIN_KB..=MAX_KB)
+                    .suffix(" KB"),
+            )
+            .on_hover_text(
+                "The memories sent with each request, newest first; older ones are left out \
+                 past this",
+            );
+            ui.end_row();
+
+            ui.label("Scope");
+            egui::ComboBox::from_id_salt("memory-scope")
+                .selected_text(match m.scope {
+                    MemoryScope::Global => "Global",
+                    MemoryScope::PerProject => "Per project",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut m.scope, MemoryScope::Global, "Global")
+                        .on_hover_text("One set of memories for every chat");
+                    ui.selectable_value(&mut m.scope, MemoryScope::PerProject, "Per project")
+                        .on_hover_text(
+                            "A project's chats also see and save that project's memories, \
+                             besides the global ones; other chats see only the global ones",
+                        );
+                });
+            ui.end_row();
+        });
+
+    ui.add_space(10.0);
+    editor
+        .drafts
+        .retain(|id, _| memories.iter().any(|m| m.id == *id));
+    ui.strong(format!("Saved memories ({})", memories.len()));
+    if memories.is_empty() {
+        ui.weak("None yet.");
+    }
+    for memory in memories.iter().rev() {
+        ui.horizontal(|ui| {
+            let scope = match memory.scope {
+                Scope::Global => "Global".to_owned(),
+                Scope::Project(p) => format!("Project: {}", project_name(p)),
+            };
+            let saved = memory
+                .created
+                .with_timezone(&chrono::Local)
+                .format("%-d %b %Y");
+            ui.weak(format!("{scope} · saved {saved}"));
+            if super::widgets::icon_button(ui, icon::TRASH, "Delete this memory").clicked() {
+                actions.push(SettingsAction::Memory(MemoryChange::Delete(memory.id)));
+            }
+        });
+        let draft = editor
+            .drafts
+            .entry(memory.id)
+            .or_insert_with(|| memory.text.clone());
+        let resp = ui.add(
+            egui::TextEdit::singleline(draft)
+                .desired_width(f32::INFINITY)
+                .hint_text("Empty: forget it"),
+        );
+        if resp.lost_focus() {
+            let text = draft.trim().to_owned();
+            editor.drafts.remove(&memory.id);
+            if text.is_empty() {
+                actions.push(SettingsAction::Memory(MemoryChange::Delete(memory.id)));
+            } else if text != memory.text {
+                actions.push(SettingsAction::Memory(MemoryChange::Edit {
+                    id: memory.id,
+                    text,
+                }));
+            }
+        }
+        ui.add_space(4.0);
+    }
+
+    if !memories.is_empty() {
+        ui.horizontal(|ui| {
+            if !editor.confirm_all {
+                if ui.button("Delete all memories").clicked() {
+                    editor.confirm_all = true;
+                }
+            } else {
+                ui.label(format!("Delete all {} memories?", memories.len()));
+                if ui.button("Delete all").clicked() {
+                    actions.push(SettingsAction::Memory(MemoryChange::DeleteAll));
+                    editor.confirm_all = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    editor.confirm_all = false;
+                }
+            }
+        });
+    }
+
+    ui.add_space(8.0);
+    ui.strong("Add a memory");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.new_text)
+                .hint_text("A fact to remember")
+                .desired_width(260.0),
+        );
+        let per_project = m.scope == MemoryScope::PerProject;
+        if per_project {
+            let shown = editor
+                .new_scope
+                .map_or_else(|| "Global".to_owned(), project_name);
+            egui::ComboBox::from_id_salt("memory-new-scope")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut editor.new_scope, None, "Global");
+                    for (id, name) in projects {
+                        ui.selectable_value(&mut editor.new_scope, Some(*id), name);
+                    }
+                });
+        }
+        if ui
+            .add_enabled(
+                !editor.new_text.trim().is_empty(),
+                egui::Button::new("Add memory"),
+            )
+            .clicked()
+        {
+            let scope = match editor.new_scope.filter(|_| per_project) {
+                Some(p) => Scope::Project(p),
+                None => Scope::Global,
+            };
+            let text = std::mem::take(&mut editor.new_text);
+            actions.push(SettingsAction::Memory(MemoryChange::Add { text, scope }));
+        }
+    });
+}
+
+fn slash_command_rows(ui: &mut egui::Ui, s: &mut SlashCommandSettings) {
+    ui.checkbox(
+        &mut s.enabled,
+        egui::RichText::new(format!(
+            "{}  Slash commands (saved prompts)",
+            icon::LIGHTNING
+        ))
+        .strong(),
+    );
+    ui.indent("slash-help", |ui| {
+        ui.weak(
+            "Type / and a name in the message box to send a saved prompt. {{args}} in a prompt \
+             is replaced by what you type after the name; without it, that text is added after \
+             a blank line. Names use letters, digits, - and _.",
+        );
+    });
+    ui.add_enabled_ui(s.enabled, |ui| {
+        ui.checkbox(
+            &mut s.workspace_commands,
+            "Also load commands from the chat's working folder",
+        )
+        .on_hover_text(
+            "Each .cleanrstai/commands/<name>.md file in the folder is a command. A first line \
+             description: ... gives its description; a command there replaces one here with the \
+             same name.",
+        );
+        ui.add_space(6.0);
+        let mut remove = None;
+        for (i, c) in s.commands.iter_mut().enumerate() {
+            ui.push_id(("slash-command", i), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut c.name)
+                            .hint_text("name")
+                            .desired_width(140.0),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut c.description)
+                            .hint_text("description")
+                            .desired_width(FIELD_WIDTH - 60.0),
+                    );
+                    if icon_button(ui, icon::TRASH, "Delete command").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                if !c.name.trim().is_empty() && !crate::commands::valid_name(c.name.trim()) {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "Names use letters, digits, - and _ only; this command is dropped on save",
+                    );
+                }
+                ui.add(
+                    egui::TextEdit::multiline(&mut c.prompt)
+                        .hint_text("The prompt; {{args}} is replaced by what follows the name")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(i) = remove {
+            s.commands.remove(i);
+        }
+        if ui
+            .small_button(format!("{}  Add command", icon::PLUS))
+            .clicked()
+        {
+            s.commands.push(SlashCommand::default());
+        }
+    });
+}
+
+/// Hooks (see `hooks`): the master switch, the warning about where they run, and each hook's
+/// switch, name, event, tool patterns, command and timeout.
+fn hook_rows(ui: &mut egui::Ui, h: &mut HookSettings) {
+    let HookSettings { enabled, hooks } = h;
+    ui.label(egui::RichText::new(format!("{}  Hooks", icon::TERMINAL)).strong());
+    ui.indent("hooks-help", |ui| {
+        ui.weak(
+            "Commands that run around the model's tool calls: before a tool runs (a non-zero \
+             exit or a timeout blocks the call), after it (the output is added to the result), \
+             and when a reply is done (the output is shown as a notice). Each command gets the \
+             call in CLEANRSTAI_* environment variables. Each chat can switch hooks off from \
+             the tools menu.",
+        );
+        weak_note(
+            ui,
+            "Hooks run commands with your user's rights on this computer, or in the Docker \
+             sandbox when it's on. They are read only from these settings, never from a \
+             workspace or from the model.",
+        );
+    });
+    ui.checkbox(enabled, "Run hooks").on_hover_text(
+        "The default for each chat. A chat's own Hooks switch in the tools menu overrides it.",
+    );
+    ui.add_enabled_ui(*enabled, |ui| {
+        let mut remove = None;
+        for (i, hook) in hooks.iter_mut().enumerate() {
+            ui.push_id(("hook", i), |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut hook.enabled, "")
+                        .on_hover_text("Run this hook");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut hook.name)
+                            .hint_text("name")
+                            .desired_width(140.0),
+                    );
+                    egui::ComboBox::from_id_salt("hook-event")
+                        .selected_text(hook.event.label())
+                        .show_ui(ui, |ui| {
+                            for event in HookEvent::ALL {
+                                ui.selectable_value(&mut hook.event, event, event.label());
+                            }
+                        });
+                    if icon_button(ui, icon::TRASH, "Delete hook").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                if hook.event != HookEvent::ReplyDone {
+                    ui.horizontal(|ui| {
+                        ui.label("Tools");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut hook.tools)
+                                .hint_text("all tools; or write_file, edit_file, github__*")
+                                .desired_width(FIELD_WIDTH),
+                        );
+                    });
+                }
+                ui.add(
+                    egui::TextEdit::multiline(&mut hook.command)
+                        .hint_text("The shell command, e.g. cargo fmt")
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Timeout");
+                    ui.add(
+                        egui::DragValue::new(&mut hook.timeout_secs)
+                            .range(1..=MAX_TIMEOUT_SECS)
+                            .suffix(" s"),
+                    );
+                });
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(i) = remove {
+            hooks.remove(i);
+        }
+        if ui
+            .small_button(format!("{}  Add hook", icon::PLUS))
+            .clicked()
+        {
+            hooks.push(Hook::default());
+        }
+    });
+}
+
 /// Settings the search box can find: (tab, section, label).
+/// The settings pages in the navigation, by group: page, icon, label.
+type NavPage = (Tab, &'static str, &'static str);
+
+const NAV_GROUPS: &[(&str, &[NavPage])] = &[
+    (
+        "Preferences",
+        &[
+            (Tab::General, icon::GEAR, "General"),
+            (Tab::Appearance, icon::PALETTE, "Appearance"),
+            (Tab::Voice, icon::MICROPHONE, "Voice"),
+        ],
+    ),
+    (
+        "This computer",
+        &[
+            (Tab::Docker, icon::TERMINAL, "Docker sandbox"),
+            (Tab::Background, icon::CLOCK, "Background"),
+        ],
+    ),
+    (
+        "Customize",
+        &[
+            (Tab::Providers, icon::CLOUD, "Providers"),
+            (Tab::Mcp, icon::PLUGS, "MCP servers"),
+            (Tab::Tools, icon::TOOLBOX, "Built-in tools"),
+            (Tab::Extensions, icon::BOOKS, "Skills & hooks"),
+            (Tab::Context, icon::FILE, "Context & files"),
+            (Tab::Subagents, icon::ROBOT, "Subagents"),
+        ],
+    ),
+];
+
+/// A dropdown of the microphones `record::input_devices` found, "System default" first.
+pub fn mic_picker(ui: &mut egui::Ui, device: &mut String, devices: &[String]) -> bool {
+    let before = device.clone();
+    egui::ComboBox::from_id_salt("mic-device")
+        .selected_text(if device.is_empty() {
+            "System default"
+        } else {
+            device.as_str()
+        })
+        .truncate()
+        .width(240.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(device, String::new(), "System default");
+            for d in devices {
+                ui.selectable_value(device, d.clone(), d);
+            }
+            // A saved microphone that isn't plugged in stays chosen until another is picked.
+            if !device.is_empty() && !devices.contains(device) {
+                ui.label(egui::RichText::new(format!("{device} (not found)")).weak());
+            }
+        });
+    *device != before
+}
+
+/// The UI scale choices.
+const ZOOM_STEPS: [f32; 8] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+
+/// The settings search field: a rounded pill with a magnifier, ringed while focused.
+fn search_pill(ui: &mut egui::Ui, text: &mut String) {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    let id = egui::Id::unique("settings-search");
+    let focused = ui.memory(|m| m.has_focus(id));
+    egui::Frame::new()
+        .fill(p.raised)
+        .stroke(egui::Stroke::new(
+            1.0,
+            if focused { p.pencil } else { p.hairline },
+        ))
+        .corner_radius(16)
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icon::SEARCH).size(14.0).color(p.pencil));
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .hint_text(egui::RichText::new("Search").color(p.pencil))
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        });
+}
+
 const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
+    (Tab::Voice, "Voice", "Voice input"),
+    (Tab::Voice, "Voice", "Voice input provider"),
+    (Tab::Voice, "Voice", "Transcription model"),
+    (Tab::Voice, "Voice", "Dictation language"),
+    (Tab::Voice, "Voice", "Longest recording"),
+    (Tab::Voice, "Voice", "Read replies aloud"),
+    (
+        Tab::Voice,
+        "Voice",
+        "Speech engine (system voice or endpoint)",
+    ),
+    (Tab::Voice, "Voice", "Speech provider"),
+    (Tab::Voice, "Voice", "Speech model and voice"),
+    (Tab::Voice, "Voice", "Speech speed"),
+    (Tab::Voice, "Voice", "Longest reply read aloud"),
     (Tab::General, "General", "System prompt"),
-    (Tab::General, "General", "Theme (light / dark)"),
-    (Tab::General, "General", "UI scale / zoom"),
+    (Tab::Appearance, "Appearance", "Theme (light / dark)"),
+    (Tab::Appearance, "Appearance", "UI scale / zoom"),
     (Tab::General, "General", "Send with Enter"),
     (Tab::General, "General", "Keychain / secrets"),
     (Tab::General, "General", "Remote access (browser)"),
@@ -2575,14 +4236,46 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Cloudflare quick tunnel (trycloudflare.com)",
     ),
     (Tab::General, "General", "cloudflared path"),
-    (Tab::General, "General", "Show speed stats"),
-    (Tab::General, "General", "Load web images in replies"),
+    (Tab::General, "General", "Cloudflare Access"),
+    (Tab::General, "General", "Cloudflare Access team domain"),
     (
         Tab::General,
         "General",
+        "Cloudflare Access audience (AUD) tag",
+    ),
+    (
+        Tab::General,
+        "General",
+        "Cloudflare Access sign in without the app password",
+    ),
+    (Tab::Appearance, "Appearance", "Show speed stats"),
+    (Tab::General, "General", "Save as Word document (.docx)"),
+    (Tab::General, "General", "Save as PDF"),
+    (Tab::General, "General", "Save as Excel workbook (.xlsx)"),
+    (Tab::General, "General", "Save reply as file"),
+    (Tab::Appearance, "Appearance", "Load web images in replies"),
+    (
+        Tab::Appearance,
+        "Appearance",
         "Reasoning / thinking display (collapsed by default)",
     ),
+    (Tab::Appearance, "Appearance", "Your name (greeting)"),
+    (Tab::Appearance, "Appearance", "Reduce motion / animations"),
+    (Tab::Appearance, "Appearance", "Artifacts in a side panel"),
+    (Tab::Voice, "Voice", "Microphone (input device)"),
     (Tab::General, "General", "Auto-approve tool calls"),
+    (
+        Tab::General,
+        "General",
+        "Default permission mode for new chats",
+    ),
+    (Tab::General, "General", "Plan mode"),
+    (Tab::General, "General", "Plan mode after approval"),
+    (Tab::General, "General", "Plan approval message"),
+    (Tab::General, "General", "Plan instructions"),
+    (Tab::General, "General", "Branches"),
+    (Tab::General, "General", "Keep the version a reply replaces"),
+    (Tab::General, "General", "Versions kept per message"),
     (Tab::General, "General", "Max tool rounds"),
     (Tab::General, "General", "Tool timeout"),
     (Tab::General, "General", "Export settings"),
@@ -2621,9 +4314,40 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (
         Tab::Tools,
         "Tools",
-        "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily)",
+        "Web search tool (DuckDuckGo, SearXNG, Brave, Tavily, Kagi)",
     ),
     (Tab::Tools, "Tools", "Web search API key"),
+    (
+        Tab::Tools,
+        "Tools",
+        "Web search with the provider's own search (Anthropic, OpenAI, OpenRouter)",
+    ),
+    (Tab::Tools, "Tools", "Provider search: searches per reply"),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Slash commands (saved prompts)",
+    ),
+    (Tab::Extensions, "Skills & hooks", "Skills (load on demand)"),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Load skills from the workspace folder",
+    ),
+    (Tab::Extensions, "Skills & hooks", "Skill size limit"),
+    (Tab::Extensions, "Skills & hooks", "Open skills folder"),
+    (Tab::Extensions, "Skills & hooks", "Disable a skill"),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Hooks (commands around tool calls)",
+    ),
+    (
+        Tab::Extensions,
+        "Skills & hooks",
+        "Hook before a tool runs, block it",
+    ),
+    (Tab::Extensions, "Skills & hooks", "Hook timeout"),
     (
         Tab::Context,
         "Context & files",
@@ -2638,7 +4362,45 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (
         Tab::Context,
         "Context & files",
+        "Code review (review changes)",
+    ),
+    (Tab::Context, "Context & files", "Review prompt and model"),
+    (Tab::Context, "Context & files", "Code review strictness"),
+    (
+        Tab::Context,
+        "Context & files",
         "Project instructions (AGENTS.md, CLAUDE.md)",
+    ),
+    (Tab::Context, "Context & files", "Projects (on / off)"),
+    (Tab::Context, "Context & files", "Memory (on / off)"),
+    (Tab::Context, "Context & files", "Memory: ask before saving"),
+    (Tab::Context, "Context & files", "Memory: size limit"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Memory: global or per project",
+    ),
+    (Tab::Context, "Context & files", "Memory: saved memories"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Memory: delete all memories",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: files size limit",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: default instructions",
+    ),
+    (Tab::Context, "Context & files", "Projects: default folder"),
+    (
+        Tab::Context,
+        "Context & files",
+        "Projects: default provider",
     ),
     (
         Tab::Context,
@@ -2650,6 +4412,17 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Context & files",
         "Undo file edits (checkpoints)",
     ),
+    (Tab::Context, "Context & files", "Read scanned PDFs (OCR)"),
+    (
+        Tab::Context,
+        "Context & files",
+        "OCR engine and vision model",
+    ),
+    (
+        Tab::Context,
+        "Context & files",
+        "Tesseract program and languages",
+    ),
     (
         Tab::General,
         "General",
@@ -2660,6 +4433,8 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Tools",
         "Workspace tools (files, search, shell)",
     ),
+    (Tab::Tools, "Tools", "Commit changes (git_commit)"),
+    (Tab::Tools, "Tools", "Allow signed commits"),
     (
         Tab::Subagents,
         "Subagents",
@@ -2691,6 +4466,46 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Parallel subagents, rounds and time limit",
     ),
     (Tab::Subagents, "Subagents", "Subagent system prompt"),
+    (
+        Tab::Background,
+        "Background",
+        "Notify when a reply finishes or needs approval",
+    ),
+    (
+        Tab::Background,
+        "Background",
+        "Only notify while the window is in the background",
+    ),
+    (Tab::Background, "Background", "Replies at once (queue)"),
+    (Tab::Background, "Background", "Reply time limit (minutes)"),
+    (
+        Tab::Background,
+        "Background",
+        "Keep running in the menu bar or system tray when the window is closed",
+    ),
+    (Tab::Background, "Background", "Run scheduled tasks"),
+    (Tab::Background, "Background", "Scheduled task prompt"),
+    (
+        Tab::Background,
+        "Background",
+        "Scheduled task repeats every (minutes)",
+    ),
+    (Tab::Background, "Background", "Scheduled task approvals"),
+    (Tab::Background, "Background", "Scheduled task folder"),
+    (Tab::Background, "Background", "Scheduled task catch up"),
+    (
+        Tab::Background,
+        "Background",
+        "Command line (cleanrstai exec)",
+    ),
+    (Tab::Background, "Background", "Command line approval mode"),
+    (Tab::Background, "Background", "Command line MCP servers"),
+    (
+        Tab::Background,
+        "Background",
+        "Command line MCP wait (seconds)",
+    ),
+    (Tab::Background, "Background", "Command line save chats"),
 ];
 
 fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
@@ -2712,14 +4527,62 @@ mod tests {
     fn finds_settings() {
         let hits = search_settings("api key");
         assert_eq!(hits[0], (Tab::Providers, "Providers", "API key"));
-        assert_eq!(search_settings("theme")[0].0, Tab::General);
+        assert_eq!(search_settings("theme")[0].0, Tab::Appearance);
+        assert_eq!(search_settings("reduce motion")[0].0, Tab::Appearance);
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
+        assert_eq!(search_settings("scanned pdf")[0].0, Tab::Context);
+        assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
         assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
+        assert_eq!(search_settings("projects")[0].0, Tab::Context);
+        assert_eq!(search_settings("memory")[0].0, Tab::Context);
+        assert_eq!(search_settings("memory size")[0].0, Tab::Context);
+        assert_eq!(search_settings("memory per project")[0].0, Tab::Context);
+        assert_eq!(search_settings("delete all memories")[0].0, Tab::Context);
+        assert_eq!(search_settings("project files size")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
+        assert_eq!(search_settings("review changes")[0].0, Tab::Context);
+        assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
+        assert_eq!(search_settings("git commit")[0].0, Tab::Tools);
+        assert_eq!(search_settings("signed commits")[0].0, Tab::Tools);
+        assert_eq!(search_settings("provider search")[0].0, Tab::Tools);
+        assert_eq!(search_settings("searches per reply")[0].0, Tab::Tools);
+        assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("saved prompts")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("skills")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("skill folder")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("disable a skill")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("hooks")[0].0, Tab::Extensions);
+        assert_eq!(search_settings("dictation")[0].0, Tab::Voice);
+        assert_eq!(search_settings("transcription")[0].0, Tab::Voice);
+        assert_eq!(search_settings("read aloud")[0].0, Tab::Voice);
+        assert_eq!(search_settings("speech speed")[0].0, Tab::Voice);
+        assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
         assert_eq!(search_settings("web page preview")[0].0, Tab::General);
+        assert_eq!(search_settings("save as pdf")[0].0, Tab::General);
+        assert_eq!(search_settings("excel workbook")[0].0, Tab::General);
+        assert_eq!(search_settings("default permission")[0].0, Tab::General);
+        assert_eq!(search_settings("plan mode")[0].0, Tab::General);
+        assert_eq!(search_settings("plan instructions")[0].0, Tab::General);
+        assert_eq!(search_settings("branches")[0].0, Tab::General);
+        assert_eq!(search_settings("versions kept")[0].0, Tab::General);
+        assert_eq!(search_settings("notify")[0].0, Tab::Background);
+        assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
+        assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
+        assert_eq!(search_settings("command line")[0].0, Tab::Background);
+        assert_eq!(
+            search_settings("command line approval")[0].0,
+            Tab::Background
+        );
+        assert_eq!(search_settings("menu bar")[0].0, Tab::Background);
+        assert_eq!(search_settings("system tray")[0].0, Tab::Background);
+        assert_eq!(search_settings("scheduled tasks")[0].0, Tab::Background);
+        assert_eq!(search_settings("cloudflare access")[0].0, Tab::General);
+        assert_eq!(search_settings("team domain")[0].0, Tab::General);
+        assert_eq!(search_settings("AUD tag")[0].0, Tab::General);
+        assert_eq!(search_settings("catch up")[0].0, Tab::Background);
         assert!(search_settings("zzzz").is_empty());
     }
 }

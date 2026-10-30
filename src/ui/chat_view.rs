@@ -13,17 +13,28 @@ use super::widgets::{code_block, diff_block, diff_stat, quiet_icons};
 use crate::app::{Action, Run};
 use crate::approval::{Approval, PendingApproval};
 use crate::artifacts::Artifact;
-use crate::config::ReasoningDisplay;
+use crate::branches;
+use crate::config::{ReasoningDisplay, SaveAsSettings};
+use crate::save_as::Content;
 use crate::subagent::{SubagentReport, SubagentState};
 use crate::tools::{self, Task, TaskStatus};
 use crate::types::{ChatMessage, Conversation, Role, ToolCall, results_after};
 
-pub const MAX_CONTENT_WIDTH: f32 = 760.0;
+/// The transcript's column: narrow and centred.
+pub const MAX_CONTENT_WIDTH: f32 = 700.0;
+
+/// The home screen's composer and the cards under it.
+pub const HOME_WIDTH: f32 = 656.0;
 
 /// Lay out `add` in a centred column of at most [`MAX_CONTENT_WIDTH`].
 pub fn centered<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    centered_at(ui, MAX_CONTENT_WIDTH, add)
+}
+
+/// Lay out `add` in a centred column of at most `max` points.
+pub fn centered_at<R>(ui: &mut egui::Ui, max: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let avail = ui.available_width();
-    let width = avail.min(MAX_CONTENT_WIDTH);
+    let width = avail.min(max + 16.0);
     let pad = ((avail - width) / 2.0).max(0.0);
     ui.horizontal(|ui| {
         ui.add_space(pad);
@@ -52,6 +63,8 @@ fn card<R>(ui: &mut egui::Ui, stroke: egui::Color32, add: impl FnOnce(&mut egui:
 pub struct View<'a> {
     pub conv: &'a Conversation,
     pub run: Option<&'a Run>,
+    /// The reply waits for a free slot: how many queued replies are ahead of it.
+    pub queued: Option<usize>,
     pub error: Option<&'a String>,
     pub show_stats: bool,
     pub reasoning: ReasoningDisplay,
@@ -59,6 +72,14 @@ pub struct View<'a> {
     /// Every artifact in the chat, and the one open in the panel.
     pub artifacts: &'a [Artifact],
     pub open_artifact: Option<(usize, usize)>,
+    /// The file types "Save as…" offers (Settings → General).
+    pub save_as: SaveAsSettings,
+    /// A Plan chat's latest reply is a finished plan: show Approve plan under it.
+    pub plan_ready: bool,
+    /// Reading replies aloud is on: replies get a Read aloud button.
+    pub voice_out: bool,
+    /// The message being read aloud in this chat.
+    pub speaking: Option<usize>,
 }
 
 pub fn show(
@@ -70,6 +91,8 @@ pub fn show(
 ) -> Vec<Action> {
     let mut actions = Vec::new();
     let conv = v.conv;
+    // Versions are switched only while no reply runs or waits in this chat.
+    let switchable = v.run.is_none() && v.queued.is_none();
     let last_assistant = conv
         .messages
         .iter()
@@ -89,11 +112,13 @@ pub fn show(
                 .iter()
                 .chain(m.subagents.iter().flat_map(|s| s.stats.iter()))
         }));
-        // The chat's own latest request; subagents have contexts of their own.
+        // The chat's own latest request; subagents have contexts of their own, and a summary
+        // request's size says nothing about the chat's context.
         let context = conv
             .messages
             .iter()
             .rev()
+            .filter(|m| m.compaction.is_none())
             .find_map(|m| m.stats.as_ref())
             .and_then(crate::stats::RequestStats::context_use);
         if totals.requests > 0 {
@@ -128,15 +153,24 @@ pub fn show(
                     match msg.role {
                         Role::System => {
                             if let Some(info) = &msg.compaction {
-                                compaction_marker(ui, i, info, &msg.content);
+                                let stats = msg.stats.as_ref().filter(|_| v.show_stats);
+                                compaction_marker(ui, i, info, &msg.content, stats);
                                 ui.add_space(18.0);
                             }
                             continue;
                         }
                         Role::Tool => continue,
-                        Role::User => {
-                            user_message(ui, images, conv.id, i, msg, v.run.is_some(), &mut actions)
-                        }
+                        Role::User => user_message(
+                            ui,
+                            images,
+                            conv.id,
+                            i,
+                            msg,
+                            v.run.is_some(),
+                            switchable,
+                            branches::count(&conv.messages, i),
+                            &mut actions,
+                        ),
                         Role::Assistant => {
                             let streaming = v.run.is_some() && i + 1 == conv.messages.len();
                             assistant_message(
@@ -158,6 +192,11 @@ pub fn show(
                                     open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
                                     undo: undo_at.get(&i).copied(),
+                                    read_aloud: v.voice_out,
+                                    speaking: v.speaking == Some(i),
+                                    versions: branches::count(&conv.messages, i),
+                                    switchable,
+                                    save_as: v.save_as,
                                 },
                                 msg,
                                 &mut actions,
@@ -166,10 +205,27 @@ pub fn show(
                     }
                     ui.add_space(18.0);
                 }
+                if v.plan_ready {
+                    plan_buttons(ui, conv.id, &mut actions);
+                    ui.add_space(12.0);
+                }
                 if v.run.is_some_and(|r| r.compacting) {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(RichText::new("Summarising older messages…").weak());
+                    });
+                    ui.add_space(12.0);
+                }
+                if let Some(ahead) = v.queued {
+                    let p = theme::palette(ui.visuals().dark_mode);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon::CLOCK).color(p.pencil));
+                        ui.label(RichText::new("Queued").color(p.ink2));
+                        let detail = match ahead {
+                            0 => "starts when a slot frees up".to_owned(),
+                            n => format!("{n} ahead of it"),
+                        };
+                        ui.label(RichText::new(format!("· {detail}")).weak());
                     });
                     ui.add_space(12.0);
                 }
@@ -182,6 +238,7 @@ pub fn show(
     actions
 }
 
+#[allow(clippy::too_many_arguments)]
 fn user_message(
     ui: &mut egui::Ui,
     images: &mut ImageCache,
@@ -189,6 +246,8 @@ fn user_message(
     idx: usize,
     msg: &ChatMessage,
     running: bool,
+    switchable: bool,
+    versions: (usize, usize),
     actions: &mut Vec<Action>,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
@@ -246,13 +305,53 @@ fn user_message(
         let items: &[(&str, &str)] = if running {
             &[(icon::COPY, "Copy")]
         } else {
-            &[(icon::EDIT, "Edit and resend"), (icon::COPY, "Copy")]
+            &[
+                (icon::EDIT, "Edit and resend"),
+                (icon::COPY, "Copy"),
+                (icon::FLOW, "Fork from here"),
+            ]
         };
         match quiet_icons(ui, items).map(|i| items[i].1) {
             Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
             Some("Edit and resend") => actions.push(Action::EditFrom(conv, idx)),
+            Some("Fork from here") => actions.push(Action::ForkFrom(conv, idx)),
             _ => {}
         }
+        branch_arrows(ui, conv, idx, versions, switchable, actions);
+    });
+}
+
+/// The `‹ k/N ›` arrows under a message that has other versions (see `branches`). They switch
+/// the version the chat shows from here on; disabled while a reply runs.
+fn branch_arrows(
+    ui: &mut egui::Ui,
+    conv: Uuid,
+    idx: usize,
+    versions: (usize, usize),
+    switchable: bool,
+    actions: &mut Vec<Action>,
+) {
+    let (current, total) = versions;
+    if total < 2 {
+        return;
+    }
+    // A horizontal group, so the arrows keep their order inside a right-to-left row.
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(switchable, |ui| {
+            let prev = ui
+                .add_enabled(current > 1, egui::Button::new("‹").small())
+                .on_hover_text("Previous version");
+            if prev.clicked() {
+                actions.push(Action::SwitchBranch(conv, idx, current - 2));
+            }
+            ui.label(RichText::new(format!("{current}/{total}")).small().weak());
+            let next = ui
+                .add_enabled(current < total, egui::Button::new("›").small())
+                .on_hover_text("Next version");
+            if next.clicked() {
+                actions.push(Action::SwitchBranch(conv, idx, current));
+            }
+        });
     });
 }
 
@@ -272,6 +371,14 @@ struct AssistantCtx<'a> {
     last: bool,
     /// The last reply of a turn whose file edits can be undone: how many.
     undo: Option<usize>,
+    /// Show the Read aloud button, and whether this reply is being read now.
+    read_aloud: bool,
+    speaking: bool,
+    /// The message's version (1-based) and how many there are.
+    versions: (usize, usize),
+    /// The message's other versions can be switched to now (no reply runs or waits).
+    switchable: bool,
+    save_as: SaveAsSettings,
 }
 
 fn assistant_message(
@@ -353,6 +460,10 @@ fn assistant_body(
             actions,
         );
     }
+    if msg.searched || !msg.sources.is_empty() {
+        let id = ui.make_persistent_id(("sources", cx.conv, cx.idx));
+        sources_section(ui, id, msg);
+    }
     for call in &msg.tool_calls {
         let result = cx.results.get(call.id.as_str()).copied();
         if call.name == tools::TASKS
@@ -369,13 +480,36 @@ fn assistant_body(
             if !msg.content.is_empty() {
                 items.push((icon::COPY, "Copy"));
             }
+            if cx.read_aloud && !msg.content.is_empty() {
+                items.push(if cx.speaking {
+                    (icon::STOP, "Stop reading")
+                } else {
+                    (icon::SPEAKER, "Read aloud")
+                });
+            }
             if cx.last {
                 items.push((icon::REGENERATE, "Retry"));
             }
+            if cx.run.is_none() {
+                items.push((icon::FLOW, "Fork from here"));
+            }
             match quiet_icons(ui, &items).map(|i| items[i].1) {
                 Some("Copy") => actions.push(Action::Copy(msg.content.clone())),
+                Some("Read aloud" | "Stop reading") => actions.push(Action::Speak(cx.conv, cx.idx)),
                 Some("Retry") => actions.push(Action::Regenerate(cx.conv)),
+                Some("Fork from here") => actions.push(Action::ForkFrom(cx.conv, cx.idx)),
                 _ => {}
+            }
+            branch_arrows(ui, cx.conv, cx.idx, cx.versions, cx.switchable, actions);
+            if !msg.content.is_empty() {
+                save_as_menu(
+                    ui,
+                    cx.conv,
+                    None,
+                    Content::Markdown(msg.content.clone()),
+                    cx.save_as,
+                    actions,
+                );
             }
             if let Some(n) = cx.undo {
                 let label = if n == 1 {
@@ -403,6 +537,93 @@ fn assistant_body(
             }
         });
     }
+}
+
+/// The "Save as…" menu: the formats enabled in Settings that `content` supports, each saving
+/// through `Action::SaveAs`. `title` names the file (the chat's when `None`).
+pub fn save_as_menu(
+    ui: &mut egui::Ui,
+    conv: Uuid,
+    title: Option<String>,
+    content: Content,
+    settings: SaveAsSettings,
+    actions: &mut Vec<Action>,
+) {
+    let formats = content.formats(&settings);
+    if formats.is_empty() {
+        return;
+    }
+    let pencil = theme::palette(ui.visuals().dark_mode).pencil;
+    ui.menu_button(
+        RichText::new(icon::DOWNLOAD).size(15.0).color(pencil),
+        |ui| {
+            for format in formats {
+                if ui.button(format.label()).clicked() {
+                    actions.push(Action::SaveAs {
+                        conv,
+                        title: title.clone(),
+                        content: content.clone(),
+                        format,
+                    });
+                    ui.close();
+                }
+            }
+        },
+    )
+    .response
+    .on_hover_text("Save as…");
+}
+
+/// What the provider's own web search cited for a reply: a small expander with the links
+/// (they open in the browser), or just a line when the search cited nothing.
+fn sources_section(ui: &mut egui::Ui, id: egui::Id, msg: &ChatMessage) {
+    if msg.sources.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(icon::SEARCH).small().weak());
+            ui.label(RichText::new("Searched the web").small().weak());
+        });
+        return;
+    }
+    let label = sources_label(msg.sources.len());
+    let state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    state
+        .show_header(ui, |ui| {
+            ui.label(RichText::new(icon::SEARCH).small().weak());
+            ui.label(RichText::new(label).small().weak());
+        })
+        .body(|ui| {
+            for source in &msg.sources {
+                ui.hyperlink_to(RichText::new(&source.title).small(), &source.url)
+                    .on_hover_text(&source.url);
+            }
+        });
+}
+
+/// The expander's heading for a reply that cites `n` pages.
+fn sources_label(n: usize) -> String {
+    match n {
+        1 => "Searched the web · 1 source".to_owned(),
+        n => format!("Searched the web · {n} sources"),
+    }
+}
+
+/// The buttons under a finished plan: approve it (the chat carries it out) or keep planning.
+fn plan_buttons(ui: &mut egui::Ui, conv: Uuid, actions: &mut Vec<Action>) {
+    ui.horizontal(|ui| {
+        let approve = ui
+            .button(theme::labelled(icon::LIST_CHECKS, "Approve plan"))
+            .on_hover_text(
+                "Switch this chat to its approval mode after a plan (Settings → General → Plan \
+                 mode) and have the model carry the plan out",
+            );
+        if approve.clicked() {
+            actions.push(Action::ApprovePlan(conv));
+        }
+        if ui.button("Keep planning").clicked() {
+            actions.push(Action::KeepPlanning);
+        }
+    });
 }
 
 /// Whether a reasoning section starts open, per the user's setting.
@@ -604,6 +825,7 @@ fn compaction_marker(
     idx: usize,
     info: &crate::types::CompactionInfo,
     summary: &str,
+    stats: Option<&crate::stats::RequestStats>,
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
     card(ui, p.rule, |ui| {
@@ -642,6 +864,10 @@ fn compaction_marker(
                         .selectable(true)
                         .wrap(),
                 );
+                if let Some(s) = stats {
+                    ui.add_space(4.0);
+                    super::stats_view::request_line(ui, s);
+                }
             });
     });
 }
@@ -662,10 +888,12 @@ fn approval_prompt(
         if ui.add(theme::primary_button("Run", dark)).clicked() {
             answer = Some(Approval::Once);
         }
-        if ui
-            .button("Always allow this tool")
-            .on_hover_text("Run this tool without asking for the rest of this chat")
-            .clicked()
+        // A commit asks every time (see `approval::always_asks`), so it has no "always" choice.
+        if !crate::approval::always_asks(&pending.call.name)
+            && ui
+                .button("Always allow this tool")
+                .on_hover_text("Run this tool without asking for the rest of this chat")
+                .clicked()
         {
             answer = Some(Approval::AlwaysTool);
         }
@@ -845,35 +1073,128 @@ fn error_box(ui: &mut egui::Ui, err: &str, retry: Option<Uuid>, actions: &mut Ve
 }
 
 /// The new-chat greeting, "Good evening, Aaron", in the serif with a time-of-day icon.
-pub fn greeting(ui: &mut egui::Ui, name: Option<&str>) {
+/// The greeting's words for a weekday and hour: "Happy Friday, Aaron", "Good morning", …
+pub fn greeting_text(
+    weekday: chrono::Weekday,
+    hour: u32,
+    name: Option<&str>,
+    code: bool,
+) -> String {
+    use chrono::Weekday;
+    let opening = match (weekday, hour) {
+        (_, 0..=4) => "Up late",
+        (Weekday::Fri, 12..=23) => "Happy Friday",
+        (Weekday::Sat | Weekday::Sun, 9..=20) => "Happy weekend",
+        (_, 5..=11) => "Good morning",
+        (_, 12..=17) => "Good afternoon",
+        _ => "Good evening",
+    };
+    match (name, code) {
+        (Some(n), false) => format!("{opening}, {n}"),
+        (None, false) => opening.to_owned(),
+        (Some(n), true) => format!("What are we building, {n}?"),
+        (None, true) => "What are we building?".to_owned(),
+    }
+}
+
+/// A short date for cards and run times: "Today", "Yesterday", "Tomorrow", a weekday within a
+/// week either way, "Oct 28" or "Oct 28, 2025".
+pub fn short_date(
+    when: chrono::DateTime<chrono::Local>,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let (day, today) = (when.date_naive(), now.date_naive());
+    let days = (today - day).num_days();
+    if days == 0 {
+        "Today".to_owned()
+    } else if days == 1 {
+        "Yesterday".to_owned()
+    } else if days == -1 {
+        "Tomorrow".to_owned()
+    } else if (-6..7).contains(&days) {
+        when.format("%a").to_string()
+    } else if chrono::Datelike::year(&day) == chrono::Datelike::year(&today) {
+        when.format("%b %-d").to_string()
+    } else {
+        when.format("%b %-d, %Y").to_string()
+    }
+}
+
+/// The home screen's greeting: the brand mark and one serif line, centred.
+pub fn greeting(ui: &mut egui::Ui, name: Option<&str>, code: bool) {
     let p = theme::palette(ui.visuals().dark_mode);
-    let hour = chrono::Timelike::hour(&chrono::Local::now());
-    let (glyph, text) = match hour {
-        5..=11 => (icon::SUN, "Good morning"),
-        12..=17 => (icon::SUN, "Good afternoon"),
-        _ => (icon::MOON, "Good evening"),
-    };
-    let text = match name {
-        Some(n) => format!("{text}, {n}"),
-        None => text.to_owned(),
-    };
-    let font = egui::FontId::new(34.0, egui::FontFamily::Proportional);
-    // Centre the icon and the words together.
-    let width = ui
-        .ctx()
-        .fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), p.ink).size().x)
-        + 44.0;
-    ui.horizontal(|ui| {
-        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
-        ui.label(RichText::new(glyph).size(30.0).color(p.signal));
-        ui.add_space(4.0);
-        ui.label(RichText::new(text).font(font).color(p.ink));
-    });
+    let now = chrono::Local::now();
+    let text = greeting_text(
+        chrono::Datelike::weekday(&now),
+        chrono::Timelike::hour(&now),
+        name,
+        code,
+    );
+    let font = theme::serif(34.0);
+    let mark = 30.0;
+    let galley = ui.ctx().fonts_mut(|f| f.layout_no_wrap(text, font, p.ink));
+    let width = galley.size().x + mark + 14.0;
+    let height = galley.size().y.max(mark);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let left = rect.center().x - width / 2.0;
+    let mark_rect = egui::Rect::from_center_size(
+        egui::pos2(left + mark / 2.0, rect.center().y + 1.0),
+        egui::Vec2::splat(mark),
+    );
+    super::chrome::paint_brand_mark(ui.painter(), mark_rect, p.signal);
+    ui.painter().galley(
+        egui::pos2(left + mark + 14.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p.ink,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn greetings_follow_the_day_and_hour() {
+        use chrono::Weekday::*;
+        assert_eq!(
+            greeting_text(Fri, 15, Some("Aaron"), false),
+            "Happy Friday, Aaron"
+        );
+        assert_eq!(
+            greeting_text(Fri, 9, Some("Aaron"), false),
+            "Good morning, Aaron"
+        );
+        assert_eq!(greeting_text(Tue, 14, None, false), "Good afternoon");
+        assert_eq!(greeting_text(Sun, 10, None, false), "Happy weekend");
+        assert_eq!(greeting_text(Wed, 21, None, false), "Good evening");
+        assert_eq!(greeting_text(Mon, 2, Some("Sam"), false), "Up late, Sam");
+        assert_eq!(
+            greeting_text(Mon, 10, Some("Sam"), true),
+            "What are we building, Sam?"
+        );
+    }
+
+    #[test]
+    fn card_dates_are_short() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 30, 12, 0, 0)
+            .unwrap();
+        let at = |m, d| chrono::Local.with_ymd_and_hms(2026, m, d, 9, 0, 0).unwrap();
+        assert_eq!(short_date(at(10, 30), now), "Today");
+        assert_eq!(short_date(at(10, 29), now), "Yesterday");
+        assert_eq!(short_date(at(10, 26), now), "Mon");
+        assert_eq!(short_date(at(9, 2), now), "Sep 2");
+        let old = chrono::Local.with_ymd_and_hms(2025, 1, 5, 9, 0, 0).unwrap();
+        assert_eq!(short_date(old, now), "Jan 5, 2025");
+        // Upcoming runs, on the Scheduled page.
+        assert_eq!(short_date(at(10, 31), now), "Tomorrow");
+        assert_eq!(short_date(at(11, 3), now), "Tue");
+        assert_eq!(short_date(at(11, 20), now), "Nov 20");
+    }
 
     #[test]
     fn reasoning_default_state() {
@@ -907,6 +1228,12 @@ mod tests {
         assert_eq!(results_after(&messages, 1)["call_0"].content, "one");
         // The second turn's call has not been answered yet.
         assert!(results_after(&messages, 4).is_empty());
+    }
+
+    #[test]
+    fn sources_heading_counts_pages() {
+        assert_eq!(sources_label(1), "Searched the web · 1 source");
+        assert_eq!(sources_label(3), "Searched the web · 3 sources");
     }
 
     #[test]
