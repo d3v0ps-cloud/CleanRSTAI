@@ -7,6 +7,7 @@ mod approval;
 mod artifacts;
 mod attach;
 mod background;
+mod blobs;
 mod branches;
 mod checkpoints;
 mod commands;
@@ -38,6 +39,7 @@ mod skills;
 mod sse;
 mod stats;
 mod subagent;
+mod sync;
 #[cfg(test)]
 mod testutil;
 mod tools;
@@ -96,6 +98,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(app::ChatApp::new(cc, handle)))),
     );
+    // Chats still queued for the disk.
+    blobs::flush();
     // Don't wait indefinitely for blocking I/O (e.g. a pipe held open by an MCP server's
     // child process) when quitting.
     runtime.shutdown_timeout(std::time::Duration::from_millis(500));

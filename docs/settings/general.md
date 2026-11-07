@@ -173,6 +173,14 @@ default 10. The oldest is dropped beyond that.
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.
 
+## Reply limits
+
+Stop a reply once the requests it made used this many tokens in all (prompt and completion
+of every round, 0 to 100,000,000), or cost this much (in US dollars, 0 to 10,000, where the
+server reports or the app estimates a cost). Both default to 0, no limit. The check runs after
+each request, before the tools it asked for, so a reply over a limit ends with a message
+instead of calling more tools.
+
 ## Tool timeout
 
 How long one tool call may take: 5 to 3600 seconds, default 120.

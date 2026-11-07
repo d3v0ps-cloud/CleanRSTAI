@@ -349,6 +349,11 @@ pub fn bundle(project: &Project, chats: &[Conversation]) -> ProjectBundle {
             .iter()
             .filter(|c| c.project == Some(project.id))
             .cloned()
+            .map(|mut c| {
+                // The file goes to other computers, so its images go inside it.
+                c.inline_attachments();
+                c
+            })
             .collect(),
     }
 }

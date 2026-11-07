@@ -39,6 +39,8 @@ use crate::ui::theme::{self, icon};
 use crate::ui::widgets::icon_button;
 use egui::RichText;
 
+mod events;
+mod remote;
 mod scheduled;
 mod shell;
 
@@ -52,6 +54,8 @@ pub(crate) struct Run {
     pub(crate) running_tool: Option<String>,
     /// Stats of the request currently streaming in, for the readout above the input box.
     pub(crate) live_stats: Option<crate::stats::RequestStats>,
+    /// The request is being tried again, as this status line (cleared when output arrives).
+    pub(crate) retrying: Option<String>,
     /// Live subagent progress, by `delegate` call id.
     pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
     /// Older messages are being summarised.
@@ -151,6 +155,8 @@ pub struct ChatApp {
     settings_ui: Option<SettingsUi>,
     renaming: Option<(Uuid, String)>,
     search: String,
+    /// The last chat search: query, a stamp of the chats, and the chats that matched.
+    search_cache: Option<(String, u64, HashSet<Uuid>)>,
     notice: Option<String>,
     /// Voice input and reading replies aloud, in progress (see `voice`).
     voice: crate::voice::VoiceState,
@@ -438,7 +444,28 @@ impl ChatApp {
         }
         mcp.sync(&settings.mcp_servers);
 
-        let conversations = Conversation::load_all();
+        let (conversations, unreadable) = Conversation::load_all();
+        let chats_notice = (!unreadable.is_empty()).then(|| {
+            format!(
+                "{} chat file{} couldn't be read and {} set aside as .corrupt in the data folder: {}",
+                unreadable.len(),
+                if unreadable.len() == 1 { "" } else { "s" },
+                if unreadable.len() == 1 { "was" } else { "were" },
+                unreadable.join(", ")
+            )
+        });
+        // Images no chat refers to any more (deleted chats); a day old at least, so one being
+        // saved now stays.
+        std::thread::spawn(|| {
+            let n = crate::blobs::collect_garbage(
+                &crate::blobs::dir(),
+                &Conversation::dir(),
+                Duration::from_secs(24 * 3600),
+            );
+            if n > 0 {
+                log::info!("removed {n} unused attachment files");
+            }
+        });
         // The app opens on the home screen: a new chat, ready to type into.
         let current = None;
         let sandbox = settings
@@ -483,7 +510,11 @@ impl ChatApp {
             settings_ui: None,
             renaming: None,
             search: String::new(),
-            notice: loaded.notice,
+            search_cache: None,
+            notice: match (loaded.notice, chats_notice) {
+                (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+                (a, b) => a.or(b),
+            },
             voice: Default::default(),
             egui_ctx: cc.egui_ctx.clone(),
             keychain_warned: false,
@@ -1432,6 +1463,7 @@ impl ChatApp {
                 approvals: Vec::new(),
                 running_tool: None,
                 live_stats: None,
+                retrying: None,
                 subagents: HashMap::new(),
                 compacting: false,
                 compact_only,
@@ -1625,245 +1657,6 @@ impl ChatApp {
         Ok(())
     }
 
-    fn handle_events(&mut self) {
-        while let Ok(ev) = self.rx.try_recv() {
-            match ev {
-                AppEvent::VoiceCaptured(result) => {
-                    self.voice.recording = None;
-                    match result {
-                        Ok(wav) => {
-                            self.voice.transcribing = true;
-                            let ctx = self.egui_ctx.clone();
-                            crate::voice::spawn_transcription(
-                                &self.rt,
-                                &self.http,
-                                &self.settings,
-                                wav,
-                                &self.tx,
-                                move || ctx.request_repaint(),
-                            );
-                        }
-                        Err(e) => self.notice = Some(e),
-                    }
-                }
-                AppEvent::VoiceTranscribed(result) => {
-                    self.voice.transcribing = false;
-                    match result {
-                        Ok(text) => {
-                            let id = egui::Id::unique(INPUT_ID);
-                            let cursor = egui::TextEdit::load_state(&self.egui_ctx, id)
-                                .and_then(|s| s.cursor.char_range())
-                                .map(|r| r.primary.index.0);
-                            crate::voice::insert_text(&mut self.input, cursor, &text);
-                            self.egui_ctx.memory_mut(|m| m.request_focus(id));
-                            // Voice mode sends what was said at once.
-                            if self.voice_mode && !text.trim().is_empty() {
-                                let ctx = self.egui_ctx.clone();
-                                self.send(&ctx);
-                            } else if self.voice_mode {
-                                self.voice_listen_again();
-                            }
-                        }
-                        Err(e) => {
-                            self.voice_mode = false;
-                            self.notice = Some(format!("Voice input failed: {e}"));
-                        }
-                    }
-                }
-                AppEvent::SpeechEnded { key, result } => {
-                    if self.voice.speaking_key() == Some(key) {
-                        self.voice.speaking = None;
-                    }
-                    match result {
-                        Err(e) => {
-                            self.voice_mode = false;
-                            self.notice = Some(format!("Reading aloud failed: {e}"));
-                        }
-                        Ok(()) => self.voice_listen_again(),
-                    }
-                }
-                AppEvent::UpdateChecked { result, explicit } => {
-                    use crate::update::UpdateCheck;
-                    if let Some(ui) = self.settings_ui.as_mut().filter(|_| explicit) {
-                        ui.checking_update = false;
-                        ui.update_status = Some(match &result {
-                            Ok(UpdateCheck::UpToDate) => Ok(format!(
-                                "You're on the latest version (v{}).",
-                                env!("CARGO_PKG_VERSION")
-                            )),
-                            Ok(UpdateCheck::Available(r)) => {
-                                Ok(format!("Version {} is available.", r.version))
-                            }
-                            Err(e) => Err(format!("Update check failed: {e}")),
-                        });
-                        ui.update_available = matches!(
-                            &result,
-                            Ok(UpdateCheck::Available(r)) if crate::update::can_install(r)
-                        );
-                    }
-                    match result {
-                        Ok(UpdateCheck::Available(r)) => self.update = Some(r),
-                        Ok(UpdateCheck::UpToDate) => self.update = None,
-                        Err(e) => log::info!("update check failed: {e}"),
-                    }
-                }
-                AppEvent::SandboxChecked(result) => {
-                    if let Some(ui) = &mut self.settings_ui {
-                        ui.sandbox_busy = false;
-                        ui.sandbox_status = Some(result);
-                    }
-                }
-                AppEvent::UpdateProgress { done, total } => {
-                    if let Some(UpdateInstall::Downloading { .. }) = self.update_install {
-                        self.update_install = Some(UpdateInstall::Downloading { done, total });
-                    }
-                }
-                AppEvent::UpdateInstalled(result) => {
-                    self.update_install = Some(match result {
-                        Ok(target) => UpdateInstall::Ready(target),
-                        Err(e) => {
-                            self.notice = Some(format!("Couldn't install the update: {e}"));
-                            UpdateInstall::Failed
-                        }
-                    });
-                }
-                AppEvent::ModelsFetched {
-                    provider_id,
-                    result,
-                } => {
-                    if let Some(ui) = &mut self.settings_ui {
-                        ui.fetching_models = false;
-                        match result {
-                            Ok(models) => {
-                                if let Some(p) =
-                                    ui.draft.providers.iter_mut().find(|p| p.id == provider_id)
-                                {
-                                    if p.model.is_empty() {
-                                        p.model = models.first().cloned().unwrap_or_default();
-                                    }
-                                    p.models = models;
-                                }
-                            }
-                            Err(e) => ui.models_error = Some(e),
-                        }
-                    }
-                }
-                AppEvent::ReviewReady { conv_id, result } => {
-                    if let Err(e) = self.finish_review(conv_id, result) {
-                        self.notice = Some(e);
-                    }
-                }
-                AppEvent::CommitListed { conv_id, result } => {
-                    if let Some(d) = self.commit_dialog.as_mut().filter(|d| d.conv == conv_id) {
-                        d.set_listing(result);
-                    }
-                }
-                AppEvent::Committed { conv_id, result } => {
-                    if self
-                        .commit_dialog
-                        .as_ref()
-                        .is_some_and(|d| d.conv == conv_id)
-                    {
-                        match result {
-                            Ok(text) => {
-                                self.commit_dialog = None;
-                                self.notice = text.lines().next().map(str::to_owned);
-                            }
-                            Err(e) => {
-                                if let Some(d) = self.commit_dialog.as_mut() {
-                                    d.busy = false;
-                                    d.error = Some(e);
-                                }
-                            }
-                        }
-                    }
-                }
-                AppEvent::OcrStarted => self.reading_ocr += 1,
-                AppEvent::FileAttached { result, ocr } => {
-                    self.reading_files = self.reading_files.saturating_sub(1);
-                    if ocr {
-                        self.reading_ocr = self.reading_ocr.saturating_sub(1);
-                    }
-                    match result {
-                        Ok(a) => self.pending_attachments.push(a),
-                        // Several files can fail in one drop; list them together.
-                        Err(e) => match &mut self.notice {
-                            Some(n) if n.starts_with("Couldn't attach: ") => {
-                                n.push_str("; ");
-                                n.push_str(&e);
-                            }
-                            n => *n = Some(format!("Couldn't attach: {e}")),
-                        },
-                    }
-                }
-                AppEvent::McpResourceRead { name, result } => match result {
-                    Ok(list) => self.pending_attachments.extend(list),
-                    Err(e) => self.notice = Some(format!("Couldn't read {name}: {e}")),
-                },
-                AppEvent::McpPromptReady { name, result } => match result {
-                    Ok(messages) => self.insert_prompt(messages),
-                    Err(e) => self.notice = Some(format!("Prompt {name} failed: {e}")),
-                },
-                AppEvent::ServerInfo(report) => {
-                    let crate::agent::ServerReport {
-                        key,
-                        info,
-                        router,
-                        litellm,
-                        litellm_key,
-                        details,
-                    } = *report;
-                    if let Some(state) = self.server_info.as_mut().filter(|s| s.key == key) {
-                        state.info = info;
-                        state.router = router;
-                        state.litellm = litellm;
-                        state.litellm_key = litellm_key;
-                        state.details = details;
-                        state.pending = false;
-                        state.fetched = Some(std::time::Instant::now());
-                    }
-                }
-                AppEvent::ModelLoadChanged(result) => {
-                    if let Err(e) = result {
-                        self.notice = Some(format!("Couldn't change the model's load state: {e}"));
-                    }
-                    // Show the new state straight away.
-                    if let Some(state) = &mut self.server_info {
-                        state.fetched = None;
-                    }
-                }
-                AppEvent::Remote(cmd) => self.handle_remote(cmd),
-                AppEvent::KindDetected {
-                    provider_id,
-                    kind,
-                    explicit,
-                } => {
-                    if let Some(ui) = &mut self.settings_ui {
-                        if explicit {
-                            ui.detecting_kind = false;
-                        }
-                        if let Some(p) = ui.draft.providers.iter_mut().find(|p| p.id == provider_id)
-                        {
-                            // A background probe only upgrades from Generic; it never overrides a choice.
-                            if explicit || p.kind == crate::config::ProviderKind::Generic {
-                                p.kind = kind;
-                            }
-                            if explicit {
-                                ui.detect_result = Some(format!("Detected: {}", kind.label()));
-                            }
-                        }
-                    }
-                }
-                AppEvent::Chat { conv_id, event } => self.handle_chat_event(conv_id, event),
-                AppEvent::SavedAs(result) => {
-                    self.notice = Some(match result {
-                        Ok(msg) | Err(msg) => msg,
-                    });
-                }
-            }
-        }
-    }
-
     /// "Save as…" for a reply or artifact: the file dialog here (as the other saves do, since
     /// macOS wants it on the main thread), then the file is built and written off the UI
     /// thread and its outcome comes back as `AppEvent::SavedAs`.
@@ -1900,220 +1693,6 @@ impl ChatApp {
             let _ = tx.send(AppEvent::SavedAs(result));
             ctx.request_repaint();
         });
-    }
-
-    fn handle_chat_event(&mut self, id: Uuid, event: ChatEvent) {
-        // Late events from a stopped run are ignored (except approvals, which get dropped → denied).
-        if !self.runs.contains_key(&id) {
-            return;
-        }
-        match event {
-            ChatEvent::ToolApproval {
-                call,
-                origin,
-                preview,
-                respond,
-            } => {
-                let server_name = origin.as_ref().and_then(|(server, _)| {
-                    self.settings
-                        .mcp_servers
-                        .iter()
-                        .find(|s| &s.id == server)
-                        .map(|s| s.name.clone())
-                });
-                let tool = call.name.clone();
-                let pending =
-                    PendingApproval::new(call, origin, server_name, respond).with_preview(preview);
-                if self
-                    .always_allow
-                    .get(&id)
-                    .is_some_and(|a| a.allows(&pending))
-                {
-                    pending.answer(true);
-                } else {
-                    self.runs.get_mut(&id).unwrap().approvals.push(pending);
-                    self.notify_chat(id, Outcome::NeedsApproval(tool));
-                }
-                return;
-            }
-            ChatEvent::ToolRunning(call_id) => {
-                self.runs.get_mut(&id).unwrap().running_tool = Some(call_id);
-                return;
-            }
-            ChatEvent::StatsLive(s) => {
-                self.runs.get_mut(&id).unwrap().live_stats = Some(*s);
-                return;
-            }
-            ChatEvent::SubagentProgress { call_id, reports } => {
-                self.runs
-                    .get_mut(&id)
-                    .unwrap()
-                    .subagents
-                    .insert(call_id, reports);
-                return;
-            }
-            ChatEvent::Error(e) => {
-                self.errors.insert(id, e);
-                return;
-            }
-            ChatEvent::Compacting => {
-                self.runs.get_mut(&id).unwrap().compacting = true;
-                return;
-            }
-            ChatEvent::Instructions(files) => {
-                self.instructions.insert(id, files);
-                return;
-            }
-            ChatEvent::HookNotice(text) => {
-                self.notice = Some(text);
-                return;
-            }
-            _ => {}
-        }
-        let done = matches!(event, ChatEvent::Done);
-        let is_tool_result = matches!(event, ChatEvent::ToolResult(_));
-        if matches!(event, ChatEvent::Compacted { .. })
-            && let Some(run) = self.runs.get_mut(&id)
-        {
-            run.compacting = false;
-        }
-        let is_final = matches!(event, ChatEvent::AssistantFinal(_));
-        let keep_turns = self.settings.general.file_edits.keep_turns;
-        // Disjoint fields, so the held tails can change while the chat is borrowed.
-        let holds = &mut self.holds;
-        let Some(conv) = self.conversations.iter_mut().find(|c| c.id == id) else {
-            return;
-        };
-        match event {
-            ChatEvent::AssistantStart => {
-                conv.messages.push(ChatMessage::new(Role::Assistant, ""));
-                // The first reply of a regeneration takes the versions it is replacing.
-                if let Some(hold) = holds.get(&id) {
-                    branches::reply_started(&mut conv.messages, hold);
-                }
-            }
-            ChatEvent::ContentDelta(s) => {
-                if let Some(m) = conv
-                    .messages
-                    .last_mut()
-                    .filter(|m| m.role == Role::Assistant)
-                {
-                    m.content.push_str(&s);
-                }
-            }
-            ChatEvent::ReasoningDelta(s) => {
-                if let Some(m) = conv
-                    .messages
-                    .last_mut()
-                    .filter(|m| m.role == Role::Assistant)
-                {
-                    m.reasoning.get_or_insert_default().push_str(&s);
-                }
-            }
-            ChatEvent::AssistantFinal(msg) => {
-                if let Some(m) = conv
-                    .messages
-                    .last_mut()
-                    .filter(|m| m.role == Role::Assistant)
-                {
-                    // The message's versions stay with it.
-                    let (alternatives, alt_index) =
-                        (std::mem::take(&mut m.alternatives), m.alt_index);
-                    *m = *msg;
-                    m.alternatives = alternatives;
-                    m.alt_index = alt_index;
-                }
-            }
-            ChatEvent::ToolResult(msg) => conv.messages.push(*msg),
-            ChatEvent::Compacted {
-                kept,
-                summary,
-                info,
-                stats,
-            } => {
-                let at = compaction_marker_at(&conv.messages, kept);
-                let mut marker = ChatMessage::new(Role::System, summary);
-                marker.compaction = Some(info);
-                // The summary request counts in the chat's totals, but not as its context.
-                marker.stats = Some(*stats);
-                conv.messages.insert(at, marker);
-                // A held tail moves up with the messages after the marker.
-                if let Some(hold) = holds.get_mut(&id) {
-                    branches::marker_inserted(hold, at);
-                }
-                conv.save();
-            }
-            ChatEvent::Done => {
-                if let Some(hold) = holds.remove(&id) {
-                    branches::settle(&mut conv.messages, hold);
-                }
-                if conv.messages.last().is_some_and(|m| {
-                    m.role == Role::Assistant && m.content.is_empty() && m.tool_calls.is_empty()
-                }) {
-                    conv.messages.pop();
-                }
-                crate::checkpoints::prune(&mut conv.messages, keep_turns);
-                conv.updated_at = chrono::Utc::now();
-                conv.save();
-            }
-            _ => {}
-        }
-        if done {
-            let compact_only = self.runs.get(&id).is_some_and(|r| r.compact_only);
-            let failed = self.errors.contains_key(&id);
-            self.open_new_artifact(id);
-            self.runs.remove(&id);
-            if !compact_only {
-                let outcome = if failed {
-                    Outcome::Failed
-                } else {
-                    Outcome::Finished
-                };
-                self.reply_ended(id, outcome);
-            }
-            self.conversations
-                .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-        } else {
-            // The final stats are attached to the message now, so drop the live readout.
-            if is_final && let Some(run) = self.runs.get_mut(&id) {
-                run.live_stats = None;
-            }
-            if is_tool_result && let Some(run) = self.runs.get_mut(&id) {
-                run.running_tool = None;
-            }
-        }
-    }
-
-    /// A reply ended: marks its chat unread when another chat is open, and notifies.
-    fn reply_ended(&mut self, id: Uuid, outcome: Outcome) {
-        if self.current != Some(id) {
-            self.unread.insert(id);
-        }
-        // Voice mode waits while the reply waits for an approval.
-        let (finished, failed) = (
-            matches!(outcome, Outcome::Finished),
-            matches!(outcome, Outcome::Failed),
-        );
-        self.notify_chat(id, outcome);
-        if finished {
-            self.voice_reply_done(id);
-        } else if failed {
-            self.voice_mode = false;
-        }
-    }
-
-    /// Sends a desktop notification about a chat, when Settings → Background and the chat's
-    /// `notify` switch ask for one at this moment.
-    fn notify_chat(&self, id: Uuid, outcome: Outcome) {
-        let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
-            return;
-        };
-        let mut bg = self.settings.general.background.clone();
-        bg.notify =
-            ToolSelection::new(&self.settings, &conv.tool_overrides).feature_on(tools::NOTIFY);
-        if background::should_notify(&bg, self.current == Some(id), self.window_focused) {
-            background::notify(&self.rt, background::message(&conv.title, &outcome));
-        }
     }
 
     /// Frees the slot of a reply whose task ended without its `Done` event (a panic, say), so
@@ -4581,6 +4160,17 @@ impl ChatApp {
                 }
                 ui.add_space(6.0);
             }
+            if let Some(text) = self
+                .current
+                .and_then(|c| self.runs.get(&c))
+                .and_then(|r| r.retrying.as_deref())
+            {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(text).color(p.pencil));
+                });
+                ui.add_space(6.0);
+            }
             // Live stats for the request currently streaming in; the finished response
             // carries the same figures, so this only shows mid-completion. Prompt progress
             // is a status rather than a stat, so it shows with stats off too.
@@ -4967,348 +4557,6 @@ impl ChatApp {
     }
 }
 
-impl ChatApp {
-    /// Starts, restarts or stops the remote-access server and its Cloudflare Tunnel to match
-    /// the settings. A running server or tunnel with the same settings is left alone; a
-    /// change to the tunnel alone doesn't restart the server.
-    fn sync_remote(&mut self) {
-        // Access settings don't restart the server (they are not in `server_settings`), so
-        // the server's checks are updated here.
-        self.access.configure(&self.settings.general.remote.tunnel);
-        self.sync_server();
-        self.sync_tunnel();
-    }
-
-    fn sync_server(&mut self) {
-        let cfg = &self.settings.general.remote;
-        let server = crate::remote::server_settings(cfg);
-        if self
-            .remote
-            .as_ref()
-            .is_some_and(|h| crate::remote::server_settings(h.config()) == server)
-        {
-            return;
-        }
-        // Stop the old server first, so its port is free for the new one.
-        self.remote = None;
-        self.remote_seen.clear();
-        self.remote_list_seen = 0;
-        if !cfg.enabled {
-            self.remote_status = RemoteStatus::Off;
-            return;
-        }
-        let ctx = self.repaint_ctx.clone();
-        let repaint = Arc::new(move || ctx.request_repaint());
-        let hosts = self.tunnel_hosts.clone();
-        let access = self.access.clone();
-        match crate::remote::start(&self.rt, cfg, self.tx.clone(), repaint, hosts, access) {
-            Ok(handle) => {
-                self.remote_status = RemoteStatus::Running {
-                    urls: handle.urls().to_vec(),
-                    plain_http: cfg.tls == RemoteTls::Off,
-                };
-                self.remote = Some(handle);
-            }
-            Err(e) => {
-                log::warn!("remote access did not start: {e}");
-                self.remote_status = RemoteStatus::Failed(e);
-            }
-        }
-    }
-
-    fn sync_tunnel(&mut self) {
-        let cfg = &self.settings.general.remote;
-        let wanted = cfg.enabled && cfg.tunnel.enabled;
-        let password_ok =
-            cfg.password.trim().chars().count() >= crate::remote::MIN_TUNNEL_PASSWORD_CHARS;
-        let service = crate::remote::tunnel_service_url(cfg);
-        if wanted
-            && password_ok
-            && self.remote.is_some()
-            && self
-                .tunnel
-                .as_ref()
-                .is_some_and(|t| *t.config() == cfg.tunnel && t.service() == service)
-        {
-            return;
-        }
-        self.tunnel = None;
-        self.tunnel_error = None;
-        if !wanted {
-            return;
-        }
-        if self.remote.is_none() {
-            self.tunnel_error = Some("The tunnel starts once the server is running".into());
-            return;
-        }
-        let ctx = self.repaint_ctx.clone();
-        let repaint = Arc::new(move || ctx.request_repaint());
-        match crate::remote::start_tunnel(&self.rt, cfg, self.tunnel_hosts.clone(), repaint) {
-            Ok(handle) => self.tunnel = Some(handle),
-            Err(e) => {
-                log::warn!("the Cloudflare Tunnel did not start: {e}");
-                self.tunnel_error = Some(e);
-            }
-        }
-    }
-
-    /// The tunnel's state for the settings page.
-    fn tunnel_status(&self) -> crate::remote::TunnelStatus {
-        match (&self.tunnel, &self.tunnel_error) {
-            (Some(t), _) => t.status(),
-            (None, Some(e)) => crate::remote::TunnelStatus::Failed {
-                error: e.clone(),
-                retrying: false,
-            },
-            (None, None) => crate::remote::TunnelStatus::Off,
-        }
-    }
-
-    /// Answers a request from a browser, through the same code the desktop UI uses.
-    fn handle_remote(&mut self, cmd: RemoteCommand) {
-        let ctx = self.repaint_ctx.clone();
-        match cmd {
-            RemoteCommand::State { reply } => {
-                let _ = reply.send(self.remote_state());
-            }
-            RemoteCommand::Chat { id, reply } => {
-                let _ = reply.send(self.remote_chat(id));
-            }
-            RemoteCommand::NewChat { reply } => {
-                let _ = reply.send(self.create_chat());
-            }
-            RemoteCommand::Send { chat, text, reply } => {
-                let _ = reply.send(self.remote_send(chat, text, &ctx));
-            }
-            RemoteCommand::Stop { chat, reply } => {
-                self.stop(chat);
-                let _ = reply.send(());
-            }
-            RemoteCommand::Regenerate { chat, reply } => {
-                let _ = reply.send(self.regenerate(chat, &ctx));
-            }
-            RemoteCommand::Approve {
-                chat,
-                call_id,
-                answer,
-                reply,
-            } => {
-                let result = if self.approve(chat, &call_id, answer) {
-                    Ok(())
-                } else {
-                    Err("No such approval is waiting".into())
-                };
-                let _ = reply.send(result);
-            }
-            RemoteCommand::Rename { chat, title, reply } => {
-                let _ = reply.send(self.rename_chat(chat, &title));
-            }
-            RemoteCommand::Pin {
-                chat,
-                pinned,
-                reply,
-            } => {
-                let _ = reply.send(self.set_pinned(chat, pinned));
-            }
-            RemoteCommand::Delete { chat, reply } => {
-                self.delete_chat(chat);
-                let _ = reply.send(());
-            }
-            RemoteCommand::SetModel {
-                provider,
-                model,
-                reply,
-            } => {
-                let _ = reply.send(self.set_remote_model(provider, model));
-            }
-        }
-    }
-
-    /// Sends a browser's message. Without a chat, it goes to a new one (or the empty one).
-    fn remote_send(
-        &mut self,
-        chat: Option<Uuid>,
-        text: String,
-        ctx: &egui::Context,
-    ) -> Result<Uuid, String> {
-        let text = text.trim().to_owned();
-        if text.is_empty() {
-            return Err("The message is empty".into());
-        }
-        let id = chat.unwrap_or_else(|| self.create_chat());
-        self.send_message(id, text, Vec::new(), ctx)?;
-        Ok(id)
-    }
-
-    /// Picks a provider and its model, as the model picker does.
-    fn set_remote_model(&mut self, index: usize, model: String) -> Result<(), String> {
-        let model = remote_model_name(&model)?;
-        let provider = self
-            .settings
-            .providers
-            .get_mut(index)
-            .ok_or("No such provider")?;
-        provider.model = model.to_owned();
-        self.settings.active_provider = index;
-        self.save_settings();
-        Ok(())
-    }
-
-    fn remote_state(&self) -> StateView {
-        let mut chats: Vec<&Conversation> = self
-            .conversations
-            .iter()
-            .filter(|c| listed(c, &self.runs))
-            .collect();
-        // Pinned first, then newest first, as in the sidebar.
-        chats.sort_by(|a, b| {
-            b.pinned
-                .cmp(&a.pinned)
-                .then(b.updated_at.cmp(&a.updated_at))
-        });
-        StateView {
-            chats: chats
-                .into_iter()
-                .map(|c| chat_summary(c, &self.runs, &self.projects))
-                .collect(),
-            providers: self
-                .settings
-                .providers
-                .iter()
-                .map(|p| ProviderView {
-                    name: p.name.clone(),
-                    model: p.model.clone(),
-                    models: p.models.clone(),
-                })
-                .collect(),
-            active_provider: self
-                .settings
-                .active_provider
-                .min(self.settings.providers.len().saturating_sub(1)),
-            send_with_enter: self.settings.general.send_with_enter,
-            theme: theme_name(&self.settings.general.theme).to_owned(),
-            user_name: self.user_name.clone(),
-        }
-    }
-
-    fn remote_chat(&self, id: Uuid) -> Option<ChatView> {
-        let conv = self.conversations.iter().find(|c| c.id == id)?;
-        let run = self.runs.get(&id);
-        Some(ChatView {
-            id,
-            title: conv.title.clone(),
-            pinned: conv.pinned,
-            messages: conv.messages.iter().map(message_view).collect(),
-            running: run.is_some(),
-            running_tool: run.and_then(|r| r.running_tool.clone()),
-            approvals: run
-                .map(|r| r.approvals.iter().map(approval_view).collect())
-                .unwrap_or_default(),
-            error: self.errors.get(&id).cloned(),
-        })
-    }
-
-    /// Tells the connected browsers about the chats and the list that changed since the last
-    /// frame. Does nothing while the server is off. A chat that changes faster than
-    /// `REMOTE_CHAT_INTERVAL` is told about later, and a repaint is requested for then.
-    fn publish_remote(&mut self) {
-        let Some(remote) = &self.remote else {
-            return;
-        };
-        let current: Vec<(Uuid, u64)> = self
-            .conversations
-            .iter()
-            .map(|conv| {
-                let fp = chat_fingerprint(conv, self.runs.get(&conv.id), self.errors.get(&conv.id));
-                (conv.id, fp)
-            })
-            .collect();
-        let (chats, wait) = chat_notices(
-            &current,
-            &mut self.remote_seen,
-            &mut self.remote_sent,
-            Instant::now(),
-        );
-        let mut events: Vec<RemoteEvent> = chats
-            .into_iter()
-            .map(|id| RemoteEvent::Chat { id })
-            .collect();
-        let list = list_fingerprint(
-            &self.conversations,
-            &self.runs,
-            &self.settings,
-            &self.projects,
-        );
-        if list != self.remote_list_seen {
-            self.remote_list_seen = list;
-            events.push(RemoteEvent::List);
-        }
-        for event in events {
-            remote.notify(event);
-        }
-        if let Some(wait) = wait {
-            self.repaint_ctx.request_repaint_after(wait);
-        }
-    }
-}
-
-/// The least time between two `RemoteEvent::Chat` notices for the same chat.
-const REMOTE_CHAT_INTERVAL: Duration = Duration::from_millis(200);
-
-/// Decides which chats to tell the browsers about this frame. `current` lists each chat with
-/// its fingerprint now, `seen` the fingerprints last sent, `sent` when each chat was last
-/// notified. Returns the chats to notify, and how long until a changed chat that was held back
-/// may go out (`None` when nothing is held back). A held-back chat keeps its old fingerprint, so
-/// it still differs on a later frame and is notified then. Deleted chats are notified at once.
-fn chat_notices(
-    current: &[(Uuid, u64)],
-    seen: &mut HashMap<Uuid, u64>,
-    sent: &mut HashMap<Uuid, Instant>,
-    now: Instant,
-) -> (Vec<Uuid>, Option<Duration>) {
-    let mut notify = Vec::new();
-    let mut wait: Option<Duration> = None;
-    let mut next_seen = HashMap::with_capacity(current.len());
-    for &(id, fp) in current {
-        let previous = seen.get(&id).copied();
-        if previous == Some(fp) {
-            next_seen.insert(id, fp);
-            continue;
-        }
-        match throttle(sent, id, now) {
-            None => {
-                notify.push(id);
-                next_seen.insert(id, fp);
-            }
-            Some(left) => {
-                wait = Some(wait.map_or(left, |w| w.min(left)));
-                if let Some(old) = previous {
-                    next_seen.insert(id, old);
-                }
-            }
-        }
-    }
-    let live: HashSet<Uuid> = current.iter().map(|(id, _)| *id).collect();
-    // Chats deleted since the last frame: a final notice, never held back.
-    notify.extend(seen.keys().filter(|id| !live.contains(id)));
-    sent.retain(|id, _| live.contains(id));
-    *seen = next_seen;
-    (notify, wait)
-}
-
-/// Whether chat `id` may be notified at `now`: `None` and the notice is recorded, or the time
-/// left until it may be.
-fn throttle(sent: &mut HashMap<Uuid, Instant>, id: Uuid, now: Instant) -> Option<Duration> {
-    if let Some(&at) = sent.get(&id) {
-        let elapsed = now.saturating_duration_since(at);
-        if elapsed < REMOTE_CHAT_INTERVAL {
-            return Some(REMOTE_CHAT_INTERVAL - elapsed);
-        }
-    }
-    sent.insert(id, now);
-    None
-}
-
 /// Where a compaction marker goes so that `kept` messages (not counting cancelled prompts or
 /// earlier markers, which the agent never saw) follow it.
 fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
@@ -5324,21 +4572,6 @@ fn compaction_marker_at(messages: &[ChatMessage], kept: usize) -> usize {
     if seen == kept { 0 } else { messages.len() }
 }
 
-/// The model name a browser sent, trimmed. Names are limited to 200 characters.
-fn remote_model_name(model: &str) -> Result<&str, String> {
-    let model = model.trim();
-    if model.is_empty() {
-        return Err("Choose a model".into());
-    }
-    if model.chars().count() > REMOTE_MODEL_MAX_CHARS {
-        return Err("Model name is too long".into());
-    }
-    Ok(model)
-}
-
-/// The longest model name a browser may set.
-const REMOTE_MODEL_MAX_CHARS: usize = 200;
-
 /// Whether the sidebar lists a chat: an empty new chat is listed once it has a message or a run.
 fn listed(conv: &Conversation, runs: &HashMap<Uuid, Run>) -> bool {
     !conv.messages.is_empty() || runs.contains_key(&conv.id)
@@ -5350,125 +4583,6 @@ fn theme_name(theme: &Theme) -> &'static str {
         Theme::Light => "light",
         Theme::Dark => "dark",
     }
-}
-
-fn chat_summary(
-    conv: &Conversation,
-    runs: &HashMap<Uuid, Run>,
-    projects: &[Project],
-) -> ChatSummary {
-    ChatSummary {
-        id: conv.id,
-        title: conv.title.clone(),
-        pinned: conv.pinned,
-        updated_at: conv.updated_at,
-        running: runs.contains_key(&conv.id),
-        approvals: runs.get(&conv.id).map_or(0, |r| r.approvals.len()),
-        project: conv
-            .project
-            .and_then(|pid| projects.iter().find(|p| p.id == pid))
-            .map(|p| p.name.clone()),
-    }
-}
-
-fn message_view(m: &ChatMessage) -> MessageView {
-    MessageView {
-        role: m.role,
-        content: m.content.clone(),
-        reasoning: m.reasoning.clone(),
-        tool_calls: m
-            .tool_calls
-            .iter()
-            .map(|call| ToolCallView {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                arguments: call.arguments.clone(),
-                label: tools::display_name(&call.name),
-            })
-            .collect(),
-        tool_call_id: m.tool_call_id.clone(),
-        tool_name: m.tool_name.clone(),
-        is_error: m.is_error,
-        cancelled: m.cancelled,
-        // The text and data of a file stay in the app.
-        attachments: m
-            .attachments
-            .iter()
-            .map(|a| AttachmentView {
-                name: a.name.clone(),
-                mime: a.mime.clone(),
-            })
-            .collect(),
-        stats: m.stats.as_ref().map(crate::ui::stats_view::summary),
-        sandbox: m.sandbox.as_ref().map(|s| s.image.clone()),
-    }
-}
-
-fn approval_view(p: &PendingApproval) -> ApprovalView {
-    ApprovalView {
-        call_id: p.call.id.clone(),
-        name: p.call.name.clone(),
-        label: tools::display_name(&p.call.name),
-        arguments: p.call.arguments.clone(),
-        server_name: p.server_name.clone(),
-        can_always_tool: !crate::approval::always_asks(&p.call.name),
-        can_always_server: p.origin.is_some(),
-    }
-}
-
-/// A change marker for one chat as the browsers see it. Streaming text changes the last
-/// message's length, so that is hashed rather than the whole text.
-fn chat_fingerprint(conv: &Conversation, run: Option<&Run>, error: Option<&String>) -> u64 {
-    let mut h = DefaultHasher::new();
-    conv.messages.len().hash(&mut h);
-    if let Some(last) = conv.messages.last() {
-        last.content.len().hash(&mut h);
-        last.reasoning.as_ref().map(String::len).hash(&mut h);
-    }
-    conv.title.hash(&mut h);
-    conv.pinned.hash(&mut h);
-    conv.updated_at.hash(&mut h);
-    conv.workspace.hash(&mut h);
-    run.is_some().hash(&mut h);
-    if let Some(run) = run {
-        run.approvals.len().hash(&mut h);
-        run.running_tool.hash(&mut h);
-    }
-    error.hash(&mut h);
-    h.finish()
-}
-
-/// A change marker for the chat list and the models, as the browsers see them.
-fn list_fingerprint(
-    conversations: &[Conversation],
-    runs: &HashMap<Uuid, Run>,
-    settings: &Settings,
-    projects: &[Project],
-) -> u64 {
-    let mut h = DefaultHasher::new();
-    for conv in conversations.iter().filter(|c| listed(c, runs)) {
-        conv.id.hash(&mut h);
-        conv.title.hash(&mut h);
-        conv.pinned.hash(&mut h);
-        conv.updated_at.hash(&mut h);
-        conv.project.hash(&mut h);
-        let run = runs.get(&conv.id);
-        run.is_some().hash(&mut h);
-        run.map_or(0, |r| r.approvals.len()).hash(&mut h);
-    }
-    for project in projects {
-        project.id.hash(&mut h);
-        project.name.hash(&mut h);
-    }
-    settings.active_provider.hash(&mut h);
-    settings.general.send_with_enter.hash(&mut h);
-    theme_name(&settings.general.theme).hash(&mut h);
-    for p in &settings.providers {
-        p.name.hash(&mut h);
-        p.model.hash(&mut h);
-        p.models.hash(&mut h);
-    }
-    h.finish()
 }
 
 /// Ask for an export file and parse it. `None` if the user cancelled the dialog.
@@ -5944,240 +5058,5 @@ mod enter_key_tests {
     fn shift_enter_inserts_newline_and_enter_sends() {
         assert_eq!(run(true), (false, "hi\n".to_owned()));
         assert_eq!(run(false), (true, "hi".to_owned()));
-    }
-}
-
-#[cfg(test)]
-mod remote_tests {
-    use super::*;
-    use crate::attach::Attachment;
-    use crate::types::ToolCall;
-
-    fn conv_with_reply(text: &str) -> Conversation {
-        let mut conv = Conversation::new();
-        conv.messages.push(ChatMessage::new(Role::Assistant, text));
-        conv
-    }
-
-    /// A run that has nothing going on but one approval waiting for `call_id`.
-    fn run_awaiting(call_id: &str) -> Run {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let task = rt.spawn(std::future::pending::<()>());
-        let call = ToolCall {
-            id: call_id.into(),
-            name: "fetch".into(),
-            arguments: "{}".into(),
-        };
-        let (respond, _answer) = tokio::sync::oneshot::channel();
-        Run {
-            task,
-            approvals: vec![PendingApproval::new(call, None, None, respond)],
-            running_tool: None,
-            live_stats: None,
-            subagents: HashMap::new(),
-            compacting: false,
-            compact_only: false,
-            started: Instant::now(),
-        }
-    }
-
-    #[test]
-    fn chat_fingerprint_changes_when_a_reply_streams() {
-        let mut conv = conv_with_reply("Hel");
-        let before = chat_fingerprint(&conv, None, None);
-        assert_eq!(before, chat_fingerprint(&conv, None, None));
-        conv.messages.last_mut().unwrap().content.push_str("lo");
-        assert_ne!(before, chat_fingerprint(&conv, None, None));
-    }
-
-    #[test]
-    fn chat_fingerprint_changes_when_an_approval_is_added() {
-        let conv = conv_with_reply("Working on it");
-        let mut run = run_awaiting("call_1");
-        let waiting = chat_fingerprint(&conv, Some(&run), None);
-        run.approvals.clear();
-        assert_ne!(waiting, chat_fingerprint(&conv, Some(&run), None));
-        assert_ne!(
-            chat_fingerprint(&conv, None, None),
-            chat_fingerprint(&conv, None, Some(&"boom".to_owned()))
-        );
-    }
-
-    #[test]
-    fn list_fingerprint_changes_when_a_chat_is_pinned() {
-        let settings = Settings::default();
-        let mut conv = conv_with_reply("hi");
-        let runs = HashMap::new();
-        let before = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[]);
-        conv.pinned = true;
-        let after = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[]);
-        assert_ne!(before, after);
-    }
-
-    #[test]
-    fn list_fingerprint_changes_when_a_chat_moves_to_a_project() {
-        let settings = Settings::default();
-        let mut conv = conv_with_reply("hi");
-        let runs = HashMap::new();
-        let project = Project::new("Site", &settings.general.projects);
-        let before = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[]);
-        conv.project = Some(project.id);
-        let after = list_fingerprint(std::slice::from_ref(&conv), &runs, &settings, &[project]);
-        assert_ne!(before, after);
-    }
-
-    #[test]
-    fn chat_notices_hold_back_a_quick_change_and_deliver_it_after_the_interval() {
-        let (a, t0) = (Uuid::new_v4(), Instant::now());
-        let (mut seen, mut sent) = (HashMap::new(), HashMap::new());
-        // A new chat is notified at once.
-        let (notify, wait) = chat_notices(&[(a, 1)], &mut seen, &mut sent, t0);
-        assert_eq!((notify, wait), (vec![a], None));
-        // A change 50 ms later is held back for the rest of the interval, keeping the old
-        // fingerprint so it still counts as changed.
-        let at = t0 + Duration::from_millis(50);
-        let (notify, wait) = chat_notices(&[(a, 2)], &mut seen, &mut sent, at);
-        assert!(notify.is_empty());
-        assert_eq!(wait, Some(Duration::from_millis(150)));
-        assert_eq!(seen.get(&a), Some(&1));
-        // A frame before the interval ends still holds it back.
-        let (notify, _) = chat_notices(
-            &[(a, 2)],
-            &mut seen,
-            &mut sent,
-            t0 + Duration::from_millis(199),
-        );
-        assert!(notify.is_empty());
-        // Once the interval has passed, the held-back change is delivered.
-        let (notify, wait) =
-            chat_notices(&[(a, 2)], &mut seen, &mut sent, t0 + REMOTE_CHAT_INTERVAL);
-        assert_eq!((notify, wait), (vec![a], None));
-        assert_eq!(seen.get(&a), Some(&2));
-        // Unchanged chats are not notified.
-        let (notify, wait) =
-            chat_notices(&[(a, 2)], &mut seen, &mut sent, t0 + Duration::from_secs(5));
-        assert_eq!((notify, wait), (vec![], None));
-    }
-
-    #[test]
-    fn chat_notices_send_a_deleted_chat_at_once_and_forget_it() {
-        let (a, b, t0) = (Uuid::new_v4(), Uuid::new_v4(), Instant::now());
-        let (mut seen, mut sent) = (HashMap::new(), HashMap::new());
-        chat_notices(&[(a, 1), (b, 1)], &mut seen, &mut sent, t0);
-        // `b` changes and is held back, then is deleted in the same frame: it still goes out.
-        let quick = t0 + Duration::from_millis(10);
-        let (notify, _) = chat_notices(&[(a, 1), (b, 2)], &mut seen, &mut sent, quick);
-        assert!(notify.is_empty());
-        let (notify, _) = chat_notices(&[(a, 1)], &mut seen, &mut sent, quick);
-        assert_eq!(notify, vec![b]);
-        assert!(!seen.contains_key(&b) && !sent.contains_key(&b));
-    }
-
-    #[test]
-    fn compaction_marker_goes_before_the_kept_messages() {
-        let mut cancelled = ChatMessage::new(Role::User, "stopped");
-        cancelled.cancelled = true;
-        let mut marker = ChatMessage::new(Role::System, "old summary");
-        marker.compaction = Some(crate::types::CompactionInfo {
-            messages: 2,
-            tokens_before: 0,
-            manual: false,
-        });
-        let messages = vec![
-            ChatMessage::new(Role::User, "a"),
-            marker,
-            ChatMessage::new(Role::Assistant, "b"),
-            cancelled,
-            ChatMessage::new(Role::User, "c"),
-            ChatMessage::new(Role::Assistant, "d"),
-        ];
-        // The cancelled prompt and the old marker don't count.
-        assert_eq!(compaction_marker_at(&messages, 2), 4);
-        assert_eq!(compaction_marker_at(&messages, 3), 2);
-        assert_eq!(compaction_marker_at(&messages, 0), 6);
-        assert_eq!(compaction_marker_at(&messages, 4), 0);
-    }
-
-    #[test]
-    fn regenerate_keeps_the_chat_when_there_is_no_user_message() {
-        let mut messages = vec![ChatMessage::new(Role::Assistant, "hi")];
-        let off = BranchSettings {
-            enabled: false,
-            ..BranchSettings::default()
-        };
-        assert!(branches::prepare_regenerate(&mut messages, &off).is_err());
-        assert_eq!(messages.len(), 1);
-    }
-
-    #[test]
-    fn regenerate_cuts_back_to_the_last_user_message() {
-        let mut messages = vec![
-            ChatMessage::new(Role::User, "first"),
-            ChatMessage::new(Role::Assistant, "answer"),
-            ChatMessage::new(Role::User, "second"),
-            ChatMessage::new(Role::Assistant, "old reply"),
-            ChatMessage::new(Role::Tool, "result"),
-        ];
-        messages[2].cancelled = true;
-        let off = BranchSettings {
-            enabled: false,
-            ..BranchSettings::default()
-        };
-        branches::prepare_regenerate(&mut messages, &off).unwrap();
-        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
-        assert_eq!(contents, ["first", "answer", "second"]);
-        assert!(!messages[2].cancelled);
-    }
-
-    #[test]
-    fn remote_model_names_are_trimmed_and_limited_to_200_characters() {
-        assert_eq!(remote_model_name("  gpt-x "), Ok("gpt-x"));
-        assert_eq!(remote_model_name("  "), Err("Choose a model".to_owned()));
-        let max = "m".repeat(200);
-        assert_eq!(remote_model_name(&max), Ok(max.as_str()));
-        let long = "m".repeat(201);
-        assert_eq!(
-            remote_model_name(&long),
-            Err("Model name is too long".to_owned())
-        );
-        // Counted in characters, not bytes.
-        let accents = "é".repeat(200);
-        assert_eq!(remote_model_name(&accents), Ok(accents.as_str()));
-    }
-
-    #[test]
-    fn tool_calls_and_approvals_carry_the_desktop_label() {
-        let mut msg = ChatMessage::new(Role::Assistant, "");
-        msg.tool_calls.push(ToolCall {
-            id: "call_1".into(),
-            name: crate::tools::FETCH.into(),
-            arguments: "{}".into(),
-        });
-        let view = message_view(&msg);
-        assert_eq!(view.tool_calls[0].label, "Web fetch");
-        assert_eq!(view.tool_calls[0].name, crate::tools::FETCH);
-        let run = run_awaiting("call_2");
-        let approval = approval_view(&run.approvals[0]);
-        assert_eq!(approval.name, "fetch");
-        assert_eq!(approval.label, "fetch");
-    }
-
-    #[test]
-    fn message_view_never_carries_attachment_text_or_data() {
-        let mut msg = ChatMessage::new(Role::User, "see the file");
-        msg.attachments.push(Attachment {
-            name: "notes.txt".into(),
-            mime: "text/plain".into(),
-            text: Some("TOP SECRET TEXT".into()),
-            data: Some("U0VDUkVUIERBVEE=".into()),
-        });
-        let view = message_view(&msg);
-        assert_eq!(view.attachments[0].name, "notes.txt");
-        let json = serde_json::to_string(&view).unwrap();
-        assert!(json.contains("notes.txt"));
-        assert!(!json.contains("TOP SECRET TEXT"));
-        assert!(!json.contains("U0VDUkVUIERBVEE="));
     }
 }

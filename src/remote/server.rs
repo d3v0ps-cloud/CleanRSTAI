@@ -1,6 +1,7 @@
 //! The HTTP side of browser remote access: routes, login, the bridge from requests to
 //! `RemoteCommand`s, server-sent events, the embedded browser client and security headers.
 
+use crate::sync::RwLockExt as _;
 use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -262,7 +263,7 @@ fn tunnel_host(state: &AppState, host: &str) -> bool {
         return false;
     };
     let name = name.to_ascii_lowercase();
-    state.tunnel_hosts.read().unwrap().contains(&name)
+    state.tunnel_hosts.read_ok().contains(&name)
 }
 
 /// Who is asking, for the login throttle.

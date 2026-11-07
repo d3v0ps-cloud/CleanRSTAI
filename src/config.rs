@@ -167,6 +167,9 @@ pub struct ProviderConfig {
     pub stream: bool,
     pub extra_headers: Vec<KeyValue>,
     pub timeout_secs: u64,
+    /// How many times a model request is tried again after a connection failure, a rate
+    /// limit or an overloaded server, before any of the reply arrives.
+    pub retries: u32,
     pub kind: ProviderKind,
     /// Ask for token usage in streamed responses (`stream_options.include_usage`).
     pub request_usage: bool,
@@ -179,6 +182,17 @@ pub struct ProviderConfig {
     #[serde(skip)]
     pub native_search: Option<u32>,
 }
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_f64(n: &f64) -> bool {
+    *n == 0.0
+}
+
+/// The most retries a provider can be set to.
+pub const MAX_RETRIES: u32 = 10;
 
 impl Default for ProviderConfig {
     fn default() -> Self {
@@ -196,6 +210,7 @@ impl Default for ProviderConfig {
             stream: true,
             extra_headers: Vec::new(),
             timeout_secs: 300,
+            retries: 3,
             kind: ProviderKind::Generic,
             request_usage: true,
             context_tokens: None,
@@ -984,6 +999,12 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub default_approval_mode: crate::approval::ApprovalMode,
     pub max_tool_rounds: u32,
+    /// Stop a reply's tool loop once its requests used this many tokens in all (0: no limit).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub reply_token_limit: u64,
+    /// Stop a reply's tool loop once its requests cost this much, in US dollars (0: no limit).
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub reply_cost_limit_usd: f64,
     pub tool_timeout_secs: u64,
     /// Show prefill/decode speed and token counts under each response.
     pub show_stats: bool,
@@ -1092,6 +1113,8 @@ impl Default for GeneralSettings {
             auto_approve_tools: false,
             default_approval_mode: Default::default(),
             max_tool_rounds: 20,
+            reply_token_limit: 0,
+            reply_cost_limit_usd: 0.0,
             tool_timeout_secs: 120,
             show_stats: true,
             use_keychain: true,
@@ -1418,6 +1441,15 @@ impl Settings {
         if self.active_provider >= self.providers.len() {
             self.active_provider = 0;
         }
+        for p in &mut self.providers {
+            p.retries = p.retries.min(MAX_RETRIES);
+        }
+        let g = &mut self.general;
+        g.reply_cost_limit_usd = if g.reply_cost_limit_usd.is_finite() {
+            g.reply_cost_limit_usd.clamp(0.0, 10_000.0)
+        } else {
+            0.0
+        };
         self.general.zoom = self.general.zoom.clamp(0.5, 3.0);
         if self.general.remote.port == 0 {
             self.general.remote.port = REMOTE_DEFAULT_PORT;
@@ -1617,9 +1649,17 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
             .mode(0o600)
             .open(&tmp)?;
         file.write_all(bytes)?;
+        // On disk before the rename, so a power cut leaves the old file or the new one,
+        // never an empty one.
+        file.sync_all()?;
     }
     #[cfg(not(unix))]
-    std::fs::write(&tmp, bytes)?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

@@ -367,6 +367,7 @@ pub async fn drive(
                 });
                 conv.messages.push(*msg);
             }
+            ChatEvent::Retrying(status) => sink.note(&status),
             ChatEvent::Error(error) => {
                 sink.note(&format!("error: {error}"));
                 report.error.get_or_insert(error);
@@ -521,7 +522,7 @@ pub fn run(args: &[String]) -> i32 {
     conv.updated_at = chrono::Utc::now();
     let save = parsed.save || settings.general.exec.save_chats;
     if save {
-        conv.save();
+        conv.save_now();
     }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -571,7 +572,7 @@ pub fn run(args: &[String]) -> i32 {
     });
     runtime.shutdown_timeout(Duration::from_millis(500));
     if save {
-        conv.save();
+        conv.save_now();
     }
 
     let mut stdout = std::io::stdout().lock();

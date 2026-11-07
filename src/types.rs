@@ -310,42 +310,115 @@ impl Conversation {
         c
     }
 
-    fn dir() -> PathBuf {
+    pub(crate) fn dir() -> PathBuf {
         crate::config::data_dir().join("conversations")
     }
 
-    fn path(id: Uuid) -> PathBuf {
+    pub(crate) fn path(id: Uuid) -> PathBuf {
         Self::dir().join(format!("{id}.json"))
     }
 
-    pub fn load_all() -> Vec<Conversation> {
-        let mut out: Vec<Conversation> = std::fs::read_dir(Self::dir())
+    /// Every saved chat, newest first, and the names of chat files that couldn't be read.
+    /// A file that isn't a valid chat is renamed to `<name>.corrupt`, so it's kept for a look
+    /// but not tried again.
+    pub fn load_all() -> (Vec<Conversation>, Vec<String>) {
+        let (mut out, failed) = Self::load_dir(&Self::dir());
+        out.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+        (out, failed)
+    }
+
+    fn load_dir(dir: &std::path::Path) -> (Vec<Conversation>, Vec<String>) {
+        let paths: Vec<PathBuf> = std::fs::read_dir(dir)
             .into_iter()
             .flatten()
             .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-            .filter_map(|e| {
-                let text = std::fs::read_to_string(e.path()).ok()?;
-                serde_json::from_str(&text)
-                    .inspect_err(|err| log::warn!("skipping {}: {err}", e.path().display()))
-                    .ok()
-            })
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
             .collect();
-        out.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-        out
+        // Read and parse on a few threads: with many chats, this is most of the startup.
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 8);
+        let chunk = paths.len().div_ceil(threads).max(1);
+        let results: Vec<(Vec<Conversation>, Vec<String>)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = paths
+                .chunks(chunk)
+                .map(|part| {
+                    scope.spawn(move || {
+                        part.iter().map(|p| Self::load_file(p)).fold(
+                            (Vec::new(), Vec::new()),
+                            |(mut ok, mut bad), r| {
+                                match r {
+                                    Ok(c) => ok.push(c),
+                                    Err(name) => bad.push(name),
+                                }
+                                (ok, bad)
+                            },
+                        )
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        let mut out = Vec::new();
+        let mut failed = Vec::new();
+        for (ok, bad) in results {
+            out.extend(ok);
+            failed.extend(bad);
+        }
+        failed.sort();
+        (out, failed)
     }
 
+    fn load_file(path: &std::path::Path) -> Result<Conversation, String> {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            log::warn!("couldn't read {}: {e}", path.display());
+            name.clone()
+        })?;
+        serde_json::from_str(&text).map_err(|e| {
+            log::warn!("skipping {}: {e}", path.display());
+            let aside = path.with_extension("json.corrupt");
+            if let Err(e) = std::fs::rename(path, &aside) {
+                log::warn!("couldn't set {} aside: {e}", path.display());
+            }
+            name.clone()
+        })
+    }
+
+    /// Queue the chat to be written (on the saver thread; see `blobs`).
     pub fn save(&self) {
-        let result = serde_json::to_vec_pretty(self)
-            .map_err(anyhow::Error::from)
-            .and_then(|bytes| crate::config::write_private(&Self::path(self.id), &bytes));
-        if let Err(e) = result {
-            log::error!("failed to save conversation {}: {e}", self.id);
+        crate::blobs::save_later(self.clone());
+    }
+
+    /// Write the chat now, on this thread (for the command line, which exits right after).
+    pub fn save_now(&self) {
+        if let Err(e) = crate::blobs::write(self, &Self::path(self.id), &crate::blobs::dir()) {
+            log::error!("failed to save conversation {}: {e:#}", self.id);
         }
     }
 
+    /// Queue the chat's file to be removed, after any save queued before.
     pub fn delete(id: Uuid) {
-        let _ = std::fs::remove_file(Self::path(id));
+        crate::blobs::delete_later(id);
+    }
+
+    /// Put every `blob` image back into its attachment, for a copy that leaves this computer.
+    pub fn inline_attachments(&mut self) {
+        fn walk(messages: &mut [ChatMessage]) {
+            for m in messages {
+                m.attachments
+                    .iter_mut()
+                    .for_each(crate::attach::Attachment::inline);
+                for alt in &mut m.alternatives {
+                    walk(alt);
+                }
+            }
+        }
+        walk(&mut self.messages);
     }
 
     /// Derive a title from the first user message.
@@ -416,6 +489,67 @@ mod tests {
     }
 
     #[test]
+    fn images_go_beside_the_chat_and_load_back() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-chats-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Conversation::new();
+        let mut m = ChatMessage::new(Role::User, "look");
+        let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+        m.attachments.push(crate::attach::Attachment::image(
+            "a.png".into(),
+            "image/png".into(),
+            &png,
+        ));
+        let mut alt = m.clone();
+        alt.content = "other".into();
+        m.alternatives.push(vec![alt]);
+        c.messages.push(m);
+        let path = dir.join(format!("{}.json", c.id));
+        crate::blobs::write(&c, &path, crate::blobs::test_dir()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"blob\""), "{text}");
+        assert!(!text.contains("\"data\""), "{text}");
+
+        let (loaded, failed) = Conversation::load_dir(&dir);
+        assert!(failed.is_empty());
+        let a = &loaded[0].messages[0].attachments[0];
+        assert!(a.data.is_none() && a.is_image());
+        assert_eq!(a.bytes().unwrap(), png);
+        assert_eq!(a.size_label(), "1 KB");
+        assert!(
+            a.data_url()
+                .unwrap()
+                .starts_with("data:image/png;base64,iVBOR")
+        );
+
+        let mut exported = loaded[0].clone();
+        exported.inline_attachments();
+        let a = &exported.messages[0].alternatives[0][0].attachments[0];
+        assert!(a.blob.is_none());
+        assert_eq!(a.bytes().unwrap(), png);
+        // Outside a chat file (an export), the bytes stay inline.
+        assert!(
+            serde_json::to_string(&exported)
+                .unwrap()
+                .contains("\"data\"")
+        );
+    }
+
+    #[test]
+    fn a_broken_chat_file_is_set_aside_and_reported() {
+        let dir = std::env::temp_dir().join(format!("cleanrstai-chats-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("bad.json"), "{ not json").unwrap();
+        let good = Conversation::new();
+        crate::blobs::write(&good, &dir.join("good.json"), crate::blobs::test_dir()).unwrap();
+        let (loaded, failed) = Conversation::load_dir(&dir);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(failed, vec!["bad.json".to_owned()]);
+        assert!(dir.join("bad.json.corrupt").exists());
+        assert!(!dir.join("bad.json").exists());
+    }
+
+    #[test]
     fn auto_title_from_attachment() {
         let mut c = Conversation::new();
         let mut m = ChatMessage::new(Role::User, "");
@@ -424,6 +558,7 @@ mod tests {
             mime: "text/plain".into(),
             text: Some("x".into()),
             data: None,
+            ..Default::default()
         });
         c.messages.push(m);
         c.auto_title();

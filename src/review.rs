@@ -74,6 +74,7 @@ pub fn attachment(diff: &ReviewDiff) -> Attachment {
         mime: "text/x-diff".into(),
         text: Some(diff.text.clone()),
         data: None,
+        ..Default::default()
     }
 }
 

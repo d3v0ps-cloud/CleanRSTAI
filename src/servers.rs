@@ -3,6 +3,7 @@
 //! the details shown beside the model picker. llama.cpp and LiteLLM, which have more to
 //! show, live in `llm.rs`.
 
+use crate::sync::LockExt as _;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -91,14 +92,14 @@ pub async fn context_size(http: &reqwest::Client, p: &ProviderConfig) -> Option<
             std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
         > = std::sync::LazyLock::new(Default::default);
         let key = (origin(p), p.model.trim().to_owned());
-        if let Some(n) = CACHE.lock().unwrap().get(&key) {
+        if let Some(n) = CACHE.locked().get(&key) {
             return Some(*n);
         }
         let n = open_router_model(http, p)
             .await?
             .get("context_length")
             .and_then(Value::as_u64)?;
-        CACHE.lock().unwrap().insert(key, n);
+        CACHE.locked().insert(key, n);
         return Some(n);
     }
     details(http, p).await?.context_size
