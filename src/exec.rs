@@ -367,6 +367,7 @@ pub async fn drive(
                 });
                 conv.messages.push(*msg);
             }
+            ChatEvent::Retrying(status) => sink.note(&status),
             ChatEvent::Error(error) => {
                 sink.note(&format!("error: {error}"));
                 report.error.get_or_insert(error);

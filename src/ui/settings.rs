@@ -1287,6 +1287,19 @@ impl SettingsUi {
                             egui::DragValue::new(&mut p.timeout_secs)
                                 .range(10..=3600)
                                 .suffix(" s"),
+                        )
+                        .on_hover_text(
+                            "How long to wait for the server to start answering, and the longest pause while a reply streams in.",
+                        );
+                        ui.end_row();
+
+                        ui.label("Retries");
+                        ui.add(
+                            egui::DragValue::new(&mut p.retries)
+                                .range(0..=crate::config::MAX_RETRIES),
+                        )
+                        .on_hover_text(
+                            "Times a request is tried again after a connection failure, a rate limit (429) or a busy server (5xx), before the reply starts.",
                         );
                         ui.end_row();
 

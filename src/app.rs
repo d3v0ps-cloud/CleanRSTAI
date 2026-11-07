@@ -52,6 +52,8 @@ pub(crate) struct Run {
     pub(crate) running_tool: Option<String>,
     /// Stats of the request currently streaming in, for the readout above the input box.
     pub(crate) live_stats: Option<crate::stats::RequestStats>,
+    /// The request is being tried again, as this status line (cleared when output arrives).
+    pub(crate) retrying: Option<String>,
     /// Live subagent progress, by `delegate` call id.
     pub(crate) subagents: HashMap<String, Vec<crate::subagent::SubagentReport>>,
     /// Older messages are being summarised.
@@ -1432,6 +1434,7 @@ impl ChatApp {
                 approvals: Vec::new(),
                 running_tool: None,
                 live_stats: None,
+                retrying: None,
                 subagents: HashMap::new(),
                 compacting: false,
                 compact_only,
@@ -1941,7 +1944,13 @@ impl ChatApp {
                 return;
             }
             ChatEvent::StatsLive(s) => {
-                self.runs.get_mut(&id).unwrap().live_stats = Some(*s);
+                let run = self.runs.get_mut(&id).unwrap();
+                run.live_stats = Some(*s);
+                run.retrying = None;
+                return;
+            }
+            ChatEvent::Retrying(text) => {
+                self.runs.get_mut(&id).unwrap().retrying = Some(text);
                 return;
             }
             ChatEvent::SubagentProgress { call_id, reports } => {
@@ -4581,6 +4590,17 @@ impl ChatApp {
                 }
                 ui.add_space(6.0);
             }
+            if let Some(text) = self
+                .current
+                .and_then(|c| self.runs.get(&c))
+                .and_then(|r| r.retrying.as_deref())
+            {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(text).color(p.pencil));
+                });
+                ui.add_space(6.0);
+            }
             // Live stats for the request currently streaming in; the finished response
             // carries the same figures, so this only shows mid-completion. Prompt progress
             // is a status rather than a stat, so it shows with stats off too.
@@ -5976,6 +5996,7 @@ mod remote_tests {
             approvals: vec![PendingApproval::new(call, None, None, respond)],
             running_tool: None,
             live_stats: None,
+            retrying: None,
             subagents: HashMap::new(),
             compacting: false,
             compact_only: false,

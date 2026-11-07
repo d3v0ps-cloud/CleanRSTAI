@@ -167,6 +167,9 @@ pub struct ProviderConfig {
     pub stream: bool,
     pub extra_headers: Vec<KeyValue>,
     pub timeout_secs: u64,
+    /// How many times a model request is tried again after a connection failure, a rate
+    /// limit or an overloaded server, before any of the reply arrives.
+    pub retries: u32,
     pub kind: ProviderKind,
     /// Ask for token usage in streamed responses (`stream_options.include_usage`).
     pub request_usage: bool,
@@ -179,6 +182,9 @@ pub struct ProviderConfig {
     #[serde(skip)]
     pub native_search: Option<u32>,
 }
+
+/// The most retries a provider can be set to.
+pub const MAX_RETRIES: u32 = 10;
 
 impl Default for ProviderConfig {
     fn default() -> Self {
@@ -196,6 +202,7 @@ impl Default for ProviderConfig {
             stream: true,
             extra_headers: Vec::new(),
             timeout_secs: 300,
+            retries: 3,
             kind: ProviderKind::Generic,
             request_usage: true,
             context_tokens: None,
@@ -1417,6 +1424,9 @@ impl Settings {
         }
         if self.active_provider >= self.providers.len() {
             self.active_provider = 0;
+        }
+        for p in &mut self.providers {
+            p.retries = p.retries.min(MAX_RETRIES);
         }
         self.general.zoom = self.general.zoom.clamp(0.5, 3.0);
         if self.general.remote.port == 0 {

@@ -116,7 +116,18 @@ Events; replies then arrive all at once.
 
 ### Timeout
 
-How long to wait for a response: 10 to 3600 seconds, default 300.
+How long to wait for the server to start answering, and the longest pause allowed while a
+reply streams in: 10 to 3600 seconds, default 300. A reply that keeps streaming is never cut
+off, however long it takes; one that goes quiet for longer than this is stopped with an error.
+
+### Retries
+
+How many times a request is tried again when it fails before the reply starts: 0 to 10,
+default 3. Only a failed connection, a timeout or rate limit from the server (HTTP 408, 425 or
+429) or a busy server (500, 502, 503, 504, or Anthropic's 529) is retried; other errors show at
+once. The app waits as long as the server's `Retry-After` header asks (at most a minute), or 1,
+2, 4… seconds, and shows the wait above the message box. Once text has arrived, a failure is
+shown and not retried.
 
 ### Extra headers
 

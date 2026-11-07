@@ -35,6 +35,8 @@ pub enum ChatEvent {
         preview: Option<String>,
         respond: oneshot::Sender<bool>,
     },
+    /// The request failed in a way worth trying again; a status line for the readout.
+    Retrying(String),
     /// The older messages are being summarised.
     Compacting,
     /// The messages before the last `kept` ones were summarised as `summary`, by a request
@@ -530,6 +532,7 @@ pub async fn run(
             |d| match d {
                 Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
                 Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
+                Delta::Retrying(s) => emit(ChatEvent::Retrying(s.to_owned())),
             },
             |s| emit(ChatEvent::StatsLive(Box::new(s))),
         )
