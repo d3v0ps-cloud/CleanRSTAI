@@ -2,6 +2,7 @@
 //! server answers with either a JSON body or an SSE stream carrying the response. A
 //! background GET stream, when the server offers one, carries server-initiated messages.
 
+use crate::sync::LockExt as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,7 +49,7 @@ pub struct HttpTransport {
 
 impl Drop for HttpTransport {
     fn drop(&mut self) {
-        if let Some(t) = self.listener.lock().unwrap().take() {
+        if let Some(t) = self.listener.locked().take() {
             t.abort();
         }
     }
@@ -90,16 +91,16 @@ impl HttpTransport {
     }
 
     pub fn set_protocol_version(&self, v: &str) {
-        *self.inner.protocol_version.lock().unwrap() = Some(v.to_owned());
+        *self.inner.protocol_version.locked() = Some(v.to_owned());
     }
 
     pub fn session_id(&self) -> Option<String> {
-        self.inner.session_id.lock().unwrap().clone()
+        self.inner.session_id.locked().clone()
     }
 
     /// Forget the session id, so the next `initialize` starts a new session.
     pub fn clear_session(&self) {
-        *self.inner.session_id.lock().unwrap() = None;
+        *self.inner.session_id.locked() = None;
     }
 
     /// Open the optional GET stream for server-initiated notifications and requests.
@@ -125,7 +126,7 @@ impl HttpTransport {
                 tokio::time::sleep(Duration::from_secs(2u64.pow(failures.min(5)))).await;
             }
         });
-        *self.listener.lock().unwrap() = Some(task);
+        *self.listener.locked() = Some(task);
     }
 
     pub async fn notify(&self, msg: &Value) -> Result<()> {
@@ -149,10 +150,10 @@ enum Listen {
 impl Inner {
     fn with_session(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req = req.headers(self.headers.clone());
-        if let Some(sid) = self.session_id.lock().unwrap().clone() {
+        if let Some(sid) = self.session_id.locked().clone() {
             req = req.header(SESSION_HEADER, sid);
         }
-        if let Some(v) = self.protocol_version.lock().unwrap().clone() {
+        if let Some(v) = self.protocol_version.locked().clone() {
             req = req.header(VERSION_HEADER, v);
         }
         req
@@ -213,13 +214,12 @@ impl Inner {
             .get(SESSION_HEADER)
             .and_then(|v| v.to_str().ok())
         {
-            *self.session_id.lock().unwrap() = Some(sid.to_owned());
+            *self.session_id.locked() = Some(sid.to_owned());
         }
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            if status == reqwest::StatusCode::NOT_FOUND && self.session_id.lock().unwrap().is_some()
-            {
+            if status == reqwest::StatusCode::NOT_FOUND && self.session_id.locked().is_some() {
                 return Err(SessionExpired.into());
             }
             bail!("HTTP {status}: {}", body.trim());
@@ -328,7 +328,7 @@ impl Inner {
     }
 
     async fn close(&self) {
-        let has_session = self.session_id.lock().unwrap().is_some();
+        let has_session = self.session_id.locked().is_some();
         if has_session {
             let mut req = self.with_session(self.http.delete(&self.url));
             if let Some(t) = self.bearer().await {

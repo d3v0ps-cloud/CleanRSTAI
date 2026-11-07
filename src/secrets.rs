@@ -5,6 +5,7 @@
 //! on save each secret is written to the store and blanked in the file, and on load the
 //! blanks are filled back in from the store.
 
+use crate::sync::LockExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -87,17 +88,17 @@ impl FileStore {
 
 impl SecretStore for FileStore {
     fn get(&self, account: &str) -> Result<Option<String>, String> {
-        let _g = self.lock.lock().unwrap();
+        let _g = self.lock.locked();
         Ok(self.read().get(account).cloned())
     }
     fn set(&self, account: &str, secret: &str) -> Result<(), String> {
-        let _g = self.lock.lock().unwrap();
+        let _g = self.lock.locked();
         let mut map = self.read();
         map.insert(account.into(), secret.into());
         self.write(&map)
     }
     fn delete(&self, account: &str) -> Result<(), String> {
-        let _g = self.lock.lock().unwrap();
+        let _g = self.lock.locked();
         let mut map = self.read();
         if map.remove(account).is_some() {
             self.write(&map)?;
@@ -131,7 +132,7 @@ impl<S: SecretStore> Bundled<S> {
         &self,
         f: impl FnOnce(&S, &mut BTreeMap<String, String>) -> Result<R, String>,
     ) -> Result<R, String> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.locked();
         let loaded = cache.get_or_insert_with(|| match self.inner.get(BUNDLE)? {
             Some(json) => serde_json::from_str(&json).map_err(|e| format!("reading secrets: {e}")),
             None => Ok(BTreeMap::new()),
@@ -344,18 +345,18 @@ pub mod tests {
     impl SecretStore for MemoryStore {
         fn get(&self, a: &str) -> Result<Option<String>, String> {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(self.items.lock().unwrap().get(a).cloned())
+            Ok(self.items.locked().get(a).cloned())
         }
         fn set(&self, a: &str, s: &str) -> Result<(), String> {
             if self.fail {
                 return Err("locked".into());
             }
             self.writes.fetch_add(1, Ordering::SeqCst);
-            self.items.lock().unwrap().insert(a.into(), s.into());
+            self.items.locked().insert(a.into(), s.into());
             Ok(())
         }
         fn delete(&self, a: &str) -> Result<(), String> {
-            self.items.lock().unwrap().remove(a);
+            self.items.locked().remove(a);
             Ok(())
         }
     }
@@ -427,7 +428,7 @@ pub mod tests {
         s.providers[0].extra_headers.clear();
         let now = externalize(&mut s, &store).unwrap();
         remove_stale(&store, &before, &now);
-        let items = store.items.lock().unwrap();
+        let items = store.items.locked();
         assert!(!items.contains_key("provider:p1:header:X-Org"));
         assert!(items.contains_key("provider:p1:api_key"));
     }
@@ -439,7 +440,7 @@ pub mod tests {
         let mut on_disk = original.clone();
         let accounts = externalize(&mut on_disk, &store).unwrap();
         assert_eq!(accounts.len(), 3);
-        let items: Vec<String> = store.inner.items.lock().unwrap().keys().cloned().collect();
+        let items: Vec<String> = store.inner.items.locked().keys().cloned().collect();
         assert_eq!(items, [BUNDLE]);
 
         // Saving again unchanged writes nothing; a fresh run reads the item once.
@@ -447,7 +448,7 @@ pub mod tests {
         externalize(&mut original.clone(), &store).unwrap();
         assert_eq!(store.inner.writes.load(Ordering::SeqCst), writes);
         let fresh = Bundled::new(MemoryStore::default());
-        *fresh.inner.items.lock().unwrap() = store.inner.items.lock().unwrap().clone();
+        *fresh.inner.items.locked() = store.inner.items.locked().clone();
         assert!(internalize(&mut on_disk, &fresh, &accounts).is_empty());
         assert_eq!(on_disk, original);
         assert_eq!(fresh.inner.reads.load(Ordering::SeqCst), 1);
@@ -471,7 +472,7 @@ pub mod tests {
         let store = Bundled::new(old);
         assert!(internalize(&mut on_disk, &store, &accounts).is_empty());
         assert_eq!(on_disk, sample());
-        let items: Vec<String> = store.inner.items.lock().unwrap().keys().cloned().collect();
+        let items: Vec<String> = store.inner.items.locked().keys().cloned().collect();
         assert_eq!(items, [BUNDLE], "old items are removed once moved");
     }
 

@@ -1,6 +1,7 @@
 //! Subagents: the `delegate` tool hands independent tasks to agents that each run their own
 //! model/tool loop, in parallel, and report back to the main conversation.
 
+use crate::sync::LockExt as _;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -263,7 +264,7 @@ impl Delegation {
         );
         let publish = |change: &dyn Fn(&mut Vec<SubagentReport>)| {
             let snapshot = {
-                let mut r = reports.lock().unwrap();
+                let mut r = reports.locked();
                 change(&mut r);
                 r.clone()
             };

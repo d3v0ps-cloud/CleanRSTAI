@@ -1,5 +1,6 @@
 //! Owns the live MCP connections and keeps them in sync with the settings.
 
+use crate::sync::LockExt as _;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -203,13 +204,13 @@ impl McpManager {
     /// Replace how sign-in URLs are opened (tests drive the flow without a browser).
     #[cfg(test)]
     pub fn set_url_opener(&self, f: UrlOpener) {
-        *self.open_url.lock().unwrap() = f;
+        *self.open_url.locked() = f;
     }
 
     /// Run the browser sign-in for a Streamable HTTP server, then reconnect.
     pub fn sign_in(self: &Arc<Self>, id: &str) {
         let (url, client_id, hint, generation) = {
-            let mut entries = self.entries.lock().unwrap();
+            let mut entries = self.entries.locked();
             let Some(e) = entries.iter_mut().find(|e| e.config.id == id) else {
                 return;
             };
@@ -228,7 +229,7 @@ impl McpManager {
         };
         self.changed();
         let (this, task_id) = (self.clone(), id.to_owned());
-        let opener = self.open_url.lock().unwrap().clone();
+        let opener = self.open_url.locked().clone();
         let task = self.rt.spawn(async move {
             let result = super::oauth::sign_in(
                 &this.http,
@@ -275,7 +276,7 @@ impl McpManager {
     }
 
     pub fn set_on_change(&self, f: impl Fn() + Send + Sync + 'static) {
-        *self.on_change.lock().unwrap() = Some(Box::new(f));
+        *self.on_change.locked() = Some(Box::new(f));
     }
 
     /// Counts changes to the servers' state (stderr output aside).
@@ -285,7 +286,7 @@ impl McpManager {
 
     fn changed(&self) {
         self.version.fetch_add(1, Ordering::AcqRel);
-        if let Some(f) = self.on_change.lock().unwrap().as_ref() {
+        if let Some(f) = self.on_change.locked().as_ref() {
             f();
         }
     }
@@ -294,7 +295,7 @@ impl McpManager {
     pub fn sync(self: &Arc<Self>, configs: &[McpServerConfig]) {
         let mut to_connect = Vec::new();
         {
-            let mut entries = self.entries.lock().unwrap();
+            let mut entries = self.entries.locked();
             let mut old: Vec<Entry> = std::mem::take(&mut *entries);
             for cfg in configs {
                 let entry = match old.iter().position(|e| e.config.id == cfg.id) {
@@ -348,7 +349,7 @@ impl McpManager {
     }
 
     fn start_connecting(self: &Arc<Self>, id: &str) {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.locked();
         let Some(e) = entries.iter_mut().find(|e| e.config.id == id) else {
             return;
         };
@@ -387,7 +388,7 @@ impl McpManager {
             }
             .await;
             {
-                let mut entries = this.entries.lock().unwrap();
+                let mut entries = this.entries.locked();
                 if let Some(e) = entries
                     .iter_mut()
                     .find(|e| e.config.id == id && e.generation == generation)
@@ -439,7 +440,7 @@ impl McpManager {
     /// Re-fetch tools, resources and prompts of a connected server.
     pub fn refresh_tools(self: &Arc<Self>, id: &str) {
         let generation = {
-            let entries = self.entries.lock().unwrap();
+            let entries = self.entries.locked();
             entries
                 .iter()
                 .find(|e| e.config.id == id && e.client.is_some())
@@ -453,7 +454,7 @@ impl McpManager {
 
     fn refresh(self: &Arc<Self>, id: &str, generation: u64, list: List) {
         let client = {
-            let entries = self.entries.lock().unwrap();
+            let entries = self.entries.locked();
             entries
                 .iter()
                 .find(|e| e.config.id == id && e.generation == generation)
@@ -542,7 +543,7 @@ impl McpManager {
     }
 
     pub fn connected_tool_count(&self) -> (usize, usize) {
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.locked();
         let servers = entries.iter().filter(|e| e.client.is_some()).count();
         let tools = entries
             .iter()
@@ -560,7 +561,7 @@ impl McpManager {
     /// Every tool of every connected server, including ones switched off in Settings;
     /// callers filter with [`ToolRouter::retain`].
     pub fn router(&self) -> ToolRouter {
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.locked();
         let mut router = ToolRouter::default();
         for e in entries.iter() {
             let Some(client) = &e.client else { continue };

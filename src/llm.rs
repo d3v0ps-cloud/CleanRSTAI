@@ -1,6 +1,7 @@
 //! Client for OpenAI-compatible `/chat/completions` endpoints (OpenAI, Ollama, LM Studio,
 //! vLLM, llama.cpp server, OpenRouter, Groq, ...).
 
+use crate::sync::LockExt as _;
 use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
@@ -204,7 +205,7 @@ pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) 
         std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
     > = std::sync::LazyLock::new(Default::default);
     let key = (origin(p), p.model.clone());
-    if let Some(n) = CACHE.lock().unwrap().get(&key) {
+    if let Some(n) = CACHE.locked().get(&key) {
         return Some(*n);
     }
     let v = llama_cpp_props(http, p).await?;
@@ -212,7 +213,7 @@ pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) 
         .pointer("/default_generation_settings/n_ctx")
         .or_else(|| v.get("n_ctx"))
         .and_then(Value::as_u64)?;
-    CACHE.lock().unwrap().insert(key, n);
+    CACHE.locked().insert(key, n);
     Some(n)
 }
 
@@ -502,7 +503,7 @@ pub async fn litellm_model_info(
     > = std::sync::LazyLock::new(Default::default);
     let model = p.model.trim();
     let key = (origin(p), model.to_owned());
-    if let Some(info) = CACHE.lock().unwrap().get(&key) {
+    if let Some(info) = CACHE.locked().get(&key) {
         return Some(info.clone());
     }
     let resp = authorize(http.get(format!("{}/model/info", origin(p))), p)
@@ -547,7 +548,7 @@ pub async fn litellm_model_info(
         reasoning: flag("supports_reasoning"),
         pdf: flag("supports_pdf_input"),
     };
-    CACHE.lock().unwrap().insert(key, info.clone());
+    CACHE.locked().insert(key, info.clone());
     Some(info)
 }
 

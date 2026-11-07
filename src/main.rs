@@ -39,6 +39,7 @@ mod skills;
 mod sse;
 mod stats;
 mod subagent;
+mod sync;
 #[cfg(test)]
 mod testutil;
 mod tools;
