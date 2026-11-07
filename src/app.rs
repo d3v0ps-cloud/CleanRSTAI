@@ -153,6 +153,8 @@ pub struct ChatApp {
     settings_ui: Option<SettingsUi>,
     renaming: Option<(Uuid, String)>,
     search: String,
+    /// The last chat search: query, a stamp of the chats, and the chats that matched.
+    search_cache: Option<(String, u64, HashSet<Uuid>)>,
     notice: Option<String>,
     /// Voice input and reading replies aloud, in progress (see `voice`).
     voice: crate::voice::VoiceState,
@@ -506,6 +508,7 @@ impl ChatApp {
             settings_ui: None,
             renaming: None,
             search: String::new(),
+            search_cache: None,
             notice: match (loaded.notice, chats_notice) {
                 (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
                 (a, b) => a.or(b),
