@@ -1627,9 +1627,17 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
             .mode(0o600)
             .open(&tmp)?;
         file.write_all(bytes)?;
+        // On disk before the rename, so a power cut leaves the old file or the new one,
+        // never an empty one.
+        file.sync_all()?;
     }
     #[cfg(not(unix))]
-    std::fs::write(&tmp, bytes)?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

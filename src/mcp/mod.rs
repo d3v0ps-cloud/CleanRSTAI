@@ -527,6 +527,7 @@ fn content_to_attachment(c: &Value) -> Option<crate::attach::Attachment> {
             mime: mime.unwrap_or_else(|| "text/plain".into()),
             text: Some(text.to_owned()),
             data: None,
+            ..Default::default()
         });
     }
     let blob = c.get("blob").and_then(|b| b.as_str())?;
@@ -536,6 +537,7 @@ fn content_to_attachment(c: &Value) -> Option<crate::attach::Attachment> {
             mime,
             text: None,
             data: Some(blob.to_owned()),
+            ..Default::default()
         });
     }
     // Other blobs (PDFs, Office documents, text in another encoding) as their text.
@@ -576,6 +578,7 @@ pub fn prompt_messages(res: &Value) -> Vec<PromptMessage> {
                         mime,
                         text: None,
                         data: Some(data),
+                        ..Default::default()
                     });
                 }
             }
@@ -639,6 +642,7 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
                         mime: mime.to_owned(),
                         text: None,
                         data: Some(data.to_owned()),
+                        ..Default::default()
                     });
                 }
                 format!("[image: {name}]")

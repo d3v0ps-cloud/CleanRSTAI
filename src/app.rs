@@ -440,7 +440,28 @@ impl ChatApp {
         }
         mcp.sync(&settings.mcp_servers);
 
-        let conversations = Conversation::load_all();
+        let (conversations, unreadable) = Conversation::load_all();
+        let chats_notice = (!unreadable.is_empty()).then(|| {
+            format!(
+                "{} chat file{} couldn't be read and {} set aside as .corrupt in the data folder: {}",
+                unreadable.len(),
+                if unreadable.len() == 1 { "" } else { "s" },
+                if unreadable.len() == 1 { "was" } else { "were" },
+                unreadable.join(", ")
+            )
+        });
+        // Images no chat refers to any more (deleted chats); a day old at least, so one being
+        // saved now stays.
+        std::thread::spawn(|| {
+            let n = crate::blobs::collect_garbage(
+                &crate::blobs::dir(),
+                &Conversation::dir(),
+                Duration::from_secs(24 * 3600),
+            );
+            if n > 0 {
+                log::info!("removed {n} unused attachment files");
+            }
+        });
         // The app opens on the home screen: a new chat, ready to type into.
         let current = None;
         let sandbox = settings
@@ -485,7 +506,10 @@ impl ChatApp {
             settings_ui: None,
             renaming: None,
             search: String::new(),
-            notice: loaded.notice,
+            notice: match (loaded.notice, chats_notice) {
+                (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+                (a, b) => a.or(b),
+            },
             voice: Default::default(),
             egui_ctx: cc.egui_ctx.clone(),
             keychain_warned: false,
@@ -6193,6 +6217,7 @@ mod remote_tests {
             mime: "text/plain".into(),
             text: Some("TOP SECRET TEXT".into()),
             data: Some("U0VDUkVUIERBVEE=".into()),
+            ..Default::default()
         });
         let view = message_view(&msg);
         assert_eq!(view.attachments[0].name, "notes.txt");

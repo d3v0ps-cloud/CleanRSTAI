@@ -1820,6 +1820,7 @@ mod server_tests {
                 mime: "text/plain".into(),
                 text: Some("notes".into()),
                 data: None,
+                ..Default::default()
             },
         ];
         let msgs = to_api_messages("", &[m]);
