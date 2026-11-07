@@ -1018,7 +1018,7 @@ fn rtf(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The text of a document that has one; panics on a scanned PDF.
@@ -1027,6 +1027,84 @@ mod tests {
             Extracted::Text(text) => Ok(text),
             Extracted::Scanned { pages } => panic!("{pages} pages read as scanned"),
         }
+    }
+
+    /// A small, fixed pseudo-random sequence (xorshift), so a failure repeats.
+    pub(crate) struct Mutator(u64);
+
+    impl Mutator {
+        pub(crate) fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+
+        pub(crate) fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n.max(1) as u64) as usize
+        }
+
+        /// `bytes` with a few random changes: flipped bytes, a cut, a copied or junk run.
+        pub(crate) fn mutate(&mut self, bytes: &[u8]) -> Vec<u8> {
+            let mut b = bytes.to_vec();
+            for _ in 0..1 + self.below(4) {
+                match self.below(4) {
+                    0 if !b.is_empty() => {
+                        let at = self.below(b.len());
+                        b[at] ^= 1 << self.below(8);
+                    }
+                    1 if !b.is_empty() => {
+                        let at = self.below(b.len());
+                        b.truncate(at.max(8));
+                    }
+                    2 if b.len() > 2 => {
+                        let (from, len) = (self.below(b.len()), 1 + self.below(64));
+                        let run: Vec<u8> = b[from..(from + len).min(b.len())].to_vec();
+                        let at = self.below(b.len());
+                        b.splice(at..at, run);
+                    }
+                    _ => {
+                        let at = self.below(b.len() + 1);
+                        let junk: Vec<u8> =
+                            (0..1 + self.below(32)).map(|_| self.next() as u8).collect();
+                        b.splice(at..at, junk);
+                    }
+                }
+            }
+            b
+        }
+    }
+
+    /// Damaged copies of every sample document must give a result or an error, never a
+    /// panic (attachments are read on a blocking task, where a panic loses the file).
+    #[test]
+    fn damaged_documents_never_panic() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/documents");
+        let mut rng = Mutator::new(0x5eed_cafe);
+        let mut panics = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let original = std::fs::read(entry.path()).unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // PDFs are slow to read, so fewer of them.
+            let rounds = if name.ends_with(".pdf") { 15 } else { 60 };
+            for round in 0..rounds {
+                let bytes = rng.mutate(&original);
+                let outcome = std::panic::catch_unwind(|| {
+                    if let Ok(Some(format)) = detect(&bytes) {
+                        let _ = extract_or_scanned(format, &bytes);
+                    }
+                    let _ = crate::attach::decode_text(&bytes);
+                });
+                if outcome.is_err() {
+                    panics.push(format!("{name} round {round}"));
+                }
+            }
+        }
+        assert!(panics.is_empty(), "panicked on: {panics:?}");
     }
 
     #[test]

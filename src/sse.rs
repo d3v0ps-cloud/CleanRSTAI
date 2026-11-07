@@ -79,6 +79,42 @@ impl SseParser {
 mod tests {
     use super::*;
 
+    /// However a stream is split into chunks, the same events come out; random bytes never
+    /// panic.
+    #[test]
+    fn chunk_boundaries_dont_matter() {
+        let stream = "event: a\ndata: one\r\n\n: comment\ndata: two\ndata: lines\n\n\
+                      data:{\"x\":\"é…\"}\n\nretry: 5\ndata\n\nevent: tail\ndata: end";
+        let whole = {
+            let mut p = SseParser::default();
+            let mut out = p.feed(stream.as_bytes());
+            out.extend(p.finish());
+            out
+        };
+        assert_eq!(whole.len(), 5);
+        let mut rng = crate::documents::tests::Mutator::new(7);
+        let bytes = stream.as_bytes();
+        for _ in 0..500 {
+            let mut p = SseParser::default();
+            let mut out = Vec::new();
+            let mut at = 0;
+            while at < bytes.len() {
+                let n = 1 + (rng.next() % 9) as usize;
+                let end = (at + n).min(bytes.len());
+                out.extend(p.feed(&bytes[at..end]));
+                at = end;
+            }
+            out.extend(p.finish());
+            assert_eq!(out, whole);
+        }
+        for _ in 0..200 {
+            let junk: Vec<u8> = (0..(rng.next() % 300)).map(|_| rng.next() as u8).collect();
+            let mut p = SseParser::default();
+            p.feed(&junk);
+            p.finish();
+        }
+    }
+
     #[test]
     fn parses_split_chunks_and_crlf() {
         let mut p = SseParser::default();
