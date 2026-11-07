@@ -35,7 +35,10 @@ sidebar with pages and a title row with back/forward and a Chat/Code switch, the
 a serif greeting and recent artifacts, the strip of pickers under the message box, skills in the
 slash menu, voice mode and a microphone picker, Settings as a modal with an Appearance page, and
 reduce motion) in **v0.9.2-dev.6**, and the Scheduled page for scheduled agents in
-**v0.9.2-dev.7**, and the title row fitting beside the macOS traffic lights in **v0.9.2-dev.8**; all of them reached the stable release in **v0.9.2**. Signed builds are
+**v0.9.2-dev.7**, and the title row fitting beside the macOS traffic lights in **v0.9.2-dev.8**; all of them reached the stable release in **v0.9.2**; and retries for failed requests, a stream
+idle timeout in place of the whole-reply timeout, reply limits on tokens and cost, chats saved in
+the background with their images kept beside them, and unreadable chat files set aside instead
+of skipped in **v0.9.3-dev.1**. Signed builds are
 not planned.
 Unticked items are still open.
 

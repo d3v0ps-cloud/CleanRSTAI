@@ -37,6 +37,11 @@ too, as an installer and a portable `.exe`.
   under the message box), each left to the server until you set it.
 - **Model discovery**: *Fetch models* calls `GET /models` and fills the model picker.
 - **Streaming** responses (SSE), with a non-streaming fallback for servers that don't support it.
+- **Retries and timeouts**: a request that fails before the reply starts (no connection, a rate
+  limit, a busy server) is tried again after the server's `Retry-After` or a short backoff, and a
+  stream that goes quiet is stopped; long replies that keep streaming are never cut off.
+- **Reply limits**: stop a reply's tool calls once it used a set number of tokens or cost a set
+  amount.
 - **Speed and token stats**: under every reply, prefill and decode speed, prompt time and
   tokens in and out, plus a running total for the chat. llama.cpp's own `timings` are used
   when the server reports them, and the cost when OpenRouter or a LiteLLM proxy reports it
