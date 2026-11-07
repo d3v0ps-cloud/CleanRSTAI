@@ -153,6 +153,13 @@ pub enum Extracted {
 /// The text of a document in `format`. A PDF whose text is (nearly) empty comes back as
 /// `Scanned`, for OCR.
 pub fn extract_or_scanned(format: Format, bytes: &[u8]) -> Result<Extracted> {
+    // The parsers come from several crates and can panic on a damaged file (calamine's .xls
+    // reader overflows on some); that is an unreadable file, not a lost attachment.
+    std::panic::catch_unwind(|| extract_unguarded(format, bytes))
+        .map_err(|_| anyhow!("it couldn't be read (the file may be damaged)"))?
+}
+
+fn extract_unguarded(format: Format, bytes: &[u8]) -> Result<Extracted> {
     let text = match format {
         Format::Pdf => {
             let pages = pdf_pages(bytes)?;
@@ -1084,16 +1091,33 @@ pub(crate) mod tests {
     #[test]
     fn damaged_documents_never_panic() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/documents");
-        let mut rng = Mutator::new(0x5eed_cafe);
         let mut panics = Vec::new();
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-            let original = std::fs::read(entry.path()).unwrap();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // PDFs are slow to read, so fewer of them.
-            let rounds = if name.ends_with(".pdf") { 15 } else { 60 };
+        // In name order, each file with its own sequence, so a failure repeats on every
+        // machine whatever order the folder lists its files in.
+        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        for path in paths {
+            let original = std::fs::read(&path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let seed = name
+                .bytes()
+                .fold(0x5eed_cafe_u64, |h, b| h.rotate_left(5) ^ u64::from(b));
+            let mut rng = Mutator::new(seed);
+            // PDFs are slow to read, so fewer of them. The .xls sequence runs long enough to
+            // reach a copy that once made calamine panic (round 3970).
+            let rounds = match name.rsplit('.').next() {
+                Some("pdf") => 15,
+                Some("xls") => 4000,
+                _ => 60,
+            };
             for round in 0..rounds {
                 let bytes = rng.mutate(&original);
                 let outcome = std::panic::catch_unwind(|| {
+                    // Detection reads the containers too, so it is checked unguarded.
                     if let Ok(Some(format)) = detect(&bytes) {
                         let _ = extract_or_scanned(format, &bytes);
                     }
