@@ -3601,6 +3601,29 @@ impl SettingsUi {
                             );
                         ui.end_row();
 
+                        ui.label("Reply limits");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut g.reply_token_limit)
+                                    .range(0..=100_000_000)
+                                    .speed(1000.0)
+                                    .suffix(" tokens"),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut g.reply_cost_limit_usd)
+                                    .range(0.0..=10_000.0)
+                                    .speed(0.01)
+                                    .max_decimals(2)
+                                    .prefix("$"),
+                            );
+                            ui.weak("0: no limit");
+                        })
+                        .response
+                        .on_hover_text(
+                            "Stop a reply's tool calls once its requests used this many tokens, or cost this much, in all",
+                        );
+                        ui.end_row();
+
                         ui.label("Tool timeout");
                         ui.add(
                             egui::DragValue::new(&mut g.tool_timeout_secs)

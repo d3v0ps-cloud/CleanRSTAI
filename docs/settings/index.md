@@ -14,7 +14,7 @@ Skills & hooks, Context & files, Subagents).
 
 | Page | What you can set |
 |---|---|
-| [General](general.html) | System prompt, send key, secrets, updates, live web page preview, tool approval, tool rounds and timeout, remote access and Cloudflare Tunnel, export and import |
+| [General](general.html) | System prompt, send key, secrets, updates, live web page preview, tool approval, tool rounds, reply limits and timeout, remote access and Cloudflare Tunnel, export and import |
 | [Appearance](appearance.html) | Theme, UI scale, your name, reduce motion, reasoning display, speed stats, web images, the artifact panel |
 | [Providers](providers.html) | Endpoints: base URL, API (Chat Completions, Responses, Anthropic), API key, model, reasoning effort and sampling options per provider and model, server type, token usage, streaming, timeout, extra headers |
 | [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
