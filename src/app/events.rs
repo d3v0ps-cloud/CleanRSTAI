@@ -86,6 +86,12 @@ impl ChatApp {
                         Err(e) => log::info!("update check failed: {e}"),
                     }
                 }
+                AppEvent::ReleasesListed(result) => {
+                    if let Some(ui) = &mut self.settings_ui {
+                        ui.listing_releases = false;
+                        ui.releases = Some(result);
+                    }
+                }
                 AppEvent::SandboxChecked(result) => {
                     if let Some(ui) = &mut self.settings_ui {
                         ui.sandbox_busy = false;

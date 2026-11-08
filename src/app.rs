@@ -2466,6 +2466,20 @@ impl ChatApp {
         });
     }
 
+    fn spawn_release_list(&self, setting: String) {
+        let (http, tx, ctx) = (self.http.clone(), self.tx.clone(), self.repaint_ctx.clone());
+        self.rt.spawn(async move {
+            let result = async {
+                let url = crate::update::releases_list_url(&setting)?;
+                crate::update::list(&http, &url).await
+            }
+            .await
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::ReleasesListed(result));
+            ctx.request_repaint();
+        });
+    }
+
     /// Download and install `self.update` in the background; progress shows in the top bar.
     fn start_update_install(&mut self) {
         if self.update_install.is_some() {
@@ -4866,6 +4880,14 @@ impl eframe::App for ChatApp {
                     SettingsAction::Memory(change) => self.apply_memory_change(change),
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,
+                    SettingsAction::ListReleases(setting) => {
+                        sui.listing_releases = true;
+                        self.spawn_release_list(setting);
+                    }
+                    SettingsAction::InstallRelease(release) => {
+                        self.update = Some(*release);
+                        install_update = true;
+                    }
                     SettingsAction::CheckSandbox(cfg) => {
                         sui.sandbox_busy = true;
                         sui.sandbox_status = None;

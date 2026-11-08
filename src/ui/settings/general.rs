@@ -136,6 +136,14 @@ impl SettingsUi {
                                 }
                                 None => {}
                             }
+                            version_picker(
+                                ui,
+                                &self.releases,
+                                &mut self.listing_releases,
+                                &mut self.chosen_release,
+                                &g.update_url,
+                                actions,
+                            );
                         });
                         ui.end_row();
 
@@ -435,5 +443,134 @@ impl SettingsUi {
                 self.export_status = None;
             }
         }
+    }
+}
+
+/// "Install a version": every release (dev builds too) in a list, and Install for the
+/// one picked, to move to a particular build or back to an older one.
+fn version_picker(
+    ui: &mut egui::Ui,
+    releases: &Option<Result<Vec<crate::update::Release>, String>>,
+    listing: &mut bool,
+    chosen_release: &mut Option<String>,
+    update_url: &str,
+    actions: &mut Vec<SettingsAction>,
+) {
+    const CURRENT: &str = env!("CARGO_PKG_VERSION");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Install a version");
+        let label = |r: &crate::update::Release| {
+            let mut l = format!("v{}", r.version);
+            if r.prerelease {
+                l.push_str("  · dev");
+            }
+            if r.version == CURRENT {
+                l.push_str("  · installed");
+            }
+            l
+        };
+        match releases {
+            Some(Ok(list)) if !list.is_empty() => {
+                let chosen = chosen_release
+                    .as_ref()
+                    .and_then(|v| list.iter().find(|r| &r.version == v))
+                    .cloned();
+                egui::ComboBox::from_id_salt("release-picker")
+                    .width(220.0)
+                    .selected_text(
+                        chosen
+                            .as_ref()
+                            .map_or_else(|| "Choose a release…".to_owned(), label),
+                    )
+                    .show_ui(ui, |ui| {
+                        for r in list {
+                            let on = chosen_release.as_deref() == Some(r.version.as_str());
+                            if ui.selectable_label(on, label(r)).clicked() {
+                                *chosen_release = Some(r.version.clone());
+                            }
+                        }
+                    });
+                let installable = chosen
+                    .as_ref()
+                    .filter(|r| r.version != CURRENT)
+                    .filter(|r| crate::update::can_install(r));
+                let text = chosen.as_ref().map_or_else(
+                    || "Install".to_owned(),
+                    |r| format!("Install v{}", r.version),
+                );
+                let resp = ui.add_enabled(installable.is_some(), egui::Button::new(text));
+                let resp = match &chosen {
+                    Some(r) if r.version == CURRENT => {
+                        resp.on_disabled_hover_text("This version is installed")
+                    }
+                    Some(_) if installable.is_none() => resp.on_disabled_hover_text(
+                        "This release has no build this copy of the app can install itself; \
+                         download it from the release page",
+                    ),
+                    _ => resp,
+                };
+                if resp.clicked()
+                    && let Some(r) = installable
+                {
+                    actions.push(SettingsAction::InstallRelease(Box::new(r.clone())));
+                }
+                if let Some(r) = &chosen {
+                    ui.hyperlink_to("Release notes", &r.url);
+                }
+            }
+            _ => {
+                if ui
+                    .add_enabled(!*listing, egui::Button::new("List releases"))
+                    .on_hover_text(
+                        "Every release from the \"Update from\" source, dev builds included",
+                    )
+                    .clicked()
+                {
+                    *listing = true;
+                    actions.push(SettingsAction::ListReleases(update_url.to_owned()));
+                }
+            }
+        }
+        if *listing {
+            ui.spinner();
+        }
+    });
+    match releases {
+        Some(Err(e)) => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("Couldn't list releases: {e}"),
+            );
+        }
+        Some(Ok(list)) if list.is_empty() => {
+            ui.weak("No releases found.");
+        }
+        _ => {}
+    }
+    if let (Some(Ok(list)), Some(v)) = (releases, &*chosen_release)
+        && list.iter().any(|r| &r.version == v)
+        && crate::update::compare_versions(v, CURRENT) == std::cmp::Ordering::Less
+    {
+        ui.weak(
+            "An older version may not know settings added since; they keep their defaults \
+             there, and are lost if that version saves the settings. Before v0.9.3, images \
+             in chats saved since don't show, and a chat it saves loses them.",
+        );
+    }
+    let picked = chosen_release.as_ref().and_then(|v| {
+        releases
+            .as_ref()?
+            .as_ref()
+            .ok()?
+            .iter()
+            .find(|r| &r.version == v)
+    });
+    if picked.is_some_and(|r| r.prerelease) {
+        ui.weak(
+            "Dev builds are previews and may have bugs. The automatic update check skips \
+             them, so you stay on this one until you pick another or a newer stable release \
+             comes out.",
+        );
     }
 }

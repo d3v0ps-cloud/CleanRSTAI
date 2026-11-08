@@ -174,6 +174,10 @@ pub enum SettingsAction {
     /// Check the given "Update from" setting (the draft's, so it works before saving).
     CheckForUpdates(String),
     InstallUpdate,
+    /// List every release at this "Update from" setting, for the version picker.
+    ListReleases(String),
+    /// Install this release (any version, dev builds included).
+    InstallRelease(Box<crate::update::Release>),
     /// Test Docker and the sandbox image with these settings (Settings → Docker "Test").
     CheckSandbox(SandboxSettings),
     /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
@@ -212,6 +216,11 @@ pub struct SettingsUi {
     pub update_status: Option<Result<String, String>>,
     /// The last check found a release this build can install itself.
     pub update_available: bool,
+    /// The releases for the version picker: listed, failed, or not asked for yet.
+    pub releases: Option<Result<Vec<crate::update::Release>, String>>,
+    pub listing_releases: bool,
+    /// The version picked in the list.
+    pub chosen_release: Option<String>,
     /// A Docker test, pull or build is running.
     pub sandbox_busy: bool,
     /// Outcome of the Docker test, pull or build: Ok(message) or Err(error).
@@ -838,6 +847,9 @@ impl SettingsUi {
             checking_update: false,
             update_status: None,
             update_available: false,
+            releases: None,
+            listing_releases: false,
+            chosen_release: None,
             sandbox_busy: false,
             sandbox_status: None,
             user_skills: None,

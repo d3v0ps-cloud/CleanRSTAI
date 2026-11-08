@@ -95,6 +95,12 @@ logs browsers out; a change to the tunnel settings alone restarts only the tunne
   that answers like GitHub's `releases/latest` API. **Reset** restores the default.
 - **Check for updates now** checks the source as typed, before you save, and shows the
   installed version. If a newer release can be installed, **Install update** appears.
+- **Install a version**: **List releases** fetches every release from the same source (the
+  newest 50, dev builds included, marked **dev**; the installed one is marked **installed**).
+  Pick one and click **Install vX.Y.Z** to move to that build, newer or older. It installs the
+  same way as an update, checked against the release's `SHA256SUMS.txt`. **Release notes**
+  opens the release's page. Install is greyed out for the installed version, and for a
+  release without a build this copy can install itself.
 
 See [Updates](../using/updates.html).
 

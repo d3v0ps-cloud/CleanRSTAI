@@ -39,8 +39,9 @@ reduce motion) in **v0.9.2-dev.6**, and the Scheduled page for scheduled agents 
 idle timeout in place of the whole-reply timeout, reply limits on tokens and cost, chats saved in
 the background with their images kept beside them, and unreadable chat files set aside instead
 of skipped in **v0.9.3-dev.1**, all of which reached the stable release in **v0.9.3**. Cloning MCP servers, a ready `Authorization: Bearer ` header for new
-Streamable HTTP servers, and recommended MCP servers (Hugging Face, Context7, Exa) added in one
-click shipped in **v0.9.4-dev.1**. Signed builds are
+Streamable HTTP servers, recommended MCP servers (Hugging Face, Context7, Exa) added in one
+click, and installing a particular release (dev builds included) from a list shipped in
+**v0.9.4-dev.1**. Signed builds are
 not planned.
 Unticked items are still open.
 

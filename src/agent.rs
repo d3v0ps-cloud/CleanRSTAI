@@ -141,6 +141,8 @@ pub enum AppEvent {
     },
     /// The update was put in place (the path to relaunch), or why it wasn't.
     UpdateInstalled(Result<std::path::PathBuf, String>),
+    /// Every release at the "Update from" source, for the version picker in Settings.
+    ReleasesListed(Result<Vec<crate::update::Release>, String>),
     /// Result of a Settings → Docker test, pull or build: a message, or why it failed.
     SandboxChecked(Result<String, String>),
     Chat {
