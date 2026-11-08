@@ -25,7 +25,9 @@ insert. CleanRSTAI connects to:
 
 Open **Settings → MCP Servers** and either:
 
-- click **+ Add** and fill in the fields (see [MCP Servers settings](../settings/mcp-servers.html)), or
+- click **+ Add** and fill in the fields (see [MCP Servers settings](../settings/mcp-servers.html)),
+- select a server and click **Clone** to start from a copy of it (another account or
+  endpoint of the same server), or
 - click **Import JSON…** and paste the `{"mcpServers": {...}}` config used by Claude Desktop,
   Cursor and others.
 

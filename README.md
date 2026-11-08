@@ -165,8 +165,9 @@ too, as an installer and a portable `.exe`.
 - **MCP client**:
   - **stdio** servers (`npx`, `uvx`, `docker`, any binary) with arguments, environment
     variables and a working directory.
-  - **Streamable HTTP** servers with custom headers (e.g. `Authorization`), session handling,
-    and both JSON and SSE responses.
+  - **Streamable HTTP** servers with custom headers (a new one starts with `Authorization:
+    Bearer ` ready for the token), session handling, and both JSON and SSE responses.
+  - **Clone** a server to start another from its settings (another account or endpoint).
   - Live connection status, tool list, per-tool enable/disable, server stderr log, reconnect.
   - Import the standard `{"mcpServers": {...}}` JSON used by Claude Desktop, Cursor and others.
   - **Resources and prompts**: the MCP menu (books icon) in the composer attaches a server's resources

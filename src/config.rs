@@ -295,6 +295,21 @@ impl Default for McpServerConfig {
 }
 
 impl McpServerConfig {
+    /// A copy to edit into another server: a new id (so its secrets and sign-in are its own)
+    /// and the name with `-copy` (`-copy-2`, …) so it differs from every name in `taken`.
+    pub fn duplicate<'a>(&self, taken: impl IntoIterator<Item = &'a str> + Clone) -> Self {
+        let base = format!("{}-copy", self.name.trim());
+        let name = std::iter::once(base.clone())
+            .chain((2..).map(|n| format!("{base}-{n}")))
+            .find(|n| !taken.clone().into_iter().any(|t| t == n))
+            .unwrap_or(base);
+        Self {
+            id: new_id(),
+            name,
+            ..self.clone()
+        }
+    }
+
     /// Whether a change from `other` requires reconnecting.
     pub fn needs_reconnect(&self, other: &McpServerConfig) -> bool {
         self.enabled != other.enabled || self.transport != other.transport
@@ -1665,6 +1680,21 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Parse a Claude Desktop / VS Code style `{"mcpServers": {...}}` JSON blob.
+impl McpTransportConfig {
+    /// A new Streamable HTTP transport, with an `Authorization: Bearer ` header ready for a
+    /// token (sent only once one is filled in; see `mcp::http`).
+    pub fn new_http() -> Self {
+        Self::Http {
+            url: String::new(),
+            headers: vec![KeyValue {
+                key: "Authorization".into(),
+                value: "Bearer ".into(),
+            }],
+            oauth_client_id: String::new(),
+        }
+    }
+}
+
 pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
     let value: serde_json::Value = serde_json::from_str(text).context("invalid JSON")?;
     let servers = value
@@ -2399,5 +2429,34 @@ mod tests {
         };
         let v = serde_json::to_value(&p).unwrap();
         assert!(v.get("native_search").is_none());
+    }
+
+    #[test]
+    fn a_cloned_server_gets_its_own_id_and_a_free_name() {
+        let mut a = McpServerConfig {
+            name: "github".into(),
+            transport: McpTransportConfig::new_http(),
+            disabled_tools: vec!["delete_repo".into()],
+            ..Default::default()
+        };
+        a.enabled = false;
+        let names = ["github", "github-copy"];
+        let b = a.duplicate(names.iter().copied());
+        assert_ne!(a.id, b.id);
+        assert_eq!(b.name, "github-copy-2");
+        assert_eq!(
+            (b.transport, b.disabled_tools, b.enabled),
+            (a.transport.clone(), a.disabled_tools.clone(), false)
+        );
+        assert_eq!(a.duplicate(["github"]).name, "github-copy");
+    }
+
+    #[test]
+    fn a_new_http_transport_has_a_bearer_header_ready() {
+        let McpTransportConfig::Http { headers, .. } = McpTransportConfig::new_http() else {
+            panic!("not HTTP");
+        };
+        assert_eq!(headers[0].key, "Authorization");
+        assert_eq!(headers[0].value, "Bearer ");
     }
 }

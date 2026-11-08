@@ -18,6 +18,10 @@ overview, see [Using the App → MCP servers](../using/mcp.html).
 The left column lists your servers, each with a status dot. Below it:
 
 - **+ Add** adds a stdio server named `new-server`.
+- **Clone** adds a copy of the selected server below it, named `<name>-copy`, with the same
+  transport, command or URL, headers, environment and switched-off tools. The copy is a server
+  of its own: its secrets are saved for it when you apply, and a server that needs sign-in
+  asks the copy to sign in again.
 - **－ Remove** removes the selected server.
 - **Import JSON…** opens a box where you can paste an `mcpServers` config (Claude Desktop,
   Cursor and others use this format) and click **Import**. The servers are added to the list;
@@ -51,7 +55,7 @@ Untick to disconnect the server and hide its tools without deleting it.
 | Field | Description |
 |---|---|
 | **URL** | The server's MCP endpoint, for example `https://example.com/mcp`. |
-| **Headers** | Sent with every request, such as `Authorization: Bearer …`. Values are stored in the keychain. |
+| **Headers** | Sent with every request. Choosing Streamable HTTP fills in an `Authorization` header with the value `Bearer `, so you only paste the token after it. A header still at `Bearer ` with no token (or with an empty value) is not sent, so a server that signs in with OAuth instead works without removing it. Values are stored in the keychain. |
 | **OAuth client ID** | Optional. Only if the server can't register CleanRSTAI automatically and its documentation gives you a client ID. |
 
 ## Status and actions

@@ -42,10 +42,27 @@ impl SettingsUi {
                             });
                         }
                     });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button(format!("{}  Add", icon::PLUS)).clicked() {
                         draft.mcp_servers.push(McpServerConfig::default());
                         self.selected_server = draft.mcp_servers.len() - 1;
+                        self.import_open = false;
+                    }
+                    if ui
+                        .add_enabled(
+                            !draft.mcp_servers.is_empty(),
+                            egui::Button::new(format!("{}  Clone", icon::COPY)),
+                        )
+                        .on_hover_text(
+                            "Add a copy of the selected server, with its settings and secrets",
+                        )
+                        .clicked()
+                    {
+                        let i = self.selected_server.min(draft.mcp_servers.len() - 1);
+                        let copy = draft.mcp_servers[i]
+                            .duplicate(draft.mcp_servers.iter().map(|s| s.name.as_str()));
+                        draft.mcp_servers.insert(i + 1, copy);
+                        self.selected_server = i + 1;
                         self.import_open = false;
                     }
                     if ui
@@ -138,11 +155,7 @@ impl SettingsUi {
                                 s.transport = McpTransportConfig::default();
                             }
                             if ui.radio(!is_stdio, "Streamable HTTP").clicked() && is_stdio {
-                                s.transport = McpTransportConfig::Http {
-                                    url: String::new(),
-                                    headers: Vec::new(),
-                                    oauth_client_id: String::new(),
-                                };
+                                s.transport = McpTransportConfig::new_http();
                             }
                         });
                         ui.end_row();
