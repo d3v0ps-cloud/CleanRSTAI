@@ -165,8 +165,11 @@ too, as an installer and a portable `.exe`.
 - **MCP client**:
   - **stdio** servers (`npx`, `uvx`, `docker`, any binary) with arguments, environment
     variables and a working directory.
-  - **Streamable HTTP** servers with custom headers (e.g. `Authorization`), session handling,
-    and both JSON and SSE responses.
+  - **Streamable HTTP** servers with custom headers (a new one starts with `Authorization:
+    Bearer ` ready for the token), session handling, and both JSON and SSE responses.
+  - **Clone** a server to start another from its settings (another account or endpoint).
+  - **Recommended servers** (Hugging Face, Context7, Exa) added in one click; ones you already
+    have show as added.
   - Live connection status, tool list, per-tool enable/disable, server stderr log, reconnect.
   - Import the standard `{"mcpServers": {...}}` JSON used by Claude Desktop, Cursor and others.
   - **Resources and prompts**: the MCP menu (books icon) in the composer attaches a server's resources
@@ -241,6 +244,8 @@ too, as an installer and a portable `.exe`.
   `releases/latest` API (Gitea and Forgejo do). It defaults to this repository and is saved
   to `settings.json` only once changed, so a custom source carries over to later installs.
   The release must be public: GitHub answers a private repository's release check with a 404.
+  **Install a version** lists every release, dev builds included, to install a particular one
+  (or go back to an older one).
 - **Remote access in the browser** (off by default): a built-in web server serves the same chats
   to a browser on a phone or another computer on your network, over HTTPS with a password, or
   from anywhere through a Cloudflare Tunnel that the app runs for you (a quick

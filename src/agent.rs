@@ -141,6 +141,8 @@ pub enum AppEvent {
     },
     /// The update was put in place (the path to relaunch), or why it wasn't.
     UpdateInstalled(Result<std::path::PathBuf, String>),
+    /// Every release at the "Update from" source, for the version picker in Settings.
+    ReleasesListed(Result<Vec<crate::update::Release>, String>),
     /// Result of a Settings → Docker test, pull or build: a message, or why it failed.
     SandboxChecked(Result<String, String>),
     Chat {
@@ -2157,50 +2159,77 @@ mod tests {
         .await;
     }
 
+    /// Start `server-everything` over Streamable HTTP on a free port. The port is found by
+    /// binding port 0 and letting it go, so another process can take it before the server
+    /// binds it (it happened on the shared CI machines): when the server reports the port in
+    /// use, try again on a new one.
+    async fn start_http_everything() -> (tokio::process::Child, u16, std::path::PathBuf) {
+        const ATTEMPTS: usize = 5;
+        for attempt in 1..=ATTEMPTS {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let stderr_path = std::env::temp_dir().join(format!("cleanrstai-mcp-http-{port}.log"));
+            let mut child =
+                tokio::process::Command::new(which::which("npx").expect("npx not found"))
+                    .args([
+                        "-y",
+                        "@modelcontextprotocol/server-everything",
+                        "streamableHttp",
+                    ])
+                    .env("PORT", port.to_string())
+                    .kill_on_drop(true)
+                    .stdout(std::process::Stdio::null())
+                    // A file rather than a pipe: on Windows a pipe held open by the orphaned
+                    // `node` would keep the runtime's blocking reader (and so the test) alive.
+                    .stderr(std::fs::File::create(&stderr_path).unwrap())
+                    .spawn()
+                    .unwrap();
+            // A cold `npx` download can take a while on CI runners.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+            let exited = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .is_ok()
+                {
+                    // Something answers; make sure it is our server and not another process
+                    // that holds the port (ours then exits saying so).
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    match child.try_wait().unwrap() {
+                        Some(status) => break Some(status),
+                        None => return (child, port, stderr_path),
+                    }
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "MCP HTTP server did not start listening on port {port} within 180s"
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&stderr_path);
+            if stderr.contains("already in use") && attempt < ATTEMPTS {
+                eprintln!("port {port} was taken before the server bound it; trying another");
+                continue;
+            }
+            panic!(
+                "MCP HTTP server exited before listening: {}\nstderr:\n{stderr}",
+                exited.unwrap()
+            );
+        }
+        unreachable!("the last attempt returns or panics")
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn e2e_streamable_http_mcp() {
         let _guard = NPX_LOCK.lock().await;
-        // Pick a free port rather than hard-coding one.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let stderr_path = std::env::temp_dir().join(format!("cleanrstai-mcp-http-{port}.log"));
-        let mut child = tokio::process::Command::new(which::which("npx").expect("npx not found"))
-            .args([
-                "-y",
-                "@modelcontextprotocol/server-everything",
-                "streamableHttp",
-            ])
-            .env("PORT", port.to_string())
-            .kill_on_drop(true)
-            .stdout(std::process::Stdio::null())
-            // A file rather than a pipe: on Windows a pipe held open by the orphaned `node`
-            // would keep the runtime's blocking reader (and so the test) alive forever.
-            .stderr(std::fs::File::create(&stderr_path).unwrap())
-            .spawn()
-            .unwrap();
-        // A cold `npx` download can take a while on CI runners.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
-        loop {
-            if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            if let Some(status) = child.try_wait().unwrap() {
-                let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
-                panic!("MCP HTTP server exited before listening: {status}\nstderr:\n{stderr}");
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "MCP HTTP server did not start listening on port {port} within 180s"
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        let (mut child, port, stderr_path) = start_http_everything().await;
         run_agent_against(McpTransportConfig::Http {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: vec![],

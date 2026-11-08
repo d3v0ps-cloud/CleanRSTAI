@@ -55,6 +55,18 @@ impl Drop for HttpTransport {
     }
 }
 
+/// A header left as the settings page fills it in for a new server (`Authorization: Bearer `
+/// with no token, or an empty value): not sent, so a server that signs in with OAuth instead
+/// isn't sent a broken credential.
+fn unfilled(kv: &KeyValue) -> bool {
+    let value = kv.value.trim();
+    value.is_empty()
+        || (kv.key.trim().eq_ignore_ascii_case("authorization")
+            && ["bearer", "basic", "token"]
+                .iter()
+                .any(|scheme| value.eq_ignore_ascii_case(scheme)))
+}
+
 impl HttpTransport {
     pub fn new(
         http: reqwest::Client,
@@ -69,7 +81,10 @@ impl HttpTransport {
         }
         reqwest::Url::parse(url).with_context(|| format!("invalid URL '{url}'"))?;
         let mut map = HeaderMap::new();
-        for kv in headers.iter().filter(|kv| !kv.key.trim().is_empty()) {
+        for kv in headers
+            .iter()
+            .filter(|kv| !kv.key.trim().is_empty() && !unfilled(kv))
+        {
             let name = HeaderName::from_bytes(kv.key.trim().as_bytes())
                 .with_context(|| format!("invalid header name '{}'", kv.key))?;
             let value = HeaderValue::from_str(kv.value.trim())
@@ -336,5 +351,26 @@ impl Inner {
             }
             let _ = req.send().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kv(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn a_bearer_header_without_a_token_is_not_sent() {
+        assert!(unfilled(&kv("Authorization", "Bearer ")));
+        assert!(unfilled(&kv("authorization", " bearer")));
+        assert!(unfilled(&kv("X-Api-Key", "  ")));
+        assert!(!unfilled(&kv("Authorization", "Bearer abc")));
+        assert!(!unfilled(&kv("X-Mode", "Bearer")));
     }
 }

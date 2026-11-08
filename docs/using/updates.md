@@ -44,7 +44,17 @@ The release must be public: GitHub answers a private repository's release check 
 ## Pre-releases
 
 Test builds are published as pre-releases with versions like `v0.8.0-dev.1`. The update check
-never offers them: download one from the
-[releases page](https://github.com/d3v0ps-cloud/CleanRSTAI/releases) to try it. A pre-release
-counts as older than the release it leads up to, so a test build offers that release once it
-is out.
+never offers them. To try one, open [Settings → General](../settings/general.html#updates),
+click **List releases** next to **Install a version**, pick the dev build and click
+**Install**, or download it from the
+[releases page](https://github.com/d3v0ps-cloud/CleanRSTAI/releases). A pre-release counts as
+older than the release it leads up to, so a test build offers that release once it is out.
+
+## Installing a particular version
+
+The same **Install a version** list installs any release, so you can also go back to an older
+one. An older version doesn't know settings added after it: they keep their defaults there,
+and are lost if that version saves the settings. Versions before v0.9.3 keep images inside
+each chat's file, so going back before it, images in chats saved since don't show, and a chat
+that older version saves loses them. Export your conversations first (Settings → General →
+Export & import) to keep a copy with the images.

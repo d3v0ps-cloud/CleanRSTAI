@@ -295,6 +295,24 @@ impl Default for McpServerConfig {
 }
 
 impl McpServerConfig {
+    /// A copy to edit into another server: a new id (so its secrets and sign-in are its own)
+    /// and the name with `-copy` (`-copy-2`, …) so it differs from every name in `taken`.
+    pub fn duplicate<'a>(&self, taken: impl IntoIterator<Item = &'a str> + Clone) -> Self {
+        Self {
+            id: new_id(),
+            name: free_name(&format!("{}-copy", self.name.trim()), taken),
+            ..self.clone()
+        }
+    }
+
+    /// The server's URL, for a Streamable HTTP server.
+    pub fn url(&self) -> Option<&str> {
+        match &self.transport {
+            McpTransportConfig::Http { url, .. } => Some(url),
+            McpTransportConfig::Stdio { .. } => None,
+        }
+    }
+
     /// Whether a change from `other` requires reconnecting.
     pub fn needs_reconnect(&self, other: &McpServerConfig) -> bool {
         self.enabled != other.enabled || self.transport != other.transport
@@ -1665,6 +1683,94 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Parse a Claude Desktop / VS Code style `{"mcpServers": {...}}` JSON blob.
+/// `base`, or `base-2`, `base-3`… : the first that isn't in `taken`.
+fn free_name<'a>(base: &str, taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
+    std::iter::once(base.to_owned())
+        .chain((2..).map(|n| format!("{base}-{n}")))
+        .find(|n| !taken.clone().into_iter().any(|t| t == n))
+        .unwrap_or_else(|| base.to_owned())
+}
+
+/// A hosted MCP server offered on the MCP Servers page to add in one click.
+#[derive(Clone, Copy, Debug)]
+pub struct RecommendedMcp {
+    /// The server's name once added (its tools' prefix).
+    pub name: &'static str,
+    pub title: &'static str,
+    pub url: &'static str,
+    pub description: &'static str,
+}
+
+/// The servers on the MCP Servers page's Recommended list.
+pub const RECOMMENDED_MCP: &[RecommendedMcp] = &[
+    RecommendedMcp {
+        name: "huggingface",
+        title: "Hugging Face",
+        url: "https://huggingface.co/mcp",
+        description: "Search models, datasets, Spaces and papers on the Hugging Face Hub. \
+                      Sign in when asked, or paste a Hugging Face token after Bearer.",
+    },
+    RecommendedMcp {
+        name: "context7",
+        title: "Context7",
+        url: "https://mcp.context7.com/mcp",
+        description: "Up-to-date documentation and code examples for libraries and \
+                      frameworks. Works without a key; a Context7 API key after Bearer \
+                      raises the limits.",
+    },
+    RecommendedMcp {
+        name: "exa",
+        title: "Exa",
+        url: "https://mcp.exa.ai/mcp",
+        description: "Web search and page contents from Exa, plus code search. An Exa API key \
+                      after Bearer raises the limits.",
+    },
+];
+
+/// A URL as compared for "already added": no scheme case, no trailing slash, no spaces.
+fn same_url(a: &str, b: &str) -> bool {
+    let norm = |u: &str| u.trim().trim_end_matches('/').to_ascii_lowercase();
+    norm(a) == norm(b)
+}
+
+impl RecommendedMcp {
+    /// Whether one of `servers` already is this server (by URL, whatever its name).
+    pub fn is_added(&self, servers: &[McpServerConfig]) -> bool {
+        servers
+            .iter()
+            .filter_map(McpServerConfig::url)
+            .any(|u| same_url(u, self.url))
+    }
+
+    /// The server's settings, named so the name is free among `servers`.
+    pub fn server(&self, servers: &[McpServerConfig]) -> McpServerConfig {
+        let mut transport = McpTransportConfig::new_http();
+        if let McpTransportConfig::Http { url, .. } = &mut transport {
+            *url = self.url.to_owned();
+        }
+        McpServerConfig {
+            name: free_name(self.name, servers.iter().map(|s| s.name.as_str())),
+            transport,
+            ..Default::default()
+        }
+    }
+}
+
+impl McpTransportConfig {
+    /// A new Streamable HTTP transport, with an `Authorization: Bearer ` header ready for a
+    /// token (sent only once one is filled in; see `mcp::http`).
+    pub fn new_http() -> Self {
+        Self::Http {
+            url: String::new(),
+            headers: vec![KeyValue {
+                key: "Authorization".into(),
+                value: "Bearer ".into(),
+            }],
+            oauth_client_id: String::new(),
+        }
+    }
+}
+
 pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
     let value: serde_json::Value = serde_json::from_str(text).context("invalid JSON")?;
     let servers = value
@@ -2399,5 +2505,65 @@ mod tests {
         };
         let v = serde_json::to_value(&p).unwrap();
         assert!(v.get("native_search").is_none());
+    }
+
+    #[test]
+    fn a_cloned_server_gets_its_own_id_and_a_free_name() {
+        let mut a = McpServerConfig {
+            name: "github".into(),
+            transport: McpTransportConfig::new_http(),
+            disabled_tools: vec!["delete_repo".into()],
+            ..Default::default()
+        };
+        a.enabled = false;
+        let names = ["github", "github-copy"];
+        let b = a.duplicate(names.iter().copied());
+        assert_ne!(a.id, b.id);
+        assert_eq!(b.name, "github-copy-2");
+        assert_eq!(
+            (b.transport, b.disabled_tools, b.enabled),
+            (a.transport.clone(), a.disabled_tools.clone(), false)
+        );
+        assert_eq!(a.duplicate(["github"]).name, "github-copy");
+    }
+
+    #[test]
+    fn a_new_http_transport_has_a_bearer_header_ready() {
+        let McpTransportConfig::Http { headers, .. } = McpTransportConfig::new_http() else {
+            panic!("not HTTP");
+        };
+        assert_eq!(headers[0].key, "Authorization");
+        assert_eq!(headers[0].value, "Bearer ");
+    }
+
+    #[test]
+    fn recommended_servers_are_added_once_and_recognised_by_url() {
+        let context7 = RECOMMENDED_MCP
+            .iter()
+            .find(|r| r.name == "context7")
+            .unwrap();
+        let mut servers = vec![McpServerConfig {
+            name: "context7".into(),
+            ..Default::default()
+        }];
+        assert!(!context7.is_added(&servers));
+        let added = context7.server(&servers);
+        // A stdio server already has the name, so the new one gets another.
+        assert_eq!(added.name, "context7-2");
+        assert_eq!(added.url(), Some("https://mcp.context7.com/mcp"));
+        servers.push(added);
+        assert!(context7.is_added(&servers));
+
+        let mut mine = McpTransportConfig::new_http();
+        if let McpTransportConfig::Http { url, .. } = &mut mine {
+            *url = " HTTPS://mcp.exa.ai/mcp/ ".into();
+        }
+        servers.push(McpServerConfig {
+            name: "search".into(),
+            transport: mine,
+            ..Default::default()
+        });
+        let exa = RECOMMENDED_MCP.iter().find(|r| r.name == "exa").unwrap();
+        assert!(exa.is_added(&servers));
     }
 }
