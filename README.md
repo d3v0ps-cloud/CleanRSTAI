@@ -168,6 +168,8 @@ too, as an installer and a portable `.exe`.
   - **Streamable HTTP** servers with custom headers (a new one starts with `Authorization:
     Bearer ` ready for the token), session handling, and both JSON and SSE responses.
   - **Clone** a server to start another from its settings (another account or endpoint).
+  - **Recommended servers** (Hugging Face, Context7, Exa) added in one click; ones you already
+    have show as added.
   - Live connection status, tool list, per-tool enable/disable, server stderr log, reconnect.
   - Import the standard `{"mcpServers": {...}}` JSON used by Claude Desktop, Cursor and others.
   - **Resources and prompts**: the MCP menu (books icon) in the composer attaches a server's resources

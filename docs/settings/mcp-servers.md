@@ -27,6 +27,21 @@ The left column lists your servers, each with a status dot. Below it:
   Cursor and others use this format) and click **Import**. The servers are added to the list;
   click **Apply** to connect them.
 
+### Recommended servers
+
+Under the buttons, **Recommended** lists hosted servers you can add in one click. Each is added
+as a Streamable HTTP server with its URL filled in and an `Authorization: Bearer ` header ready
+for a key; click **Apply** to connect it. A server whose URL is already in your list (added
+here, by hand or by import, under any name) shows **Added** instead.
+
+| Server | Name | URL | Notes |
+|---|---|---|---|
+| **Hugging Face** | `huggingface` | `https://huggingface.co/mcp` | Search models, datasets, Spaces and papers. Sign in when asked, or paste a Hugging Face token after `Bearer`. |
+| **Context7** | `context7` | `https://mcp.context7.com/mcp` | Current library and framework documentation. Works without a key; a Context7 API key raises the limits. |
+| **Exa** | `exa` | `https://mcp.exa.ai/mcp` | Web search, page contents and code search. An Exa API key raises the limits. |
+
+If the name is taken by another server, the new one gets `-2` (and so on) after it.
+
 ## Fields
 
 ### Name

@@ -1,6 +1,40 @@
 //! The MCP servers page of Settings.
 
 use super::*;
+use crate::config::RECOMMENDED_MCP;
+
+/// Room kept under the server list for the Recommended rows.
+const RECOMMENDED_HEIGHT: f32 = 110.0;
+
+/// The Recommended servers, each with Add, or "Added" once one of `servers` has its URL.
+/// `wide` shows each one's description too. Returns the index of a server it just added.
+fn recommended(ui: &mut egui::Ui, servers: &mut Vec<McpServerConfig>, wide: bool) -> Option<usize> {
+    let mut added = None;
+    ui.label(egui::RichText::new("Recommended").strong());
+    for r in RECOMMENDED_MCP {
+        let have = r.is_added(servers);
+        ui.horizontal(|ui| {
+            let hover = format!("{}\n{}", r.description, r.url);
+            if have {
+                ui.add_enabled(false, egui::Button::new(format!("{}  Added", icon::OK)))
+                    .on_disabled_hover_text("Already in your servers");
+            } else if ui
+                .button(format!("{}  Add", icon::PLUS))
+                .on_hover_text(&hover)
+                .clicked()
+            {
+                servers.push(r.server(servers));
+                added = Some(servers.len() - 1);
+            }
+            ui.label(r.title).on_hover_text(&hover);
+        });
+        if wide {
+            ui.weak(r.description);
+            ui.add_space(4.0);
+        }
+    }
+    added
+}
 
 impl SettingsUi {
     pub(super) fn mcp_tab(
@@ -19,7 +53,7 @@ impl SettingsUi {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
-                    .max_height(ui.available_height() - 64.0)
+                    .max_height(ui.available_height() - 64.0 - RECOMMENDED_HEIGHT)
                     .show(ui, |ui| {
                         if draft.mcp_servers.is_empty() {
                             ui.weak("No servers yet.");
@@ -83,6 +117,11 @@ impl SettingsUi {
                 {
                     self.import_open = !self.import_open;
                 }
+                ui.add_space(10.0);
+                if let Some(i) = recommended(ui, &mut draft.mcp_servers, false) {
+                    self.selected_server = i;
+                    self.import_open = false;
+                }
             });
 
         if self.import_open {
@@ -123,8 +162,12 @@ impl SettingsUi {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
                 ui.label("MCP servers give the model tools: files, databases, web, and more.");
-                ui.weak("Add one manually, or import an existing mcpServers JSON config.");
+                ui.weak("Add one manually, import an existing mcpServers JSON config, or start with a recommended one:");
             });
+            ui.add_space(12.0);
+            if let Some(i) = recommended(ui, &mut draft.mcp_servers, true) {
+                self.selected_server = i;
+            }
             return;
         }
         self.selected_server = self.selected_server.min(draft.mcp_servers.len() - 1);
