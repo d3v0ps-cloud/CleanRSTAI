@@ -41,7 +41,7 @@ the background with their images kept beside them, and unreadable chat files set
 of skipped in **v0.9.3-dev.1**, all of which reached the stable release in **v0.9.3**. Cloning MCP servers, a ready `Authorization: Bearer ` header for new
 Streamable HTTP servers, recommended MCP servers (Hugging Face, Context7, Exa) added in one
 click, and installing a particular release (dev builds included) from a list shipped in
-**v0.9.4-dev.1**. Signed builds are
+**v0.9.4-dev.1**, all of which reached the stable release in **v0.9.4**. Signed builds are
 not planned.
 Unticked items are still open.
 
