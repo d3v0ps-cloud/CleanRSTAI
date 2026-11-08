@@ -1,5 +1,6 @@
 //! stdio transport: newline-delimited JSON-RPC over a child process's stdin/stdout.
 
+use crate::sync::LockExt as _;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -126,7 +127,7 @@ impl StdioTransport {
                 let mut lines = BufReader::new(stderr_pipe).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     log::debug!("mcp stderr: {line}");
-                    let mut buf = stderr.lock().unwrap();
+                    let mut buf = stderr.locked();
                     if buf.len() >= STDERR_LINES {
                         buf.pop_front();
                     }
@@ -157,7 +158,7 @@ impl StdioTransport {
                         continue;
                     };
                     if let Some(id) = super::response_id(&msg) {
-                        if let Some(tx) = pending.lock().unwrap().remove(&id) {
+                        if let Some(tx) = pending.locked().remove(&id) {
                             let _ = tx.send(msg);
                         }
                     } else if msg.get("id").is_some() && msg.get("method").is_some() {
@@ -171,9 +172,9 @@ impl StdioTransport {
                         }
                     }
                 }
-                *closed.lock().unwrap() = Some("server process exited".into());
+                *closed.locked() = Some("server process exited".into());
                 // Dropping the senders wakes every waiter with an error.
-                pending.lock().unwrap().clear();
+                pending.locked().clear();
             })
         };
 
@@ -188,7 +189,7 @@ impl StdioTransport {
     }
 
     fn closed_reason(&self) -> Option<String> {
-        self.closed.lock().unwrap().clone()
+        self.closed.locked().clone()
     }
 
     pub async fn send(&self, msg: &Value) -> Result<()> {
@@ -203,7 +204,7 @@ impl StdioTransport {
 
     pub async fn request(&self, id: u64, msg: &Value) -> Result<Value> {
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.locked().insert(id, tx);
         if let Err(e) = self.send(msg).await {
             self.forget(id);
             return Err(e);
@@ -217,11 +218,11 @@ impl StdioTransport {
     }
 
     pub fn forget(&self, id: u64) {
-        self.pending.lock().unwrap().remove(&id);
+        self.pending.locked().remove(&id);
     }
 
     pub fn stderr_lines(&self) -> Vec<String> {
-        self.stderr.lock().unwrap().iter().cloned().collect()
+        self.stderr.locked().iter().cloned().collect()
     }
 }
 

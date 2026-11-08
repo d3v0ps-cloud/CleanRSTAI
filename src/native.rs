@@ -3,14 +3,13 @@
 //! builds and convert them, and both report the same `AssistantTurn` and stats.
 
 use anyhow::{Context as _, Result, bail};
-use futures_util::StreamExt as _;
 use serde_json::{Map, Value, json};
 
 use crate::config::{
     MAX_NATIVE_SEARCH_USES, NativeSearch, ProviderApi, ProviderConfig, ProviderKind,
     WebSearchSettings,
 };
-use crate::llm::{AssistantTurn, Delta, ToolSpec, authorize, endpoint, error_from_response};
+use crate::llm::{AssistantTurn, Delta, ToolSpec, authorize, endpoint};
 use crate::model_options::{ModelOptions, ReasoningEffort};
 use crate::sse::SseParser;
 use crate::stats::{Collector, RequestStats};
@@ -175,15 +174,13 @@ async fn send(
     on_delta: &mut (dyn FnMut(Delta<'_>) + Send),
     on_stats: &mut (dyn FnMut(RequestStats) + Send),
 ) -> Result<AssistantTurn> {
-    let resp = authorize(http.post(endpoint(p, path)), p)
-        .timeout(std::time::Duration::from_secs(p.timeout_secs.max(10)))
-        .json(body)
-        .send()
-        .await
-        .context("request failed")?;
-    if !resp.status().is_success() {
-        return Err(error_from_response(resp).await);
-    }
+    let url = endpoint(p, path);
+    let resp =
+        crate::llm::send_with_retry(p, || authorize(http.post(&url), p).json(body), &mut |s| {
+            on_delta(Delta::Retrying(s))
+        })
+        .await?;
+    let idle = crate::llm::idle_timeout(p);
     let is_sse = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -198,7 +195,10 @@ async fn send(
         turn: AssistantTurn::default(),
     };
     if !is_sse {
-        let v: Value = resp.json().await.context("invalid JSON response")?;
+        let v: Value = tokio::time::timeout(idle, resp.json())
+            .await
+            .map_err(|_| anyhow::anyhow!("the server stopped sending the reply"))?
+            .context("invalid JSON response")?;
         if let Some(e) = error_message(&v) {
             bail!("{e}");
         }
@@ -217,8 +217,8 @@ async fn send(
             reader.event(&v, sink)
         };
         let mut done = false;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("stream interrupted")?;
+        while let Some(chunk) = crate::llm::next_chunk(&mut stream, idle).await {
+            let chunk = chunk?;
             for ev in parser.feed(&chunk) {
                 if handle(&ev.data, &mut sink)? {
                     done = true;

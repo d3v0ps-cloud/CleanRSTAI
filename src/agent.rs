@@ -35,6 +35,8 @@ pub enum ChatEvent {
         preview: Option<String>,
         respond: oneshot::Sender<bool>,
     },
+    /// The request failed in a way worth trying again; a status line for the readout.
+    Retrying(String),
     /// The older messages are being summarised.
     Compacting,
     /// The messages before the last `kept` ones were summarised as `summary`, by a request
@@ -76,6 +78,39 @@ pub struct ServerReport {
     pub details: Option<crate::servers::ServerDetails>,
 }
 
+/// What one reply's requests used so far, against the reply limits in Settings → General.
+#[derive(Default, Debug)]
+struct Usage {
+    tokens: u64,
+    cost_usd: f64,
+}
+
+impl Usage {
+    fn add(&mut self, s: &crate::stats::RequestStats) {
+        self.tokens += s.prompt_tokens.unwrap_or(0) + s.completion_tokens.unwrap_or(0);
+        self.cost_usd += s.cost_usd.unwrap_or(0.0);
+    }
+
+    /// Why the reply stops here, when it went over a limit.
+    fn over(&self, g: &crate::config::GeneralSettings) -> Option<String> {
+        if g.reply_token_limit > 0 && self.tokens >= g.reply_token_limit {
+            return Some(format!(
+                "Stopped: this reply used {} tokens, over the limit of {} \
+                 (Settings → General → Reply limits).",
+                self.tokens, g.reply_token_limit
+            ));
+        }
+        if g.reply_cost_limit_usd > 0.0 && self.cost_usd >= g.reply_cost_limit_usd {
+            return Some(format!(
+                "Stopped: this reply cost ${:.4}, over the limit of ${:.2} \
+                 (Settings → General → Reply limits).",
+                self.cost_usd, g.reply_cost_limit_usd
+            ));
+        }
+        None
+    }
+}
+
 pub enum AppEvent {
     /// A request from a browser connected to the remote access server.
     Remote(crate::remote::RemoteCommand),
@@ -106,6 +141,8 @@ pub enum AppEvent {
     },
     /// The update was put in place (the path to relaunch), or why it wasn't.
     UpdateInstalled(Result<std::path::PathBuf, String>),
+    /// Every release at the "Update from" source, for the version picker in Settings.
+    ReleasesListed(Result<Vec<crate::update::Release>, String>),
     /// Result of a Settings → Docker test, pull or build: a message, or why it failed.
     SandboxChecked(Result<String, String>),
     Chat {
@@ -388,6 +425,7 @@ pub async fn run(
     let delegation = req.delegation.map(|d| d.with_workspace(workspace.as_ref()));
     let mut history = req.history;
     let max_rounds = req.general.max_tool_rounds.max(1);
+    let mut used = Usage::default();
     let tool_timeout = Duration::from_secs(req.general.tool_timeout_secs.max(5));
     let mut asked_context_after_reply = false;
     let (mut context_size, slot_usage) =
@@ -530,6 +568,7 @@ pub async fn run(
             |d| match d {
                 Delta::Content(s) => emit(ChatEvent::ContentDelta(s.to_owned())),
                 Delta::Reasoning(s) => emit(ChatEvent::ReasoningDelta(s.to_owned())),
+                Delta::Retrying(s) => emit(ChatEvent::Retrying(s.to_owned())),
             },
             |s| emit(ChatEvent::StatsLive(Box::new(s))),
         )
@@ -570,6 +609,7 @@ pub async fn run(
         if let Some(pr) = prices {
             pr.fill_in(&mut stats);
         }
+        used.add(&stats);
         msg.stats = Some(stats);
         let calls = msg.tool_calls.clone();
         history.push(msg.clone());
@@ -592,6 +632,10 @@ pub async fn run(
             emit(ChatEvent::Error(format!(
                 "Stopped after {max_rounds} rounds of tool calls."
             )));
+            break;
+        }
+        if let Some(why) = used.over(&req.general) {
+            emit(ChatEvent::Error(why));
             break;
         }
 
@@ -742,6 +786,27 @@ mod tests {
     //! the reference MCP "everything" server. Needs `npx` + network, so it's ignored by
     //! default: `cargo test -- --ignored`.
     use super::*;
+
+    #[test]
+    fn reply_limits() {
+        let mut g = crate::config::GeneralSettings::default();
+        let mut used = Usage::default();
+        let stats = crate::stats::RequestStats {
+            prompt_tokens: Some(900),
+            completion_tokens: Some(100),
+            cost_usd: Some(0.02),
+            ..Default::default()
+        };
+        used.add(&stats);
+        assert_eq!(used.over(&g), None);
+        g.reply_token_limit = 2_000;
+        assert_eq!(used.over(&g), None);
+        used.add(&stats);
+        assert!(used.over(&g).unwrap().contains("2000 tokens"));
+        g.reply_token_limit = 0;
+        g.reply_cost_limit_usd = 0.03;
+        assert!(used.over(&g).unwrap().contains("$0.0400"));
+    }
     use crate::config::{McpServerConfig, McpTransportConfig};
     use crate::testutil::{Request, Response, serve};
 

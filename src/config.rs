@@ -167,6 +167,9 @@ pub struct ProviderConfig {
     pub stream: bool,
     pub extra_headers: Vec<KeyValue>,
     pub timeout_secs: u64,
+    /// How many times a model request is tried again after a connection failure, a rate
+    /// limit or an overloaded server, before any of the reply arrives.
+    pub retries: u32,
     pub kind: ProviderKind,
     /// Ask for token usage in streamed responses (`stream_options.include_usage`).
     pub request_usage: bool,
@@ -179,6 +182,17 @@ pub struct ProviderConfig {
     #[serde(skip)]
     pub native_search: Option<u32>,
 }
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_f64(n: &f64) -> bool {
+    *n == 0.0
+}
+
+/// The most retries a provider can be set to.
+pub const MAX_RETRIES: u32 = 10;
 
 impl Default for ProviderConfig {
     fn default() -> Self {
@@ -196,6 +210,7 @@ impl Default for ProviderConfig {
             stream: true,
             extra_headers: Vec::new(),
             timeout_secs: 300,
+            retries: 3,
             kind: ProviderKind::Generic,
             request_usage: true,
             context_tokens: None,
@@ -280,6 +295,24 @@ impl Default for McpServerConfig {
 }
 
 impl McpServerConfig {
+    /// A copy to edit into another server: a new id (so its secrets and sign-in are its own)
+    /// and the name with `-copy` (`-copy-2`, …) so it differs from every name in `taken`.
+    pub fn duplicate<'a>(&self, taken: impl IntoIterator<Item = &'a str> + Clone) -> Self {
+        Self {
+            id: new_id(),
+            name: free_name(&format!("{}-copy", self.name.trim()), taken),
+            ..self.clone()
+        }
+    }
+
+    /// The server's URL, for a Streamable HTTP server.
+    pub fn url(&self) -> Option<&str> {
+        match &self.transport {
+            McpTransportConfig::Http { url, .. } => Some(url),
+            McpTransportConfig::Stdio { .. } => None,
+        }
+    }
+
     /// Whether a change from `other` requires reconnecting.
     pub fn needs_reconnect(&self, other: &McpServerConfig) -> bool {
         self.enabled != other.enabled || self.transport != other.transport
@@ -984,6 +1017,12 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub default_approval_mode: crate::approval::ApprovalMode,
     pub max_tool_rounds: u32,
+    /// Stop a reply's tool loop once its requests used this many tokens in all (0: no limit).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub reply_token_limit: u64,
+    /// Stop a reply's tool loop once its requests cost this much, in US dollars (0: no limit).
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub reply_cost_limit_usd: f64,
     pub tool_timeout_secs: u64,
     /// Show prefill/decode speed and token counts under each response.
     pub show_stats: bool,
@@ -1092,6 +1131,8 @@ impl Default for GeneralSettings {
             auto_approve_tools: false,
             default_approval_mode: Default::default(),
             max_tool_rounds: 20,
+            reply_token_limit: 0,
+            reply_cost_limit_usd: 0.0,
             tool_timeout_secs: 120,
             show_stats: true,
             use_keychain: true,
@@ -1418,6 +1459,15 @@ impl Settings {
         if self.active_provider >= self.providers.len() {
             self.active_provider = 0;
         }
+        for p in &mut self.providers {
+            p.retries = p.retries.min(MAX_RETRIES);
+        }
+        let g = &mut self.general;
+        g.reply_cost_limit_usd = if g.reply_cost_limit_usd.is_finite() {
+            g.reply_cost_limit_usd.clamp(0.0, 10_000.0)
+        } else {
+            0.0
+        };
         self.general.zoom = self.general.zoom.clamp(0.5, 3.0);
         if self.general.remote.port == 0 {
             self.general.remote.port = REMOTE_DEFAULT_PORT;
@@ -1617,14 +1667,110 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
             .mode(0o600)
             .open(&tmp)?;
         file.write_all(bytes)?;
+        // On disk before the rename, so a power cut leaves the old file or the new one,
+        // never an empty one.
+        file.sync_all()?;
     }
     #[cfg(not(unix))]
-    std::fs::write(&tmp, bytes)?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
 /// Parse a Claude Desktop / VS Code style `{"mcpServers": {...}}` JSON blob.
+/// `base`, or `base-2`, `base-3`… : the first that isn't in `taken`.
+fn free_name<'a>(base: &str, taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
+    std::iter::once(base.to_owned())
+        .chain((2..).map(|n| format!("{base}-{n}")))
+        .find(|n| !taken.clone().into_iter().any(|t| t == n))
+        .unwrap_or_else(|| base.to_owned())
+}
+
+/// A hosted MCP server offered on the MCP Servers page to add in one click.
+#[derive(Clone, Copy, Debug)]
+pub struct RecommendedMcp {
+    /// The server's name once added (its tools' prefix).
+    pub name: &'static str,
+    pub title: &'static str,
+    pub url: &'static str,
+    pub description: &'static str,
+}
+
+/// The servers on the MCP Servers page's Recommended list.
+pub const RECOMMENDED_MCP: &[RecommendedMcp] = &[
+    RecommendedMcp {
+        name: "huggingface",
+        title: "Hugging Face",
+        url: "https://huggingface.co/mcp",
+        description: "Search models, datasets, Spaces and papers on the Hugging Face Hub. \
+                      Sign in when asked, or paste a Hugging Face token after Bearer.",
+    },
+    RecommendedMcp {
+        name: "context7",
+        title: "Context7",
+        url: "https://mcp.context7.com/mcp",
+        description: "Up-to-date documentation and code examples for libraries and \
+                      frameworks. Works without a key; a Context7 API key after Bearer \
+                      raises the limits.",
+    },
+    RecommendedMcp {
+        name: "exa",
+        title: "Exa",
+        url: "https://mcp.exa.ai/mcp",
+        description: "Web search and page contents from Exa, plus code search. An Exa API key \
+                      after Bearer raises the limits.",
+    },
+];
+
+/// A URL as compared for "already added": no scheme case, no trailing slash, no spaces.
+fn same_url(a: &str, b: &str) -> bool {
+    let norm = |u: &str| u.trim().trim_end_matches('/').to_ascii_lowercase();
+    norm(a) == norm(b)
+}
+
+impl RecommendedMcp {
+    /// Whether one of `servers` already is this server (by URL, whatever its name).
+    pub fn is_added(&self, servers: &[McpServerConfig]) -> bool {
+        servers
+            .iter()
+            .filter_map(McpServerConfig::url)
+            .any(|u| same_url(u, self.url))
+    }
+
+    /// The server's settings, named so the name is free among `servers`.
+    pub fn server(&self, servers: &[McpServerConfig]) -> McpServerConfig {
+        let mut transport = McpTransportConfig::new_http();
+        if let McpTransportConfig::Http { url, .. } = &mut transport {
+            *url = self.url.to_owned();
+        }
+        McpServerConfig {
+            name: free_name(self.name, servers.iter().map(|s| s.name.as_str())),
+            transport,
+            ..Default::default()
+        }
+    }
+}
+
+impl McpTransportConfig {
+    /// A new Streamable HTTP transport, with an `Authorization: Bearer ` header ready for a
+    /// token (sent only once one is filled in; see `mcp::http`).
+    pub fn new_http() -> Self {
+        Self::Http {
+            url: String::new(),
+            headers: vec![KeyValue {
+                key: "Authorization".into(),
+                value: "Bearer ".into(),
+            }],
+            oauth_client_id: String::new(),
+        }
+    }
+}
+
 pub fn import_mcp_json(text: &str) -> Result<Vec<McpServerConfig>> {
     let value: serde_json::Value = serde_json::from_str(text).context("invalid JSON")?;
     let servers = value
@@ -2359,5 +2505,65 @@ mod tests {
         };
         let v = serde_json::to_value(&p).unwrap();
         assert!(v.get("native_search").is_none());
+    }
+
+    #[test]
+    fn a_cloned_server_gets_its_own_id_and_a_free_name() {
+        let mut a = McpServerConfig {
+            name: "github".into(),
+            transport: McpTransportConfig::new_http(),
+            disabled_tools: vec!["delete_repo".into()],
+            ..Default::default()
+        };
+        a.enabled = false;
+        let names = ["github", "github-copy"];
+        let b = a.duplicate(names.iter().copied());
+        assert_ne!(a.id, b.id);
+        assert_eq!(b.name, "github-copy-2");
+        assert_eq!(
+            (b.transport, b.disabled_tools, b.enabled),
+            (a.transport.clone(), a.disabled_tools.clone(), false)
+        );
+        assert_eq!(a.duplicate(["github"]).name, "github-copy");
+    }
+
+    #[test]
+    fn a_new_http_transport_has_a_bearer_header_ready() {
+        let McpTransportConfig::Http { headers, .. } = McpTransportConfig::new_http() else {
+            panic!("not HTTP");
+        };
+        assert_eq!(headers[0].key, "Authorization");
+        assert_eq!(headers[0].value, "Bearer ");
+    }
+
+    #[test]
+    fn recommended_servers_are_added_once_and_recognised_by_url() {
+        let context7 = RECOMMENDED_MCP
+            .iter()
+            .find(|r| r.name == "context7")
+            .unwrap();
+        let mut servers = vec![McpServerConfig {
+            name: "context7".into(),
+            ..Default::default()
+        }];
+        assert!(!context7.is_added(&servers));
+        let added = context7.server(&servers);
+        // A stdio server already has the name, so the new one gets another.
+        assert_eq!(added.name, "context7-2");
+        assert_eq!(added.url(), Some("https://mcp.context7.com/mcp"));
+        servers.push(added);
+        assert!(context7.is_added(&servers));
+
+        let mut mine = McpTransportConfig::new_http();
+        if let McpTransportConfig::Http { url, .. } = &mut mine {
+            *url = " HTTPS://mcp.exa.ai/mcp/ ".into();
+        }
+        servers.push(McpServerConfig {
+            name: "search".into(),
+            transport: mine,
+            ..Default::default()
+        });
+        let exa = RECOMMENDED_MCP.iter().find(|r| r.name == "exa").unwrap();
+        assert!(exa.is_added(&servers));
     }
 }

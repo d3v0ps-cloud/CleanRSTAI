@@ -569,19 +569,16 @@ impl ChatApp {
             return;
         }
         let code = self.settings.general.mode == AppMode::Code;
+        let hits = searching.then(|| self.search_hits(&needle));
         let mut rows: Vec<usize> = (0..self.conversations.len())
             .filter(|&i| {
                 let c = &self.conversations[i];
                 // An empty new chat isn't listed until it has a message; a search looks in
                 // both modes.
                 listed(c, &self.runs)
-                    && if searching {
-                        c.title.to_lowercase().contains(&needle)
-                            || c.messages
-                                .iter()
-                                .any(|m| m.content.to_lowercase().contains(&needle))
-                    } else {
-                        c.workspace.is_some() == code
+                    && match &hits {
+                        Some(hits) => hits.contains(&c.id),
+                        None => c.workspace.is_some() == code,
                     }
             })
             .collect();
@@ -616,6 +613,39 @@ impl ChatApp {
                 }
             });
         self.apply_sidebar_acts(acts);
+    }
+
+    /// The chats whose title or messages contain `needle` (lower case), worked out again only
+    /// when the query or the chats change, not on every frame.
+    fn search_hits(&mut self, needle: &str) -> HashSet<Uuid> {
+        let stamp = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for c in &self.conversations {
+                (c.id, c.updated_at, c.messages.len(), &c.title).hash(&mut h);
+                c.messages.last().map(|m| m.content.len()).hash(&mut h);
+            }
+            h.finish()
+        };
+        if let Some((n, s, hits)) = &self.search_cache
+            && n == needle
+            && *s == stamp
+        {
+            return hits.clone();
+        }
+        let hits: HashSet<Uuid> = self
+            .conversations
+            .iter()
+            .filter(|c| {
+                contains_folded(&c.title, needle)
+                    || c.messages
+                        .iter()
+                        .any(|m| contains_folded(&m.content, needle))
+            })
+            .map(|c| c.id)
+            .collect();
+        self.search_cache = Some((needle.to_owned(), stamp, hits.clone()));
+        hits
     }
 
     /// The account footer: avatar, name and provider with a menu, and the remote-access
@@ -1676,5 +1706,35 @@ mod tests {
         for m in ApprovalMode::ALL {
             assert!(mode_short(m).len() <= 9);
         }
+    }
+}
+
+/// Whether `hay` contains `needle` (already lower case), ignoring case. ASCII needles are
+/// compared in place, without making a lower-case copy of every message.
+pub(super) fn contains_folded(hay: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !needle.is_ascii() {
+        return hay.to_lowercase().contains(needle);
+    }
+    let (hay, needle) = (hay.as_bytes(), needle.as_bytes());
+    hay.len() >= needle.len()
+        && hay
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::contains_folded;
+
+    #[test]
+    fn folded_search() {
+        assert!(contains_folded("Hello World", "world"));
+        assert!(contains_folded("ÄPFEL und Birnen", "äpfel"));
+        assert!(!contains_folded("Hello", "help"));
+        assert!(contains_folded("x", ""));
+        assert!(!contains_folded("ab", "abc"));
     }
 }

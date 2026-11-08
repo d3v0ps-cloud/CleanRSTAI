@@ -18,10 +18,29 @@ overview, see [Using the App → MCP servers](../using/mcp.html).
 The left column lists your servers, each with a status dot. Below it:
 
 - **+ Add** adds a stdio server named `new-server`.
+- **Clone** adds a copy of the selected server below it, named `<name>-copy`, with the same
+  transport, command or URL, headers, environment and switched-off tools. The copy is a server
+  of its own: its secrets are saved for it when you apply, and a server that needs sign-in
+  asks the copy to sign in again.
 - **－ Remove** removes the selected server.
 - **Import JSON…** opens a box where you can paste an `mcpServers` config (Claude Desktop,
   Cursor and others use this format) and click **Import**. The servers are added to the list;
   click **Apply** to connect them.
+
+### Recommended servers
+
+Under the buttons, **Recommended** lists hosted servers you can add in one click. Each is added
+as a Streamable HTTP server with its URL filled in and an `Authorization: Bearer ` header ready
+for a key; click **Apply** to connect it. A server whose URL is already in your list (added
+here, by hand or by import, under any name) shows **Added** instead.
+
+| Server | Name | URL | Notes |
+|---|---|---|---|
+| **Hugging Face** | `huggingface` | `https://huggingface.co/mcp` | Search models, datasets, Spaces and papers. Sign in when asked, or paste a Hugging Face token after `Bearer`. |
+| **Context7** | `context7` | `https://mcp.context7.com/mcp` | Current library and framework documentation. Works without a key; a Context7 API key raises the limits. |
+| **Exa** | `exa` | `https://mcp.exa.ai/mcp` | Web search, page contents and code search. An Exa API key raises the limits. |
+
+If the name is taken by another server, the new one gets `-2` (and so on) after it.
 
 ## Fields
 
@@ -51,7 +70,7 @@ Untick to disconnect the server and hide its tools without deleting it.
 | Field | Description |
 |---|---|
 | **URL** | The server's MCP endpoint, for example `https://example.com/mcp`. |
-| **Headers** | Sent with every request, such as `Authorization: Bearer …`. Values are stored in the keychain. |
+| **Headers** | Sent with every request. Choosing Streamable HTTP fills in an `Authorization` header with the value `Bearer `, so you only paste the token after it. A header still at `Bearer ` with no token (or with an empty value) is not sent, so a server that signs in with OAuth instead works without removing it. Values are stored in the keychain. |
 | **OAuth client ID** | Optional. Only if the server can't register CleanRSTAI automatically and its documentation gives you a client ID. |
 
 ## Status and actions

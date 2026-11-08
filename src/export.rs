@@ -52,7 +52,16 @@ pub fn settings_document(settings: &Settings, include_secrets: bool) -> Value {
 }
 
 pub fn conversations_document(conversations: &[Conversation]) -> Value {
-    envelope("conversations", "conversations", json!(conversations))
+    // A backup stands on its own: images go inside it, not as references to this computer.
+    let chats: Vec<Conversation> = conversations
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.inline_attachments();
+            c
+        })
+        .collect();
+    envelope("conversations", "conversations", json!(chats))
 }
 
 pub fn write_document(path: &Path, doc: &Value) -> Result<()> {

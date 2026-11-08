@@ -43,15 +43,7 @@ impl ImageCache {
 /// (e.g. a message edited and resent with a different image at the same position).
 fn uri(key: &str, a: &Attachment) -> String {
     let ext = a.mime.rsplit('/').next().unwrap_or("png");
-    let data = a.data.as_deref().unwrap_or("");
-    let edge = |s: &str| -> String {
-        s.chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect()
-    };
-    let head = edge(&data[..data.len().min(16)]);
-    let tail = edge(&data[data.len().saturating_sub(16)..]);
-    format!("bytes://{key}-{}-{head}{tail}.{ext}", data.len())
+    format!("bytes://{key}-{}.{ext}", a.content_tag())
 }
 
 fn image_source(

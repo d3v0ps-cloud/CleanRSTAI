@@ -4,6 +4,7 @@
 //! dashboard. Either way the app follows cloudflared's log for the connection state and the
 //! public hostnames, and starts it again when it stops. Dropping the handle stops cloudflared.
 
+use crate::sync::{LockExt as _, RwLockExt as _};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -63,7 +64,7 @@ impl TunnelHandle {
     }
 
     pub fn status(&self) -> TunnelStatus {
-        self.status.lock().unwrap().clone()
+        self.status.locked().clone()
     }
 }
 
@@ -71,7 +72,7 @@ impl Drop for TunnelHandle {
     fn drop(&mut self) {
         // Aborting drops the child process, which kills it (`kill_on_drop`).
         self.task.abort();
-        self.hosts.write().unwrap().clear();
+        self.hosts.write_ok().clear();
     }
 }
 
@@ -148,7 +149,7 @@ pub fn start(
             }
         }
     };
-    *hosts.write().unwrap() = launch.hosts.clone();
+    *hosts.write_ok() = launch.hosts.clone();
     let status = Arc::new(Mutex::new(TunnelStatus::Connecting(None)));
     let task = rt.spawn(supervise(launch, status.clone(), hosts.clone(), repaint));
     Ok(TunnelHandle {
@@ -193,7 +194,7 @@ async fn supervise(
     repaint: Arc<dyn Fn() + Send + Sync>,
 ) {
     let set = |s: TunnelStatus| {
-        let mut current = status.lock().unwrap();
+        let mut current = status.locked();
         if *current != s {
             *current = s;
             repaint();
@@ -203,7 +204,7 @@ async fn supervise(
     loop {
         set(TunnelStatus::Connecting(None));
         let (error, connected) = run_once(&launch, &set, &hosts).await;
-        *hosts.write().unwrap() = launch.hosts.clone();
+        *hosts.write_ok() = launch.hosts.clone();
         let retrying = !token_refused(&error);
         set(TunnelStatus::Failed { error, retrying });
         if !retrying {
@@ -278,7 +279,7 @@ async fn run_once(
                 all.push(host.clone());
             }
         }
-        *hosts.write().unwrap() = all.clone();
+        *hosts.write_ok() = all.clone();
         if log.connections.is_empty() {
             set(TunnelStatus::Connecting(log.last_error.clone()));
         } else {

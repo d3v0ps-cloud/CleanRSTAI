@@ -95,6 +95,12 @@ logs browsers out; a change to the tunnel settings alone restarts only the tunne
   that answers like GitHub's `releases/latest` API. **Reset** restores the default.
 - **Check for updates now** checks the source as typed, before you save, and shows the
   installed version. If a newer release can be installed, **Install update** appears.
+- **Install a version**: **List releases** fetches every release from the same source (the
+  newest 50, dev builds included, marked **dev**; the installed one is marked **installed**).
+  Pick one and click **Install vX.Y.Z** to move to that build, newer or older. It installs the
+  same way as an update, checked against the release's `SHA256SUMS.txt`. **Release notes**
+  opens the release's page. Install is greyed out for the installed version, and for a
+  release without a build this copy can install itself.
 
 See [Updates](../using/updates.html).
 
@@ -172,6 +178,14 @@ default 10. The oldest is dropped beyond that.
 ## Max tool rounds
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.
+
+## Reply limits
+
+Stop a reply once the requests it made used this many tokens in all (prompt and completion
+of every round, 0 to 100,000,000), or cost this much (in US dollars, 0 to 10,000, where the
+server reports or the app estimates a cost). Both default to 0, no limit. The check runs after
+each request, before the tools it asked for, so a reply over a limit ends with a message
+instead of calling more tools.
 
 ## Tool timeout
 

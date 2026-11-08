@@ -24,6 +24,8 @@ pub struct Release {
     pub url: String,
     pub notes: String,
     pub assets: Vec<Asset>,
+    /// A pre-release (a dev build, tagged with a `-`).
+    pub prerelease: bool,
 }
 
 /// A file attached to a release.
@@ -124,7 +126,77 @@ pub async fn check(http: &reqwest::Client, url: &str, current: &str) -> Result<U
         url: r.html_url,
         notes: r.body.unwrap_or_default(),
         assets: r.assets,
+        prerelease: false,
     }))
+}
+
+/// How many releases the version picker lists, newest first.
+pub const LIST_LIMIT: usize = 50;
+
+/// The API URL that lists every release, for the same "Update from" setting as
+/// [`release_api_url`] (whose `/releases/latest` it replaces with `/releases`).
+pub fn releases_list_url(setting: &str) -> Result<String> {
+    let latest = release_api_url(setting);
+    match latest.strip_suffix("/releases/latest") {
+        Some(base) => Ok(format!("{base}/releases?per_page={LIST_LIMIT}")),
+        None => bail!(
+            "this \"Update from\" address can't list releases (it needs to end in /releases/latest)"
+        ),
+    }
+}
+
+/// Every published release at `url` (drafts left out), dev builds included, newest first.
+pub async fn list(http: &reqwest::Client, url: &str) -> Result<Vec<Release>> {
+    let resp = http
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .context("couldn't reach GitHub")?;
+    if !resp.status().is_success() {
+        bail!("GitHub answered HTTP {}", resp.status());
+    }
+    let list: Vec<ApiRelease> = resp
+        .json()
+        .await
+        .context("unexpected response from GitHub")?;
+    let mut out: Vec<Release> = list
+        .into_iter()
+        .filter(|r| !r.draft && parse_version(&r.tag_name).is_some())
+        .map(|r| Release {
+            version: r.tag_name.trim_start_matches('v').to_owned(),
+            url: r.html_url,
+            notes: r.body.unwrap_or_default(),
+            assets: r.assets,
+            prerelease: r.prerelease || r.tag_name.contains('-'),
+        })
+        .collect();
+    out.sort_by(|a, b| compare_versions(&b.version, &a.version));
+    out.truncate(LIST_LIMIT);
+    Ok(out)
+}
+
+/// Order versions as releases: by number, a pre-release before its release, and
+/// pre-releases of one version by their dotted parts (`dev.2` < `dev.10`).
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn pre(v: &str) -> Vec<Result<u64, String>> {
+        v.split_once('-')
+            .map(|(_, p)| p.split('+').next().unwrap_or(p))
+            .map(|p| {
+                p.split('.')
+                    .map(|x| x.parse::<u64>().map_err(|_| x.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    let (a, b) = (
+        a.trim().trim_start_matches('v'),
+        b.trim().trim_start_matches('v'),
+    );
+    parse_version(a)
+        .cmp(&parse_version(b))
+        .then_with(|| pre(a).cmp(&pre(b)))
 }
 
 /// The checksum file the release workflow publishes next to the builds.
@@ -482,6 +554,7 @@ mod tests {
         assert_eq!(
             got,
             UpdateCheck::Available(Release {
+                prerelease: false,
                 version: "9.0.0".into(),
                 url: "https://example.com/r/v9.0.0".into(),
                 notes: "Notes".into(),
@@ -549,6 +622,49 @@ mod tests {
         assert!(is_installer(Path::new("x.MSI")));
         assert!(!is_installer(Path::new("/usr/bin/cleanrstai")));
         assert!(!is_installer(Path::new("C:/Apps/cleanrstai.exe")));
+    }
+
+    #[test]
+    fn lists_releases_url_and_order() {
+        assert_eq!(
+            releases_list_url("d3v0ps-cloud/CleanRSTAI").unwrap(),
+            "https://api.github.com/repos/d3v0ps-cloud/CleanRSTAI/releases?per_page=50"
+        );
+        assert!(releases_list_url("https://example.com/feed.json").is_err());
+        use std::cmp::Ordering::*;
+        assert_eq!(compare_versions("0.9.4-dev.1", "0.9.3"), Greater);
+        assert_eq!(compare_versions("0.9.4-dev.1", "0.9.4"), Less);
+        assert_eq!(compare_versions("v0.9.2-dev.10", "0.9.2-dev.8"), Greater);
+        assert_eq!(compare_versions("0.9.2", "v0.9.2"), Equal);
+    }
+
+    #[tokio::test]
+    async fn lists_every_release_with_dev_builds_newest_first() {
+        let (base, _log) = crate::testutil::serve(|_| {
+            crate::testutil::Response::json(serde_json::json!([
+                {"tag_name": "v0.9.3", "html_url": "h3", "assets": []},
+                {"tag_name": "v0.9.4-dev.1", "html_url": "h4", "prerelease": true, "assets": []},
+                {"tag_name": "v0.9.5", "html_url": "draft", "draft": true},
+                {"tag_name": "nightly", "html_url": "x"},
+                {"tag_name": "v0.9.2-dev.8", "html_url": "h2", "assets": []},
+            ]))
+        })
+        .await;
+        let list = list(&reqwest::Client::new(), &format!("{base}/releases"))
+            .await
+            .unwrap();
+        let versions: Vec<_> = list
+            .iter()
+            .map(|r| (r.version.as_str(), r.prerelease))
+            .collect();
+        assert_eq!(
+            versions,
+            [
+                ("0.9.4-dev.1", true),
+                ("0.9.3", false),
+                ("0.9.2-dev.8", true)
+            ]
+        );
     }
 
     #[test]
@@ -632,6 +748,7 @@ mod tests {
         })
         .await;
         let release = |sums: &str| Release {
+            prerelease: false,
             version: "9.0.0".into(),
             url: String::new(),
             notes: String::new(),

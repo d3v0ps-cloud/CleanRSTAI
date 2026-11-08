@@ -15,15 +15,66 @@ const MAX_TEXT_CHARS: usize = 1_000_000;
 
 /// An image (base64 `data`) or text (`text`) attached to a message. Documents (PDF, Office,
 /// OpenDocument, RTF) are attached as their extracted text, with the document's MIME type.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+///
+/// An image loaded from a chat file is a `blob` reference (see `blobs`) with no `data` until
+/// it's needed: use [`Attachment::base64`] or [`Attachment::bytes`], never `data` directly.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Attachment {
     pub name: String,
     pub mime: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub text: Option<String>,
     /// Base64-encoded bytes, for images.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub data: Option<String>,
+    /// The image kept beside the chats, by key (instead of `data`).
+    #[serde(default)]
+    pub blob: Option<String>,
+    /// The image's size in bytes, for a `blob`.
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+impl Serialize for Attachment {
+    /// Written as is, except into a chat file (`blobs::externalizing`), where an image's
+    /// bytes go to the attachments folder and the file keeps only the key.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Out<'a> {
+            name: &'a str,
+            mime: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            text: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            data: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            blob: Option<std::borrow::Cow<'a, str>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            size: Option<u64>,
+        }
+        let mut out = Out {
+            name: &self.name,
+            mime: &self.mime,
+            text: self.text.as_deref(),
+            data: self.data.as_deref(),
+            blob: self.blob.as_deref().map(std::borrow::Cow::Borrowed),
+            size: self.size,
+        };
+        if let (Some(data), Some(dir)) = (self.data.as_deref(), crate::blobs::writing_dir())
+            && self.mime.starts_with("image/")
+        {
+            let key = crate::blobs::key(data);
+            match crate::blobs::store(&dir, &key, data) {
+                Ok(size) => {
+                    out.data = None;
+                    out.blob = Some(key.into());
+                    out.size = Some(size);
+                }
+                Err(e) => log::warn!("keeping {} inside the chat: {e:#}", self.name),
+            }
+        }
+        out.serialize(serializer)
+    }
 }
 
 /// Recognise an image from its first bytes.
@@ -131,7 +182,7 @@ impl Attachment {
             name,
             mime: mime.into(),
             text: Some(truncate(text)),
-            data: None,
+            ..Default::default()
         }
     }
 
@@ -139,25 +190,63 @@ impl Attachment {
         Self {
             name,
             mime,
-            text: None,
             data: Some(B64.encode(bytes)),
+            ..Default::default()
         }
     }
 
     pub fn is_image(&self) -> bool {
-        self.mime.starts_with("image/") && self.data.is_some()
+        self.mime.starts_with("image/") && (self.data.is_some() || self.blob.is_some())
+    }
+
+    /// The image's base64 text, read from the attachments folder for a `blob`.
+    pub fn base64(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match (&self.data, &self.blob) {
+            (Some(d), _) => Some(d.as_str().into()),
+            (None, Some(k)) => crate::blobs::load(k).map(|b| B64.encode(b).into()),
+            (None, None) => None,
+        }
     }
 
     pub fn bytes(&self) -> Option<Vec<u8>> {
-        B64.decode(self.data.as_deref()?).ok()
+        match (&self.data, &self.blob) {
+            (Some(d), _) => B64.decode(d).ok(),
+            (None, Some(k)) => crate::blobs::load(k),
+            (None, None) => None,
+        }
+    }
+
+    /// Put a `blob` image's bytes back into `data`, for a copy that leaves this computer.
+    pub fn inline(&mut self) {
+        if self.data.is_none()
+            && let Some(bytes) = self.blob.as_deref().and_then(crate::blobs::load)
+        {
+            self.data = Some(B64.encode(bytes));
+            self.blob = None;
+            self.size = None;
+        }
+    }
+
+    /// Something that changes with the image, for caches keyed by it.
+    pub fn content_tag(&self) -> String {
+        match (&self.data, &self.blob) {
+            (_, Some(k)) => k.clone(),
+            (Some(d), None) => {
+                let edge = |s: &str| -> String {
+                    s.chars()
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                        .collect()
+                };
+                let head = edge(&d[..d.len().min(16)]);
+                let tail = edge(&d[d.len().saturating_sub(16)..]);
+                format!("{}-{head}{tail}", d.len())
+            }
+            (None, None) => String::new(),
+        }
     }
 
     pub fn data_url(&self) -> Option<String> {
-        Some(format!(
-            "data:{};base64,{}",
-            self.mime,
-            self.data.as_deref()?
-        ))
+        Some(format!("data:{};base64,{}", self.mime, self.base64()?))
     }
 
     /// Short human-readable size, e.g. "12 lines", "PDF · 80 lines" or "340 KB".
@@ -170,7 +259,11 @@ impl Attachment {
                 None => lines,
             };
         }
-        let bytes = self.data.as_ref().map(|d| d.len() * 3 / 4).unwrap_or(0);
+        let bytes = match (&self.data, self.size) {
+            (Some(d), _) => d.len() * 3 / 4,
+            (None, Some(n)) => n as usize,
+            (None, None) => 0,
+        };
         if bytes >= 1024 * 1024 {
             format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
         } else {

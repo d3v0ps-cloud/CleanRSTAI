@@ -66,7 +66,8 @@ The user docs live in `docs/` (Just the Docs remote theme, built by GitHub Pages
 `/docs`, no workflow). When a change adds, removes or renames a feature, setting, default,
 range or shortcut, update the matching page in the same PR:
 
-- settings (labels, defaults and ranges in `ui/settings.rs` / `config.rs`) →
+- settings (labels, defaults and ranges in `ui/settings.rs`, one child module per tab in
+  `ui/settings/<tab>.rs`, and `config.rs`) →
   `docs/settings/<tab>.md` (the Docker tab is `docs/settings/docker.md`);
 - chats, attachments, tools and approvals, MCP, subagents, updates → `docs/using/*.md`;
 - shortcuts → `docs/reference/keyboard-shortcuts.md`; storage, secrets or anything that
@@ -89,8 +90,11 @@ unbounded channel that `ChatApp::handle_events` drains each frame, and calls
 `ctx.request_repaint()`. UI code never awaits.
 
 **One generation** (`agent::run`) streams a completion (`llm::chat_completion`, SSE via
-`sse.rs`), emits `ChatEvent`s (deltas, final message, tool approval, tool result, done), runs
-any tool calls and loops until the model answers without tools or hits `max_tool_rounds`.
+`sse.rs`; `llm::send_with_retry` retries connection failures and 408/425/429/5xx/529 up to
+`ProviderConfig.retries` times before any output, and `llm::next_chunk` ends a stream that is
+quiet for longer than the provider's timeout, which no longer limits the whole reply), emits `ChatEvent`s (deltas, final message, tool approval, tool result, done), runs
+any tool calls and loops until the model answers without tools, hits `max_tool_rounds`, or
+goes over the reply limits (`reply_token_limit`, `reply_cost_limit_usd`; `agent::Usage`).
 The toolbox is rebuilt every round so MCP servers that finish connecting are picked up.
 
 **Tools** (`tools/mod.rs`): a `Toolbox` for one request combines:
@@ -284,7 +288,7 @@ runs `speak::os_voice_command` (text on stdin, never in argv on Windows) or fetc
 (`types::Conversation`). New fields must be `#[serde(default)]` (usually with
 `skip_serializing_if`) so older files still load. API keys and MCP secrets go to the OS
 keychain through the `secrets::SecretStore` trait (tests use the in-memory store), with
-plain-text fallback when the keychain is off or unavailable.
+plain-text fallback when the keychain is off or unavailable. Chat files are written by the saver thread in `blobs.rs` (`Conversation::save` queues a clone; saves of one chat coalesce, a delete is ordered after them, `blobs::flush` runs before the app exits, `save_now` for the command line). Images are kept once in `attachments/<sha256>.bin`: `Attachment`'s own `Serialize` swaps `data` for a `blob` key only inside `blobs::externalizing`, so read images through `Attachment::base64`/`bytes`, and call `Conversation::inline_attachments` for anything that leaves the computer (backups, project exports). `load_all` parses on several threads and renames unreadable files to `.json.corrupt`. `write_private` syncs before its rename. Use `crate::sync`'s `LockExt::locked` / `RwLockExt` instead of `.lock().unwrap()`.
 
 **Share as HTML** (`export.rs`, `render_body`) renders the chat's Markdown with pulldown-cmark,
 drops all raw HTML except the app's own `<details>` wrapper, and allow-lists link (http/https/mailto)
@@ -331,6 +335,10 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
   icons; codepoints in `theme::icon`). The interface is 14px (`TextStyle::Body`); `markdown.rs`
   sets `Body` to `theme::READING_SIZE` around reply prose. `theme::set_motion` sets the
   animation time (0 with `general.reduce_motion`).
+- `app.rs` has child modules that use `ChatApp`'s private fields: `app/events.rs`
+  (`handle_events`, `handle_chat_event`), `app/remote.rs` (remote access: `sync_remote`,
+  `handle_remote`, `publish_remote`, fingerprints) and `app/scheduled.rs`; their methods are
+  `pub(super)`.
 - The window's frame is `app/shell.rs` (a child module of `app`, so it uses `ChatApp`'s private
   fields): the title row (`title_controls`, a drag area that sends `StartDrag`; on macOS
   `main.rs` hides the title bar and `TRAFFIC_LIGHTS` leaves room for the buttons), the sidebar

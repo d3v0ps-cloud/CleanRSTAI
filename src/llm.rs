@@ -1,6 +1,7 @@
 //! Client for OpenAI-compatible `/chat/completions` endpoints (OpenAI, Ollama, LM Studio,
 //! vLLM, llama.cpp server, OpenRouter, Groq, ...).
 
+use crate::sync::LockExt as _;
 use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
@@ -20,6 +21,8 @@ pub struct ToolSpec {
 pub enum Delta<'a> {
     Content(&'a str),
     Reasoning(&'a str),
+    /// The request failed in a way worth trying again, and is about to be (a status line).
+    Retrying(&'a str),
 }
 
 #[derive(Debug, Default)]
@@ -88,6 +91,107 @@ pub(crate) async fn error_from_response(resp: reqwest::Response) -> anyhow::Erro
     anyhow::anyhow!("HTTP {status}: {}", detail.trim())
 }
 
+/// Statuses worth asking again: a timeout, rate limits and an overloaded or restarting server
+/// (529 is Anthropic's "overloaded").
+pub(crate) fn retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status.as_u16(),
+        408 | 425 | 429 | 500 | 502 | 503 | 504 | 529
+    )
+}
+
+/// The longest wait before a retry, whatever the server asks for.
+const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long the server asks us to wait (`Retry-After`, seconds or an HTTP date), capped.
+pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    let wait = match value.parse::<u64>() {
+        Ok(secs) => std::time::Duration::from_secs(secs),
+        Err(_) => {
+            let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+            (at.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default()
+        }
+    };
+    Some(wait.min(MAX_RETRY_WAIT))
+}
+
+/// The wait before retry number `attempt` (0-based) when the server doesn't say: 1, 2, 4… s.
+pub(crate) fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(1u64 << attempt.min(5)).min(MAX_RETRY_WAIT)
+}
+
+/// How long to wait for the server to start answering, and the longest gap between two
+/// parts of a streamed reply (Settings → Providers → Timeout).
+pub(crate) fn idle_timeout(p: &ProviderConfig) -> std::time::Duration {
+    // Tests go down to a second, to stay fast.
+    let floor = if cfg!(test) { 1 } else { 10 };
+    std::time::Duration::from_secs(p.timeout_secs.max(floor))
+}
+
+/// Send a model request, retrying up to `p.retries` times on a connection failure or a
+/// retryable status, before anything of the reply has arrived. `make` builds the request
+/// afresh for each attempt; `on_retry` gets a status line before each wait.
+pub(crate) async fn send_with_retry(
+    p: &ProviderConfig,
+    make: impl Fn() -> reqwest::RequestBuilder,
+    on_retry: &mut (dyn FnMut(&str) + Send),
+) -> Result<reqwest::Response> {
+    let timeout = idle_timeout(p);
+    let mut attempt = 0u32;
+    loop {
+        let sent = tokio::time::timeout(timeout, make().send()).await;
+        let (reason, wait) = match sent {
+            Err(_) => bail!(
+                "the server didn't answer within {} s (Settings → Providers → Timeout)",
+                timeout.as_secs()
+            ),
+            Ok(Err(e)) if e.is_connect() && attempt < p.retries => {
+                ("couldn't connect".to_owned(), backoff(attempt))
+            }
+            Ok(Err(e)) => return Err(anyhow::Error::from(e).context("request failed")),
+            Ok(Ok(resp)) if resp.status().is_success() => return Ok(resp),
+            Ok(Ok(resp)) if retryable_status(resp.status()) && attempt < p.retries => {
+                let wait = retry_after(resp.headers()).unwrap_or_else(|| backoff(attempt));
+                (format!("HTTP {}", resp.status()), wait)
+            }
+            Ok(Ok(resp)) => return Err(error_from_response(resp).await),
+        };
+        attempt += 1;
+        on_retry(&format!(
+            "{reason}; retrying in {} s ({attempt} of {})",
+            wait.as_secs(),
+            p.retries
+        ));
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// The next part of a streamed reply, or an error when the server goes quiet for longer
+/// than the provider's timeout.
+pub(crate) async fn next_chunk<S, B>(
+    stream: &mut S,
+    timeout: std::time::Duration,
+) -> Option<Result<B>>
+where
+    S: futures_util::Stream<Item = reqwest::Result<B>> + Unpin,
+{
+    match tokio::time::timeout(timeout, stream.next()).await {
+        Ok(item) => item.map(|r| r.context("stream interrupted")),
+        Err(_) => Some(Err(anyhow::anyhow!(
+            "the server sent nothing for {} s, so the reply was stopped \
+             (Settings → Providers → Timeout)",
+            timeout.as_secs()
+        ))),
+    }
+}
+
 /// Server root, without the trailing `/v1` (where llama.cpp and LiteLLM serve extra endpoints).
 pub(crate) fn origin(p: &ProviderConfig) -> String {
     let base = p.base_url.trim().trim_end_matches('/');
@@ -101,7 +205,7 @@ pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) 
         std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
     > = std::sync::LazyLock::new(Default::default);
     let key = (origin(p), p.model.clone());
-    if let Some(n) = CACHE.lock().unwrap().get(&key) {
+    if let Some(n) = CACHE.locked().get(&key) {
         return Some(*n);
     }
     let v = llama_cpp_props(http, p).await?;
@@ -109,7 +213,7 @@ pub async fn llama_cpp_context_size(http: &reqwest::Client, p: &ProviderConfig) 
         .pointer("/default_generation_settings/n_ctx")
         .or_else(|| v.get("n_ctx"))
         .and_then(Value::as_u64)?;
-    CACHE.lock().unwrap().insert(key, n);
+    CACHE.locked().insert(key, n);
     Some(n)
 }
 
@@ -399,7 +503,7 @@ pub async fn litellm_model_info(
     > = std::sync::LazyLock::new(Default::default);
     let model = p.model.trim();
     let key = (origin(p), model.to_owned());
-    if let Some(info) = CACHE.lock().unwrap().get(&key) {
+    if let Some(info) = CACHE.locked().get(&key) {
         return Some(info.clone());
     }
     let resp = authorize(http.get(format!("{}/model/info", origin(p))), p)
@@ -444,7 +548,7 @@ pub async fn litellm_model_info(
         reasoning: flag("supports_reasoning"),
         pdf: flag("supports_pdf_input"),
     };
-    CACHE.lock().unwrap().insert(key, info.clone());
+    CACHE.locked().insert(key, info.clone());
     Some(info)
 }
 
@@ -840,15 +944,12 @@ pub async fn chat_completion(
 
     let mut stats = Collector::default();
 
-    let resp = authorize(http.post(endpoint(p, "chat/completions")), p)
-        .timeout(std::time::Duration::from_secs(p.timeout_secs.max(10)))
-        .json(&body)
-        .send()
-        .await
-        .context("request failed")?;
-    if !resp.status().is_success() {
-        return Err(error_from_response(resp).await);
-    }
+    let url = endpoint(p, "chat/completions");
+    let resp = send_with_retry(p, || authorize(http.post(&url), p).json(&body), &mut |s| {
+        on_delta(Delta::Retrying(s))
+    })
+    .await?;
+    let idle = idle_timeout(p);
     // LiteLLM's cost. Some versions leave the header out when it equals the cost before
     // discounts, which they send as `-original`.
     stats.header_cost_usd = [
@@ -881,7 +982,10 @@ pub async fn chat_completion(
         .is_some_and(|ct| ct.contains("text/event-stream"));
 
     if !is_sse {
-        let v: Value = resp.json().await.context("invalid JSON response")?;
+        let v: Value = tokio::time::timeout(idle, resp.json())
+            .await
+            .map_err(|_| anyhow::anyhow!("the server stopped sending the reply"))?
+            .context("invalid JSON response")?;
         if let Some(err) = v.get("error") {
             bail!(
                 "{}",
@@ -986,8 +1090,8 @@ pub async fn chat_completion(
         Ok(false)
     };
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("stream interrupted")?;
+    while let Some(chunk) = next_chunk(&mut stream, idle).await {
+        let chunk = chunk?;
         for ev in parser.feed(&chunk) {
             if handle(&ev.data, &mut turn, &mut builder, &mut stats)? {
                 done = true;
@@ -1115,6 +1219,124 @@ mod server_tests {
         let log = log.lock().unwrap();
         let chat = log.iter().find(|r| r.method == "POST").unwrap();
         assert_eq!(chat.json()["stream_options"]["include_usage"], true);
+    }
+
+    #[tokio::test]
+    async fn retries_a_rate_limit_and_an_overloaded_server() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let (base, _log) =
+            serve(
+                move |_| match seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => Response::status(429).header("retry-after", "0"),
+                    1 => Response::status(529).header("retry-after", "0"),
+                    _ => Response::sse(&[json!({"choices": [{"delta": {"content": "ok"}}]})]),
+                },
+            )
+            .await;
+        let p = provider(&base, ProviderKind::Generic);
+        let mut notes = Vec::new();
+        let turn = chat_completion(
+            &build_http_client(),
+            &p,
+            vec![],
+            &[],
+            |d| {
+                if let Delta::Retrying(s) = d {
+                    notes.push(s.to_owned());
+                }
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(turn.content, "ok");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].starts_with("HTTP 429"), "{notes:?}");
+        assert!(notes[1].contains("2 of 3"), "{notes:?}");
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_retries_and_never_retries_a_client_error() {
+        let (base, log) = serve(|_| Response::status(503).header("retry-after", "0")).await;
+        let mut p = provider(&base, ProviderKind::Generic);
+        p.retries = 1;
+        let err = chat_completion(&build_http_client(), &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("503"), "{err:#}");
+        assert_eq!(log.lock().unwrap().len(), 2);
+
+        let (base, log) = serve(|_| Response::status(400)).await;
+        let p = provider(&base, ProviderKind::Generic);
+        chat_completion(&build_http_client(), &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_goes_quiet_is_stopped() {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+            let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{chunk}\r\n",
+                chunk.len()
+            );
+            sock.write_all(head.as_bytes()).await.unwrap();
+            // Then nothing, for longer than the timeout.
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            drop(sock);
+        });
+        let mut p = provider(&format!("http://{addr}"), ProviderKind::Generic);
+        p.timeout_secs = 1;
+        let mut text = String::new();
+        let err = chat_completion(
+            &build_http_client(),
+            &p,
+            vec![],
+            &[],
+            |d| {
+                if let Delta::Content(s) = d {
+                    text.push_str(s);
+                }
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(text, "Hi");
+        assert!(
+            format!("{err:#}").contains("sent nothing for 1 s"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn retry_waits() {
+        let mut h = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after(&h), None);
+        h.insert(reqwest::header::RETRY_AFTER, "7".parse().unwrap());
+        assert_eq!(retry_after(&h), Some(std::time::Duration::from_secs(7)));
+        h.insert(reqwest::header::RETRY_AFTER, "9999".parse().unwrap());
+        assert_eq!(retry_after(&h), Some(MAX_RETRY_WAIT));
+        h.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(retry_after(&h), Some(std::time::Duration::ZERO));
+        assert_eq!(backoff(0), std::time::Duration::from_secs(1));
+        assert_eq!(backoff(3), std::time::Duration::from_secs(8));
+        assert_eq!(backoff(40), std::time::Duration::from_secs(32));
+        assert!(retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!retryable_status(reqwest::StatusCode::UNAUTHORIZED));
     }
 
     #[tokio::test]
@@ -1599,6 +1821,7 @@ mod server_tests {
                 mime: "text/plain".into(),
                 text: Some("notes".into()),
                 data: None,
+                ..Default::default()
             },
         ];
         let msgs = to_api_messages("", &[m]);

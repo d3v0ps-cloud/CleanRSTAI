@@ -16,6 +16,8 @@ nav_order: 2
 |---|---|
 | Settings | `settings.json` (see [Where settings are stored](../settings/#where-settings-are-stored)) |
 | Conversations | one JSON file per chat in the `conversations` folder (command-line runs only with `--save` or the Save setting) |
+| Images attached to chats, or returned by tools | one file per image in the `attachments` folder, named by its SHA-256 and shared by every chat that has it; the chat's file holds only that name. Images no chat refers to any more are removed at startup once they are a day old. Project export files and shared HTML pages carry the images themselves |
+| Chat files that couldn't be read | renamed to `<name>.json.corrupt` in the `conversations` folder and named in a notice at startup, so nothing is lost; they aren't tried again |
 | API keys (including the web search key), header values, MCP environment variable values, OAuth tokens, remote access password, Cloudflare Tunnel token | the system keychain (on macOS, one item named `CleanRSTAI` / `secrets`) |
 | Compaction summaries, file diffs and undo checkpoints (the previous content of files that `write_file` and `edit_file` changed, for the latest 20 turns by default) | in the chat's file in the `conversations` folder |
 | Replies and turns kept as branches when they were regenerated or edited (the whole earlier version, as the chat was) | in the chat's file in the `conversations` folder |
