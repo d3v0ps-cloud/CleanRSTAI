@@ -605,7 +605,7 @@ impl ChatApp {
                     };
                     ui.horizontal(|ui| {
                         ui.add_space(10.0);
-                        ui.label(RichText::new(text).size(13.0).color(p.pencil));
+                        ui.label(RichText::new(text).size(theme::size::SMALL).color(p.pencil));
                     });
                 }
                 for idx in rows {
@@ -664,12 +664,12 @@ impl ChatApp {
             resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
             let t = chrome::hover_amount(ui, &resp);
             let painter = ui.painter();
-            painter.rect_filled(rect, 8, p.hover.gamma_multiply(t));
+            painter.rect_filled(rect, theme::radius::MD, p.hover.gamma_multiply(t));
             let avatar = egui::Rect::from_center_size(
                 egui::pos2(rect.left() + 8.0 + 12.0, rect.center().y),
                 egui::Vec2::splat(24.0),
             );
-            painter.circle_filled(avatar.center(), 12.0, p.ink2);
+            painter.rect_filled(avatar, theme::radius::MD, p.selected);
             let initial: String = name
                 .chars()
                 .find(|c| c.is_alphanumeric())
@@ -679,19 +679,20 @@ impl ChatApp {
                 avatar.center(),
                 egui::Align2::CENTER_CENTER,
                 initial,
-                egui::FontId::proportional(12.0),
-                p.shelf,
+                egui::FontId::proportional(theme::size::SMALL),
+                p.ink,
             );
             let mut job = egui::text::LayoutJob::default();
             job.append(
                 &name,
                 0.0,
-                egui::TextFormat::simple(egui::FontId::proportional(14.0), p.ink),
+                egui::TextFormat::simple(egui::FontId::proportional(theme::size::UI), p.ink),
             );
+            // The provider is a name, so it is set in mono like the model beside the composer.
             job.append(
-                &format!(" · {plan}"),
-                0.0,
-                egui::TextFormat::simple(egui::FontId::proportional(13.0), p.pencil),
+                &plan,
+                8.0,
+                egui::TextFormat::simple(egui::FontId::monospace(theme::size::SMALL), p.pencil),
             );
             let text_left = avatar.right() + 10.0;
             job.wrap = egui::text::TextWrapping::truncate_at_width(
@@ -704,7 +705,7 @@ impl ChatApp {
                 egui::pos2(rect.right() - 10.0, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
                 icon::CARET_DOWN,
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(theme::size::MICRO),
                 p.pencil,
             );
             egui::Popup::menu(&resp)
@@ -789,7 +790,7 @@ impl ChatApp {
             };
             let device = ui
                 .add(
-                    egui::Button::new(RichText::new(icon::LAPTOP).size(17.0).color(tint))
+                    egui::Button::new(RichText::new(icon::LAPTOP).size(theme::size::ICON).color(tint))
                         .frame_when_inactive(false)
                         .min_size(egui::vec2(30.0, 30.0)),
                 )
@@ -873,12 +874,16 @@ impl ChatApp {
     fn recent_artifacts(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui.visuals().dark_mode);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Recent artifacts").size(13.0).color(p.pencil));
+            ui.label(theme::caps("Recent artifacts", p.pencil));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(RichText::new("View all").size(13.0).color(p.pencil))
-                            .frame_when_inactive(false),
+                        egui::Button::new(
+                            RichText::new("View all")
+                                .size(theme::size::SMALL)
+                                .color(p.pencil),
+                        )
+                        .frame_when_inactive(false),
                     )
                     .clicked()
                 {
@@ -917,26 +922,22 @@ impl ChatApp {
 
     // ------------------------------------------------------------------ pages
 
-    /// A page's serif heading, with buttons on the right.
+    /// A page's heading, with buttons on the right.
     pub(super) fn page_heading(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
         let p = theme::palette(ui.visuals().dark_mode);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(title).font(theme::serif(30.0)).color(p.ink));
+            ui.label(theme::display(title, theme::size::HEADING).color(p.ink));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
         });
         ui.add_space(16.0);
     }
 
-    /// An empty page's serif line and a muted explanation.
+    /// An empty page's headline and a muted explanation.
     pub(super) fn empty_state(ui: &mut egui::Ui, headline: &str, text: &str) {
         let p = theme::palette(ui.visuals().dark_mode);
         ui.add_space(48.0);
         ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new(headline)
-                    .font(theme::serif(24.0))
-                    .color(p.ink),
-            );
+            ui.label(theme::display(headline, theme::size::TITLE).color(p.ink));
             ui.add_space(6.0);
             ui.label(RichText::new(text).color(p.pencil));
         });
@@ -1022,27 +1023,35 @@ impl ChatApp {
                         egui::Frame::new()
                             .fill(p.raised)
                             .stroke(egui::Stroke::new(1.0, p.hairline))
-                            .corner_radius(12)
+                            .corner_radius(theme::radius::LG)
                             .inner_margin(egui::Margin::symmetric(14, 12))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(icon::FOLDERS).size(18.0).color(p.ink2));
-                                    ui.label(RichText::new(&name).size(16.0).color(p.ink));
+                                    ui.label(
+                                        RichText::new(icon::FOLDERS)
+                                            .size(theme::size::ICON_LG)
+                                            .color(p.ink2),
+                                    );
+                                    ui.label(
+                                        RichText::new(&name)
+                                            .size(theme::size::READING)
+                                            .color(p.ink),
+                                    );
                                     ui.label(
                                         RichText::new(format!(
                                             "{} chat{}",
                                             chats.len(),
                                             if chats.len() == 1 { "" } else { "s" }
                                         ))
-                                        .size(13.0)
+                                        .size(theme::size::SMALL)
                                         .color(p.pencil),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             ui.menu_button(
-                                                RichText::new(icon::DOTS).size(16.0),
+                                                RichText::new(icon::DOTS).size(theme::size::ICON),
                                                 |ui| {
                                                     if ui
                                                         .button(theme::labelled(
@@ -1094,7 +1103,7 @@ impl ChatApp {
                                     ui.add(
                                         egui::Label::new(
                                             RichText::new(meta.join("   ·   "))
-                                                .size(13.0)
+                                                .size(theme::size::SMALL)
                                                 .color(p.pencil),
                                         )
                                         .truncate(),
@@ -1116,7 +1125,7 @@ impl ChatApp {
                                                     } else {
                                                         format!("Show all {}", chats.len())
                                                     })
-                                                    .size(13.0)
+                                                    .size(theme::size::SMALL)
                                                     .color(p.pencil),
                                                 )
                                                 .frame_when_inactive(false),
@@ -1238,7 +1247,7 @@ impl ChatApp {
             p.pencil
         };
         let text = RichText::new(format!("{glyph}  {label}  {}", icon::CARET_DOWN))
-            .size(13.0)
+            .size(theme::size::SMALL)
             .color(color);
         let recent = self.recent_folders(5);
         let projects: Vec<(Uuid, String)> = if self.settings.general.projects.enabled {
@@ -1340,7 +1349,7 @@ impl ChatApp {
         let sandbox_on = self.settings.sandbox.enabled;
         let current = permissions.mode.effective(plan_on);
         let text = RichText::new(format!("{}  {}", mode_short(current), icon::CARET_DOWN))
-            .size(13.0)
+            .size(theme::size::SMALL)
             .color(p.pencil);
         ui.menu_button(text, |ui| {
             crate::ui::widgets::permissions_list(ui, &mut permissions, sandbox_on, plan_on);
@@ -1508,7 +1517,7 @@ impl ChatApp {
                 egui::Frame::new()
                     .fill(p.shelf)
                     .stroke(egui::Stroke::new(1.0, p.outline))
-                    .corner_radius(14),
+                    .corner_radius(theme::radius::XL),
             );
         let layer = egui::LayerId::new(egui::Order::Foreground, id);
         let scale = 0.98 + 0.02 * ease;
@@ -1562,7 +1571,7 @@ fn artifact_card(ui: &mut egui::Ui, found: &Found, size: egui::Vec2, n: usize) -
         egui::pos2(rect.right() - 6.0, rect.bottom() - 50.0),
     );
     let painter = ui.painter();
-    painter.rect_filled(thumb, 8, p.paper);
+    painter.rect_filled(thumb, theme::radius::MD, p.paper);
     let inner = thumb.shrink(8.0);
     match a.kind {
         Kind::Svg => {
@@ -1603,19 +1612,19 @@ fn artifact_card(ui: &mut egui::Ui, found: &Found, size: egui::Vec2, n: usize) -
         egui::pos2(thumb.right() - 26.0, thumb.top() + 6.0),
         egui::vec2(20.0, 20.0),
     );
-    painter.rect_filled(badge, 6, p.raised);
+    painter.rect_filled(badge, theme::radius::SM, p.raised);
     painter.text(
         badge.center(),
         egui::Align2::CENTER_CENTER,
         glyph,
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(theme::size::SMALL),
         p.ink2,
     );
     let text_left = rect.left() + 12.0;
     let text_w = rect.width() - 24.0;
     let mut job = egui::text::LayoutJob::single_section(
         a.title.clone(),
-        egui::TextFormat::simple(egui::FontId::proportional(14.0), p.ink),
+        egui::TextFormat::simple(egui::FontId::proportional(theme::size::UI), p.ink),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
@@ -1627,7 +1636,7 @@ fn artifact_card(ui: &mut egui::Ui, found: &Found, size: egui::Vec2, n: usize) -
     );
     let mut job = egui::text::LayoutJob::single_section(
         format!("{date} · {}", found.chat),
-        egui::TextFormat::simple(egui::FontId::proportional(12.0), p.pencil),
+        egui::TextFormat::simple(egui::FontId::proportional(theme::size::SMALL), p.pencil),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));

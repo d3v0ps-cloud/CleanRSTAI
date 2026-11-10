@@ -51,7 +51,7 @@ pub fn centered_at<R>(ui: &mut egui::Ui, max: f32, add: impl FnOnce(&mut egui::U
 fn card<R>(ui: &mut egui::Ui, stroke: egui::Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0, stroke))
-        .corner_radius(10)
+        .corner_radius(theme::radius::LG)
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -191,6 +191,7 @@ pub fn show(
                                     artifacts: v.artifacts,
                                     open_artifact: v.open_artifact,
                                     last: Some(i) == last_assistant && v.run.is_none(),
+                                    mid_turn: mid_turn(&conv.messages, i),
                                     undo: undo_at.get(&i).copied(),
                                     read_aloud: v.voice_out,
                                     speaking: v.speaking == Some(i),
@@ -203,7 +204,13 @@ pub fn show(
                             );
                         }
                     }
-                    ui.add_space(18.0);
+                    // The steps of one reply sit closer together than separate turns.
+                    let gap = if msg.role == Role::Assistant && mid_turn(&conv.messages, i) {
+                        8.0
+                    } else {
+                        18.0
+                    };
+                    ui.add_space(gap);
                 }
                 if v.plan_ready {
                     plan_buttons(ui, conv.id, &mut actions);
@@ -274,8 +281,9 @@ fn user_message(
     ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
         egui::Frame::new()
             .fill(p.raised)
-            .corner_radius(14)
-            .inner_margin(egui::Margin::symmetric(margin as i8, 10))
+            .stroke(egui::Stroke::new(1.0, p.hairline))
+            .corner_radius(theme::radius::LG)
+            .inner_margin(egui::Margin::symmetric(margin as i8, 8))
             .show(ui, |ui| {
                 // Narrow the (right-aligned) frame first, then lay the content out from its left.
                 ui.set_width(width);
@@ -369,6 +377,8 @@ struct AssistantCtx<'a> {
     open_artifact: Option<(usize, usize)>,
     /// The final reply: show Regenerate.
     last: bool,
+    /// A step of a longer reply (see [`mid_turn`]): its action row is left out.
+    mid_turn: bool,
     /// The last reply of a turn whose file edits can be undone: how many.
     undo: Option<usize>,
     /// Show the Read aloud button, and whether this reply is being read now.
@@ -379,6 +389,15 @@ struct AssistantCtx<'a> {
     /// The message's other versions can be switched to now (no reply runs or waits).
     switchable: bool,
     save_as: SaveAsSettings,
+}
+
+/// Whether the assistant message at `i` is a step of a longer reply: another assistant message
+/// follows it before the next user message (it called tools and the model went on).
+fn mid_turn(messages: &[ChatMessage], i: usize) -> bool {
+    messages[i + 1..]
+        .iter()
+        .take_while(|m| m.role != Role::User)
+        .any(|m| m.role == Role::Assistant)
 }
 
 fn assistant_message(
@@ -474,7 +493,20 @@ fn assistant_body(
         }
         tool_card(ui, images, cx.conv, call, result, cx.run, actions);
     }
-    if !cx.streaming && (!msg.content.is_empty() || msg.stats.is_some()) {
+    if cx.mid_turn {
+        // A step of a longer reply: the reply's actions come once, under its last message.
+        // The version arrows stay, since a regenerated reply keeps its versions on its first
+        // message, and so does the request's stats line.
+        let stats = msg.stats.as_ref().filter(|_| cx.show_stats);
+        if !cx.streaming && (cx.versions.1 > 1 || stats.is_some()) {
+            ui.horizontal(|ui| {
+                branch_arrows(ui, cx.conv, cx.idx, cx.versions, cx.switchable, actions);
+                if let Some(s) = stats {
+                    super::stats_view::request_line(ui, s);
+                }
+            });
+        }
+    } else if !cx.streaming && (!msg.content.is_empty() || msg.stats.is_some()) {
         ui.horizontal(|ui| {
             let mut items = Vec::new();
             if !msg.content.is_empty() {
@@ -554,9 +586,15 @@ pub fn save_as_menu(
         return;
     }
     let pencil = theme::palette(ui.visuals().dark_mode).pencil;
-    ui.menu_button(
-        RichText::new(icon::DOWNLOAD).size(15.0).color(pencil),
-        |ui| {
+    // Frameless, like the other icons in the reply's action row.
+    let button = egui::Button::new(
+        RichText::new(icon::DOWNLOAD)
+            .size(theme::size::ICON)
+            .color(pencil),
+    )
+    .frame_when_inactive(false);
+    egui::containers::menu::MenuButton::from_button(button)
+        .ui(ui, |ui| {
             for format in formats {
                 if ui.button(format.label()).clicked() {
                     actions.push(Action::SaveAs {
@@ -568,10 +606,9 @@ pub fn save_as_menu(
                     ui.close();
                 }
             }
-        },
-    )
-    .response
-    .on_hover_text("Save as…");
+        })
+        .0
+        .on_hover_text("Save as…");
 }
 
 /// What the provider's own web search cited for a reply: a small expander with the links
@@ -717,7 +754,11 @@ fn tool_card(
                     if running {
                         ui.spinner();
                     }
-                    ui.label(RichText::new(icon::TOOL).color(p.pencil));
+                    // A finished call shows its check in the accent; the rest the tool glyph.
+                    match result {
+                        Some(r) if !r.is_error => ui.label(RichText::new(icon::OK).color(p.ok)),
+                        _ => ui.label(RichText::new(icon::TOOL).color(p.pencil)),
+                    };
                     ui.label(RichText::new(tools::display_name(&call.name)).color(p.ink));
                     ui.label(RichText::new(status).small().color(color));
                     if let Some(e) = result.and_then(|r| r.edit.as_ref()) {
@@ -740,7 +781,12 @@ fn tool_card(
                         args_preview(&call.arguments)
                     };
                     if !preview.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(preview).small().weak()).truncate());
+                        ui.add(
+                            egui::Label::new(
+                                theme::mono(preview, theme::size::SMALL).color(p.pencil),
+                            )
+                            .truncate(),
+                        );
                     }
                 })
                 .body(|ui| {
@@ -1025,7 +1071,7 @@ fn subagent_list(ui: &mut egui::Ui, call_id: &str, reports: &[SubagentReport]) {
                     );
                     egui::Frame::new()
                         .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(8)
+                        .corner_radius(theme::radius::MD)
                         .inner_margin(8)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -1072,7 +1118,7 @@ fn error_box(ui: &mut egui::Ui, err: &str, retry: Option<Uuid>, actions: &mut Ve
     });
 }
 
-/// The new-chat greeting, "Good evening, Aaron", in the serif with a time-of-day icon.
+/// The new-chat greeting, "Good evening, Aaron", with the brand mark.
 /// The greeting's words for a weekday and hour: "Happy Friday, Aaron", "Good morning", …
 pub fn greeting_text(
     weekday: chrono::Weekday,
@@ -1120,7 +1166,7 @@ pub fn short_date(
     }
 }
 
-/// The home screen's greeting: the brand mark and one serif line, centred.
+/// The home screen's greeting: the brand mark and one semibold line, centred.
 pub fn greeting(ui: &mut egui::Ui, name: Option<&str>, code: bool) {
     let p = theme::palette(ui.visuals().dark_mode);
     let now = chrono::Local::now();
@@ -1130,9 +1176,13 @@ pub fn greeting(ui: &mut egui::Ui, name: Option<&str>, code: bool) {
         name,
         code,
     );
-    let font = theme::serif(34.0);
-    let mark = 30.0;
-    let galley = ui.ctx().fonts_mut(|f| f.layout_no_wrap(text, font, p.ink));
+    let mark = 26.0;
+    let mut format =
+        egui::TextFormat::simple(egui::FontId::proportional(theme::size::DISPLAY), p.ink);
+    format.coords.push("wght", theme::SEMIBOLD);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&text, 0.0, format);
+    let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
     let width = galley.size().x + mark + 14.0;
     let height = galley.size().y.max(mark);
     let (rect, _) = ui.allocate_exact_size(
@@ -1155,6 +1205,25 @@ pub fn greeting(ui: &mut egui::Ui, name: Option<&str>, code: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_last_message_of_a_reply_is_not_mid_turn() {
+        let m = |role| ChatMessage::new(role, "x");
+        // user, a tool round (assistant + result), the answer, then a second turn.
+        let messages = [
+            m(Role::User),
+            m(Role::Assistant),
+            m(Role::Tool),
+            m(Role::Assistant),
+            m(Role::User),
+            m(Role::Assistant),
+        ];
+        assert!(mid_turn(&messages, 1));
+        assert!(!mid_turn(&messages, 3), "the answer ends its turn");
+        assert!(!mid_turn(&messages, 5), "the last message of the chat");
+        // A reply that stopped after its tool call still gets its actions.
+        assert!(!mid_turn(&messages[..3], 1));
+    }
 
     #[test]
     fn greetings_follow_the_day_and_hour() {

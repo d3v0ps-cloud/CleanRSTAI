@@ -42,9 +42,9 @@
  * ------------------------------------------------------------------------- */
 
 @font-face {
-  font-family: "Instrument Sans";
-  src: url("/fonts/InstrumentSans.ttf") format("truetype");
-  font-weight: 100 900;
+  font-family: "IBM Plex Sans";
+  src: url("/fonts/IBMPlexSans-Variable.ttf") format("truetype");
+  font-weight: 100 700;
   font-style: normal;
   font-display: swap;
 }
@@ -72,58 +72,58 @@
 
 :root {
   color-scheme: light;
-  --paper: #faf9f5;      /* main background */
-  --shelf: #f3f1ea;      /* sidebar */
+  --paper: #f7f8fa;      /* main background */
+  --shelf: #edeff3;      /* sidebar */
   --raised: #ffffff;     /* composer, user messages, code, menus */
-  --selected: #e6e3d9;   /* selected chat, "New chat" row */
-  --ink: #1f1e1d;        /* primary text */
-  --ink2: #3d3c38;       /* chat titles, secondary text */
-  --pencil: #6f6c64;     /* muted text, labels, metadata */
-  --rule: #e3e0d7;       /* dividers */
-  --outline: #d3cfc4;    /* input and card outlines */
-  --signal: #9e5a38;     /* accent: links, focus ring, running dot */
-  --ok: #4c7632;
-  --warn: #94620f;
-  --error: #b03a2e;
-  --scrim: rgba(31, 30, 29, 0.35);
+  --selected: #dde1e8;   /* selected chat, "New chat" row */
+  --ink: #14181f;        /* primary text */
+  --ink2: #434c5a;       /* chat titles, secondary text */
+  --pencil: #5f6a7a;     /* muted text, labels, metadata */
+  --rule: #e1e5eb;       /* dividers */
+  --outline: #c9cfd9;    /* input and card outlines */
+  --signal: #0b6e49;     /* accent: links, focus ring, running dot */
+  --ok: #0b6e49;
+  --warn: #8a5a00;
+  --error: #b3261e;
+  --scrim: rgba(20, 24, 31, 0.35);
   --hover: color-mix(in srgb, var(--selected) 55%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --paper: #151515;
-    --shelf: #111111;
-    --raised: #20201f;
-    --selected: #353535;
-    --ink: #f0efed;
-    --ink2: #b9b9af;
-    --pencil: #8a8984;
-    --rule: #292929;
-    --outline: #4d4d4c;
-    --signal: #bc815f;
-    --ok: #8fb078;
-    --warn: #d9a85b;
-    --error: #e07a6a;
+    --paper: #12151a;
+    --shelf: #0c0e12;
+    --raised: #1a1e25;
+    --selected: #262b34;
+    --ink: #e7eaee;
+    --ink2: #aeb6c2;
+    --pencil: #8a94a3;
+    --rule: #262b34;
+    --outline: #343b47;
+    --signal: #4fd6a0;
+    --ok: #4fd6a0;
+    --warn: #e5b454;
+    --error: #f0857a;
     --scrim: rgba(0, 0, 0, 0.55);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --paper: #151515;
-  --shelf: #111111;
-  --raised: #20201f;
-  --selected: #353535;
-  --ink: #f0efed;
-  --ink2: #b9b9af;
-  --pencil: #8a8984;
-  --rule: #292929;
-  --outline: #4d4d4c;
-  --signal: #bc815f;
-  --ok: #8fb078;
-  --warn: #d9a85b;
-  --error: #e07a6a;
+  --paper: #12151a;
+  --shelf: #0c0e12;
+  --raised: #1a1e25;
+  --selected: #262b34;
+  --ink: #e7eaee;
+  --ink2: #aeb6c2;
+  --pencil: #8a94a3;
+  --rule: #262b34;
+  --outline: #343b47;
+  --signal: #4fd6a0;
+  --ok: #4fd6a0;
+  --warn: #e5b454;
+  --error: #f0857a;
   --scrim: rgba(0, 0, 0, 0.55);
 }
 
@@ -153,7 +153,7 @@ body {
   min-height: 100dvh;
   background: var(--paper);
   color: var(--ink);
-  font-family: "Instrument Sans", system-ui, sans-serif;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.5;
   overflow-x: hidden;
@@ -563,7 +563,7 @@ h6 {
   border-radius: 6px;
   background: transparent;
   color: var(--pencil);
-  font-family: "Instrument Sans", system-ui, sans-serif;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1;
   letter-spacing: 1px;

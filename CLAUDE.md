@@ -328,12 +328,17 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
 
 ## UI conventions
 
-- The look is dark first and flat: palette (including the translucent `hover`, `active` and
-  `hairline` tokens), fonts and widget styling live in `ui/theme.rs` (`theme::palette(dark)`).
-  Fonts are bundled in `assets/fonts` (Instrument Sans for the interface and replies, Newsreader
-  for the greeting and page headings via `theme::serif`, IBM Plex Mono for code, Phosphor for
-  icons; codepoints in `theme::icon`). The interface is 14px (`TextStyle::Body`); `markdown.rs`
-  sets `Body` to `theme::READING_SIZE` around reply prose. `theme::set_motion` sets the
+- The look ("Instrument") is dark first and flat: cool graphite greys with one signal green
+  accent (`signal`, with `on_signal` for text on it). Palette (including the translucent
+  `hover`, `active` and `hairline` tokens), fonts and widget styling live in `ui/theme.rs`
+  (`theme::palette(dark)`). Use `theme::radius::{SM, MD, LG, XL}` for corners and
+  `theme::size::*` for text and icon sizes instead of literals; `theme::display` makes
+  semibold headings, `theme::caps` the mono capital section labels, `theme::mono` names such as
+  models. Fonts are bundled in `assets/fonts` (the variable IBM Plex Sans for the interface and
+  replies, IBM Plex Mono for code and metadata, Phosphor for icons; codepoints in
+  `theme::icon`; the static Instrument Sans files are only for PDF export). The interface is
+  13px (`TextStyle::Body`); `markdown.rs` sets `Body` to `theme::READING_SIZE` (15px) around
+  reply prose. Only menus and windows cast a shadow. `theme::set_motion` sets the
   animation time (0 with `general.reduce_motion`).
 - `app.rs` has child modules that use `ChatApp`'s private fields: `app/events.rs`
   (`handle_events`, `handle_chat_event`), `app/remote.rs` (remote access: `sync_remote`,
@@ -354,13 +359,14 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
   and the 256 px `window-{light,dark}.png` that `theme::window_icon` embeds. The app swaps the
   window icon when the theme changes.
 - egui 0.37 takes button text from `TextStyle::Body`, so `Body` is the sans interface style;
-  prose uses `TextStyle::Body` (Instrument Sans), applied around markdown in `ui/markdown.rs`.
+  prose uses `TextStyle::Body` (IBM Plex Sans), applied around markdown in `ui/markdown.rs`.
 - `ui/markdown.rs` splits replies into markdown segments (rendered by `egui_commonmark`) and
   drawings: closed top-level ```` ```mermaid ```` / ```` ```svg ```` blocks and inline
   `<svg>`, rendered to SVG and shown through egui's SVG loader. Web images become links
   unless "Load web images in replies" is on.
 - `egui_commonmark_backend` is vendored in `vendor/` (via `[patch.crates-io]`) for real bold
-  text (the `wght` font axis) and the code-block copy button; changes are marked
+  text (the `wght` font axis), the code-block copy button and code blocks on the palette's own
+  surface; changes are marked
   `CleanRSTAI:` and listed in `vendor/egui_commonmark_backend/VENDORED.md`. Re-apply them when
   upgrading `egui_commonmark`.
 - Artifacts (`artifacts.rs`) are closed top-level fenced blocks in replies: html, svg, mermaid,

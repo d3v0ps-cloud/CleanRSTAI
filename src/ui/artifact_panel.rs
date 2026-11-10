@@ -247,7 +247,11 @@ pub fn show(
     let a = &artifacts[current];
     ui.add_space(10.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(kind_icon(a.kind)).size(18.0).color(p.signal));
+        ui.label(
+            RichText::new(kind_icon(a.kind))
+                .size(super::theme::size::ICON_LG)
+                .color(p.signal),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if icon_button(ui, icon::CLOSE, "Close the panel").clicked() {
                 actions.push(Action::CloseArtifact);
@@ -275,10 +279,14 @@ pub fn show(
             }
             // The rest of the row, from the left.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let title = egui::Button::new(RichText::new(&a.title).strong().size(15.0))
-                    .right_text(RichText::new(icon::CARET_DOWN).color(p.pencil))
-                    .frame(false)
-                    .truncate();
+                let title = egui::Button::new(
+                    RichText::new(&a.title)
+                        .strong()
+                        .size(super::theme::size::READING),
+                )
+                .right_text(RichText::new(icon::CARET_DOWN).color(p.pencil))
+                .frame(false)
+                .truncate();
                 egui::containers::menu::MenuButton::from_button(title)
                     .ui(ui, |ui| {
                         for (i, other) in artifacts.iter().enumerate() {

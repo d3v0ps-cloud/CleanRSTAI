@@ -189,9 +189,10 @@ too, as an installer and a portable `.exe`.
   run without asking), Allow all, Read only or Plan. In Plan, the model reads and proposes a
   numbered plan, and **Approve plan** under the reply carries it out in the chat's chosen mode.
   It can switch the terminal sandbox off for the chat.
-- **Interface**: dark first, flat and quiet: near-black neutral greys (or near-white ones),
-  hairline borders and one warm orange accent for the brand mark; Instrument Sans for the
-  interface and replies, Newsreader (a serif) for the greeting. A fixed sidebar (New, Search,
+- **Interface**: dark first, flat and precise: cool graphite greys (or near-white ones),
+  hairline borders and one signal green accent for what is live or primary (the send button,
+  switches that are on, the brand mark); IBM Plex Sans for the interface and replies, IBM Plex
+  Mono for code and for names such as models and tools. A fixed sidebar (New, Search,
   Projects, Artifacts, Scheduled, Customize, Recents and your name) with a title row for
   back/forward (⌘[ and ⌘]) and a **Chat / Code** switch (Code lists the chats with a working
   folder); on macOS the window has no title bar and the traffic lights sit in the sidebar. A new

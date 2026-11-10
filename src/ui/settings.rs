@@ -1035,7 +1035,7 @@ impl SettingsUi {
                 Tab::Background => "Background",
                 Tab::Voice => "Voice",
                 Tab::General => "General",
-            }).size(18.0).color(p.ink));
+            }).size(super::theme::size::TITLE).color(p.ink));
             ui.weak(match self.tab {
                 Tab::Appearance => "Theme, size, motion, your name, and how replies look.",
                 Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
@@ -1474,7 +1474,7 @@ fn search_pill(ui: &mut egui::Ui, text: &mut String) {
             1.0,
             if focused { p.pencil } else { p.hairline },
         ))
-        .corner_radius(16)
+        .corner_radius(super::theme::radius::MD)
         .inner_margin(egui::Margin::symmetric(10, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {

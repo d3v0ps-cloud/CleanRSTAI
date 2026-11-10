@@ -724,11 +724,8 @@ impl CodeBlock {
         let curr_theme = cache.curr_theme(ui, options);
         let style = ui.style_mut();
 
-        style.visuals.extreme_bg_color = curr_theme
-            .settings
-            .background
-            .map(syntect_color_to_egui)
-            .unwrap_or_else(|| style.visuals.extreme_bg_color);
+        // CleanRSTAI: code blocks keep the app's own surface (`extreme_bg_color`) instead of
+        // taking the syntax theme's background, so they match the palette in both themes.
 
         if let Some(color) = curr_theme.settings.selection_foreground {
             style.visuals.selection.bg_fill = syntect_color_to_egui(color);

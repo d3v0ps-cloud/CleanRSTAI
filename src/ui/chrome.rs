@@ -1,6 +1,7 @@
 //! The window's low-chrome building blocks: sidebar and settings navigation rows, the recents
 //! rows that fade out on the right, segmented toggles, text-style strip buttons, settings rows
 //! (label on the left, control on the right, hairline between), cards and the brand mark.
+//! Sizes and corners come from `theme::size` and `theme::radius`.
 //! Each draws a faint fill on hover that fades in over the style's animation time (none with
 //! "Reduce motion" on), and the app's focus ring shows keyboard focus.
 
@@ -8,8 +9,8 @@ use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Stroke, V
 
 use super::theme;
 
-/// The vertical pitch of sidebar rows: 32px tall plus 2px between.
-pub const ROW_HEIGHT: f32 = 32.0;
+/// The vertical pitch of sidebar rows: 30px tall plus 2px between.
+pub const ROW_HEIGHT: f32 = 30.0;
 pub const ROW_GAP: f32 = 2.0;
 
 /// How hovered (or keyboard-focused) a widget is, from 0 to 1, eased over the style's
@@ -55,9 +56,18 @@ pub fn nav_row(
         } else {
             Color32::TRANSPARENT
         };
-        painter.rect_filled(rect, 8, base);
+        painter.rect_filled(rect, theme::radius::MD, base);
         if t > 0.0 && !active {
-            painter.rect_filled(rect, 8, p.hover.gamma_multiply(t));
+            painter.rect_filled(rect, theme::radius::MD, p.hover.gamma_multiply(t));
+        }
+        if filled {
+            // The primary row is outlined, so it reads as a button among links.
+            painter.rect_stroke(
+                rect,
+                theme::radius::MD,
+                Stroke::new(1.0, p.hairline),
+                egui::StrokeKind::Inside,
+            );
         }
         let color = if active || filled {
             p.ink
@@ -68,14 +78,14 @@ pub fn nav_row(
             pos2(rect.left() + 10.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             icon,
-            egui::FontId::proportional(17.0),
+            egui::FontId::proportional(theme::size::ICON),
             color,
         );
         painter.text(
             pos2(rect.left() + 36.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(theme::size::UI),
             color,
         );
     }
@@ -106,7 +116,7 @@ pub fn recent_row(
     } else {
         p.hover.gamma_multiply(t)
     };
-    painter.rect_filled(rect, 8, fill);
+    painter.rect_filled(rect, theme::radius::MD, fill);
     let mark_w = if mark.is_some() { 22.0 } else { 0.0 };
     let text_left = rect.left() + 10.0;
     let text_right = rect.right() - 8.0 - mark_w;
@@ -117,7 +127,7 @@ pub fn recent_row(
     };
     let mut job = egui::text::LayoutJob::single_section(
         title.to_owned(),
-        egui::TextFormat::simple(egui::FontId::proportional(14.0), color),
+        egui::TextFormat::simple(egui::FontId::proportional(theme::size::UI), color),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(10.0));
     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
@@ -158,13 +168,13 @@ fn fade_right(painter: &egui::Painter, rect: Rect, bg: Color32) {
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// A small muted section label, e.g. "Recents" or "Preferences".
+/// A small muted section label in mono capitals, e.g. "RECENTS" or "PREFERENCES".
 pub fn section_label(ui: &mut egui::Ui, text: &str) {
     let p = theme::palette(ui.visuals().dark_mode);
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.add_space(10.0);
-        ui.label(RichText::new(text).size(12.0).color(p.pencil));
+        ui.label(theme::caps(text, p.pencil));
     });
     ui.add_space(2.0);
 }
@@ -178,7 +188,11 @@ pub fn disclosure(ui: &mut egui::Ui, text: &str, open: bool) -> egui::Response {
     let t = hover_amount(ui, &resp);
     let color = p.pencil.lerp_to_gamma(p.ink2, t);
     let painter = ui.painter();
-    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), color);
+    let mut job = egui::text::LayoutJob::default();
+    let mut format = egui::TextFormat::simple(egui::FontId::monospace(theme::size::MICRO), color);
+    format.extra_letter_spacing = 0.9;
+    job.append(&text.to_uppercase(), 0.0, format);
+    let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
     let pos = pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
     let width = galley.size().x;
     painter.galley(pos, galley, color);
@@ -203,7 +217,7 @@ pub fn ghost_icon(ui: &mut egui::Ui, icon: &str, hover: &str, on: bool) -> egui:
     let color = if on { p.signal } else { p.ink2 };
     let resp = ui
         .add(
-            egui::Button::new(RichText::new(icon).size(17.0).color(color))
+            egui::Button::new(RichText::new(icon).size(theme::size::ICON).color(color))
                 .frame_when_inactive(on)
                 .fill(if on { p.active } else { Color32::TRANSPARENT })
                 .min_size(vec2(28.0, 28.0)),
@@ -225,7 +239,7 @@ pub fn segmented<T: PartialEq + Copy>(
     let mut changed = false;
     egui::Frame::new()
         .stroke(Stroke::new(1.0, p.hairline))
-        .corner_radius(8)
+        .corner_radius(theme::radius::MD)
         .inner_margin(2)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -234,16 +248,18 @@ pub fn segmented<T: PartialEq + Copy>(
                     let on = *value == *option;
                     let resp = ui
                         .add(
-                            egui::Button::new(RichText::new(*glyph).size(15.0).color(if on {
-                                p.ink
-                            } else {
-                                p.pencil
-                            }))
+                            egui::Button::new(
+                                RichText::new(*glyph).size(theme::size::ICON).color(if on {
+                                    p.ink
+                                } else {
+                                    p.pencil
+                                }),
+                            )
                             .frame_when_inactive(on)
                             .fill(if on { p.active } else { Color32::TRANSPARENT })
                             .stroke(Stroke::NONE)
-                            .corner_radius(6)
-                            .min_size(vec2(28.0, 24.0)),
+                            .corner_radius(theme::radius::SM)
+                            .min_size(vec2(28.0, 22.0)),
                         )
                         .on_hover_text(*tip);
                     let label = (*tip).to_owned();
@@ -260,7 +276,7 @@ pub fn segmented<T: PartialEq + Copy>(
     changed
 }
 
-/// One settings row, about 53px: the label (and a muted description under it) on the left,
+/// One settings row, about 46px (56px with a description): the label (and a muted description under it) on the left,
 /// the control on the right, a hairline underneath.
 pub fn setting_row(
     ui: &mut egui::Ui,
@@ -270,7 +286,7 @@ pub fn setting_row(
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
     let width = ui.available_width();
-    let height = if description.is_empty() { 53.0 } else { 60.0 };
+    let height = if description.is_empty() { 46.0 } else { 56.0 };
     ui.allocate_ui_with_layout(
         vec2(width, height),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -280,11 +296,15 @@ pub fn setting_row(
                 ui.set_max_width(width * 0.58);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 // Centre the label (and description) on the row.
-                let text = if description.is_empty() { 18.0 } else { 38.0 };
+                let text = if description.is_empty() { 17.0 } else { 36.0 };
                 ui.add_space(((height - text) / 2.0).max(0.0));
-                ui.label(RichText::new(label).size(14.0).color(p.ink));
+                ui.label(RichText::new(label).size(theme::size::UI).color(p.ink));
                 if !description.is_empty() {
-                    ui.label(RichText::new(description).size(12.5).color(p.pencil));
+                    ui.label(
+                        RichText::new(description)
+                            .size(theme::size::SMALL)
+                            .color(p.pencil),
+                    );
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
@@ -296,14 +316,14 @@ pub fn setting_row(
     ui.add_space(1.0);
 }
 
-/// A card's frame: slightly raised, hairline border that firms up on hover, 12px corners.
+/// A card's frame: slightly raised, hairline border that firms up on hover.
 pub fn card_frame(ui: &egui::Ui, rect: Rect, hover: f32) {
     let p = theme::palette(ui.visuals().dark_mode);
     let border = p.hairline.lerp_to_gamma(p.outline, hover);
     let fill = over(p.hover.gamma_multiply(hover), p.raised);
     ui.painter().rect(
         rect,
-        CornerRadius::same(12),
+        CornerRadius::same(theme::radius::LG),
         fill,
         Stroke::new(1.0, border),
         egui::StrokeKind::Inside,
@@ -346,7 +366,7 @@ pub fn paint_brand_mark(painter: &egui::Painter, rect: Rect, color: Color32) {
 /// An on/off switch, drawn as a small pill with a knob.
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let p = theme::palette(ui.visuals().dark_mode);
-    let size = egui::vec2(34.0, 20.0);
+    let size = egui::vec2(32.0, 18.0);
     let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.clicked() {
         *on = !*on;
@@ -355,13 +375,13 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let value = *on;
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, value, ""));
     let t = ui.ctx().animate_bool(resp.id, *on);
-    let track = p.selected.lerp_to_gamma(p.signal, t);
-    ui.painter().rect_filled(rect, 10, track);
-    let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
+    let track = p.outline.lerp_to_gamma(p.signal, t);
+    ui.painter().rect_filled(rect, 9, track);
+    let x = egui::lerp((rect.left() + 9.0)..=(rect.right() - 9.0), t);
     ui.painter().circle_filled(
         egui::pos2(x, rect.center().y),
         7.0,
-        p.ink.lerp_to_gamma(egui::Color32::WHITE, t),
+        p.ink2.lerp_to_gamma(p.on_signal, t),
     );
     resp
 }

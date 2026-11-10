@@ -1,8 +1,9 @@
-//! Visual design: dark first, flat and quiet. Near-black neutral greys (or near-white ones in
-//! the light theme) carry the hierarchy, with one warm orange accent kept mostly for the brand
-//! glyph. Instrument Sans for the interface and the model's replies, Newsreader (a serif) for
-//! the greeting and empty-state headlines, IBM Plex Mono for code. 8px corners on rows and
-//! buttons, 12px on cards, 14px on the composer and modals; hairline borders, no shadows.
+//! Visual design ("Instrument"): dark first, flat and precise. Cool graphite neutrals carry the
+//! hierarchy (the sidebar is the darkest surface, raised ones the lightest), with one signal
+//! green accent for what is live or primary: the send button, switches that are on, the brand
+//! glyph. IBM Plex Sans for the interface and the model's replies, IBM Plex Mono for code and
+//! for metadata (model names, tool names, section labels). Corners come from [`radius`], text
+//! sizes from [`size`]; hairline borders, and a shadow only under what floats (menus, modals).
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
@@ -85,9 +86,63 @@ pub mod icon {
     pub const DOTS: &str = "\u{E1FE}";
 }
 
-/// The serif display face (Newsreader), for the greeting and empty-state headlines only.
-pub fn serif(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("serif".into()))
+/// Corner radii. Use these instead of literals so the app's shapes stay one family.
+pub mod radius {
+    /// Inline code, segments inside a control, small badges.
+    pub const SM: u8 = 4;
+    /// Rows, buttons and inputs.
+    pub const MD: u8 = 6;
+    /// Cards, the composer, code blocks and menus.
+    pub const LG: u8 = 8;
+    /// Windows and modals.
+    pub const XL: u8 = 10;
+}
+
+/// The type scale, in points. The interface is [`UI`](size::UI); replies read at
+/// [`READING`](size::READING).
+pub mod size {
+    /// Mono section labels and badges.
+    pub const MICRO: f32 = 11.0;
+    /// Metadata, hints, descriptions.
+    pub const SMALL: f32 = 12.0;
+    /// The interface: rows, buttons, inputs.
+    pub const UI: f32 = 13.0;
+    /// Reply prose and the message box.
+    pub const READING: f32 = 15.0;
+    /// Section and dialog titles.
+    pub const TITLE: f32 = 18.0;
+    /// Icons in rows, buttons and toolbars.
+    pub const ICON: f32 = 16.0;
+    /// Icons that head a card or stand alone.
+    pub const ICON_LG: f32 = 18.0;
+    /// Page headings.
+    pub const HEADING: f32 = 24.0;
+    /// The home screen's line.
+    pub const DISPLAY: f32 = 28.0;
+}
+
+/// The weight of headings and emphasised labels on the interface font's `wght` axis.
+pub const SEMIBOLD: f32 = 600.0;
+
+/// A heading in the interface sans at semibold: page titles and the home screen's line.
+pub fn display(text: impl Into<String>, size: f32) -> egui::RichText {
+    egui::RichText::new(text)
+        .size(size)
+        .variation("wght", SEMIBOLD)
+}
+
+/// A small mono label in capitals with open tracking: "RECENTS", "TOOLS". For section labels
+/// and other metadata that names a group rather than says something.
+pub fn caps(text: &str, color: Color32) -> egui::RichText {
+    egui::RichText::new(text.to_uppercase())
+        .font(FontId::monospace(size::MICRO))
+        .extra_letter_spacing(0.9)
+        .color(color)
+}
+
+/// Mono text for metadata that is literally a name: models, tools, paths.
+pub fn mono(text: impl Into<String>, size: f32) -> egui::RichText {
+    egui::RichText::new(text).font(FontId::monospace(size))
 }
 
 /// The colours of one mode. Every text colour (ink to error) reads at WCAG AA contrast,
@@ -112,8 +167,10 @@ pub struct Palette {
     pub rule: Color32,
     /// Outlines of inputs and cards.
     pub outline: Color32,
-    /// The accent: icons that need a touch of colour, the send button, links.
+    /// The accent: what is live or primary. The send button, switches that are on, links.
     pub signal: Color32,
+    /// Text and icons drawn on a `signal` fill.
+    pub on_signal: Color32,
     pub ok: Color32,
     pub warn: Color32,
     pub error: Color32,
@@ -141,43 +198,43 @@ pub fn window_icon(dark: bool) -> std::sync::Arc<egui::IconData> {
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
-            paper: Color32::from_rgb(0x1A, 0x1A, 0x1A),
-            shelf: Color32::from_rgb(0x1E, 0x1E, 0x1E),
-            raised: Color32::from_rgb(0x2A, 0x2A, 0x2A),
-            selected: Color32::from_rgb(0x35, 0x35, 0x35),
-            ink: Color32::from_rgb(0xEC, 0xEC, 0xEC),
-            ink2: Color32::from_rgb(0xA1, 0xA1, 0xA1),
-            // The spec's #6f6f6f tertiary reads at about 3:1 on the composer; this keeps
-            // placeholders and hints at AA.
-            pencil: Color32::from_rgb(0x94, 0x94, 0x94),
-            rule: Color32::from_rgb(0x2E, 0x2E, 0x2E),
-            outline: Color32::from_rgb(0x3A, 0x3A, 0x3A),
-            signal: Color32::from_rgb(0xD9, 0x77, 0x57),
-            ok: Color32::from_rgb(0x8F, 0xB0, 0x78),
-            warn: Color32::from_rgb(0xD9, 0xA8, 0x5B),
-            error: Color32::from_rgb(0xE0, 0x7A, 0x6A),
-            hover: Color32::from_white_alpha(15),
-            active: Color32::from_white_alpha(26),
-            hairline: Color32::from_white_alpha(20),
+            paper: Color32::from_rgb(0x12, 0x15, 0x1A),
+            shelf: Color32::from_rgb(0x0C, 0x0E, 0x12),
+            raised: Color32::from_rgb(0x1A, 0x1E, 0x25),
+            selected: Color32::from_rgb(0x26, 0x2B, 0x34),
+            ink: Color32::from_rgb(0xE7, 0xEA, 0xEE),
+            ink2: Color32::from_rgb(0xAE, 0xB6, 0xC2),
+            pencil: Color32::from_rgb(0x8A, 0x94, 0xA3),
+            rule: Color32::from_rgb(0x26, 0x2B, 0x34),
+            outline: Color32::from_rgb(0x34, 0x3B, 0x47),
+            signal: Color32::from_rgb(0x4F, 0xD6, 0xA0),
+            on_signal: Color32::from_rgb(0x0C, 0x0E, 0x12),
+            ok: Color32::from_rgb(0x4F, 0xD6, 0xA0),
+            warn: Color32::from_rgb(0xE5, 0xB4, 0x54),
+            error: Color32::from_rgb(0xF0, 0x85, 0x7A),
+            hover: Color32::from_white_alpha(12),
+            active: Color32::from_white_alpha(22),
+            hairline: Color32::from_white_alpha(22),
         }
     } else {
         Palette {
-            paper: Color32::from_rgb(0xFA, 0xFA, 0xFA),
-            shelf: Color32::from_rgb(0xF3, 0xF3, 0xF3),
+            paper: Color32::from_rgb(0xF7, 0xF8, 0xFA),
+            shelf: Color32::from_rgb(0xED, 0xEF, 0xF3),
             raised: Color32::from_rgb(0xFF, 0xFF, 0xFF),
-            selected: Color32::from_rgb(0xE4, 0xE4, 0xE4),
-            ink: Color32::from_rgb(0x1A, 0x1A, 0x1A),
-            ink2: Color32::from_rgb(0x4A, 0x4A, 0x4A),
-            pencil: Color32::from_rgb(0x6B, 0x6B, 0x6B),
-            rule: Color32::from_rgb(0xE6, 0xE6, 0xE6),
-            outline: Color32::from_rgb(0xD4, 0xD4, 0xD4),
-            signal: Color32::from_rgb(0xB0, 0x4E, 0x2C),
-            ok: Color32::from_rgb(0x4C, 0x76, 0x32),
-            warn: Color32::from_rgb(0x94, 0x62, 0x0F),
-            error: Color32::from_rgb(0xB0, 0x3A, 0x2E),
+            selected: Color32::from_rgb(0xDD, 0xE1, 0xE8),
+            ink: Color32::from_rgb(0x14, 0x18, 0x1F),
+            ink2: Color32::from_rgb(0x43, 0x4C, 0x5A),
+            pencil: Color32::from_rgb(0x5F, 0x6A, 0x7A),
+            rule: Color32::from_rgb(0xE1, 0xE5, 0xEB),
+            outline: Color32::from_rgb(0xC9, 0xCF, 0xD9),
+            signal: Color32::from_rgb(0x0B, 0x6E, 0x49),
+            on_signal: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            ok: Color32::from_rgb(0x0B, 0x6E, 0x49),
+            warn: Color32::from_rgb(0x8A, 0x5A, 0x00),
+            error: Color32::from_rgb(0xB3, 0x26, 0x1E),
             hover: Color32::from_black_alpha(10),
             active: Color32::from_black_alpha(20),
-            hairline: Color32::from_black_alpha(22),
+            hairline: Color32::from_black_alpha(24),
         }
     }
 }
@@ -196,11 +253,11 @@ pub fn reading() -> TextStyle {
     TextStyle::Body
 }
 
-/// Replies read at 16px; the interface around them is 14px.
-pub const READING_SIZE: f32 = 16.0;
+/// Replies read at 15px; the interface around them is 13px.
+pub const READING_SIZE: f32 = size::READING;
 
-/// Instrument Sans for the interface and prose, Plex Mono for code, and
-/// Phosphor icons as a fallback for each.
+/// IBM Plex Sans (the variable font, for its weight axis) for the interface and prose, Plex
+/// Mono for code and metadata, and Phosphor icons as a fallback for each.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut add = |name: &str, bytes: &'static [u8]| {
@@ -209,8 +266,8 @@ pub fn install_fonts(ctx: &egui::Context) {
             .insert(name.to_owned(), egui::FontData::from_static(bytes).into());
     };
     add(
-        "instrument-sans",
-        include_bytes!("../../assets/fonts/InstrumentSans.ttf"),
+        "plex-sans",
+        include_bytes!("../../assets/fonts/IBMPlexSans-Variable.ttf"),
     );
     add(
         "plex-mono",
@@ -220,19 +277,11 @@ pub fn install_fonts(ctx: &egui::Context) {
         "phosphor",
         include_bytes!("../../assets/fonts/Phosphor.ttf"),
     );
-    add(
-        "newsreader",
-        include_bytes!("../../assets/fonts/Newsreader-Latin.ttf"),
-    );
-    add(
-        "newsreader-ext",
-        include_bytes!("../../assets/fonts/Newsreader-LatinExt.ttf"),
-    );
     // egui's defaults stay last, for scripts and emoji these fonts don't cover.
     let families = [
         (
             FontFamily::Proportional,
-            "instrument-sans",
+            "plex-sans",
             FontFamily::Proportional,
         ),
         (FontFamily::Monospace, "plex-mono", FontFamily::Monospace),
@@ -248,18 +297,6 @@ pub fn install_fonts(ctx: &egui::Context) {
     for (family, list) in lists {
         fonts.families.insert(family, list);
     }
-    // The display serif falls back to the interface sans for anything it doesn't cover.
-    let mut serif = vec!["newsreader".to_owned(), "newsreader-ext".to_owned()];
-    serif.extend(
-        fonts
-            .families
-            .get(&FontFamily::Proportional)
-            .cloned()
-            .unwrap_or_default(),
-    );
-    fonts
-        .families
-        .insert(FontFamily::Name("serif".into()), serif);
     ctx.set_fonts(fonts);
 }
 
@@ -270,18 +307,18 @@ pub fn apply(ctx: &egui::Context) {
             let dark = theme == egui::Theme::Dark;
             let p = palette(dark);
             style.text_styles = [
-                (TextStyle::Heading, FontId::proportional(22.0)),
-                (TextStyle::Body, FontId::proportional(14.0)),
-                (TextStyle::Button, FontId::proportional(14.0)),
-                (TextStyle::Small, FontId::proportional(12.0)),
-                (TextStyle::Monospace, FontId::monospace(13.0)),
+                (TextStyle::Heading, FontId::proportional(size::TITLE)),
+                (TextStyle::Body, FontId::proportional(size::UI)),
+                (TextStyle::Button, FontId::proportional(size::UI)),
+                (TextStyle::Small, FontId::proportional(size::SMALL)),
+                (TextStyle::Monospace, FontId::monospace(size::UI)),
             ]
             .into();
 
             let s = &mut style.spacing;
             s.item_spacing = egui::vec2(8.0, 6.0);
-            s.button_padding = egui::vec2(10.0, 5.0);
-            s.interact_size.y = 28.0;
+            s.button_padding = egui::vec2(10.0, 4.0);
+            s.interact_size.y = 26.0;
             s.window_margin = Margin::same(16);
             s.menu_margin = Margin::same(6);
             s.indent = 16.0;
@@ -295,10 +332,22 @@ pub fn apply(ctx: &egui::Context) {
             v.faint_bg_color = p.raised;
             v.code_bg_color = p.raised;
             v.window_stroke = Stroke::new(1.0, p.outline);
-            v.window_corner_radius = CornerRadius::same(14);
-            v.menu_corner_radius = CornerRadius::same(10);
-            v.window_shadow = Shadow::NONE;
-            v.popup_shadow = Shadow::NONE;
+            v.window_corner_radius = CornerRadius::same(radius::XL);
+            v.menu_corner_radius = CornerRadius::same(radius::LG);
+            // Only what floats over the page casts a shadow.
+            let depth = if dark { 110 } else { 40 };
+            v.window_shadow = Shadow {
+                offset: [0, 12],
+                blur: 32,
+                spread: 0,
+                color: Color32::from_black_alpha(depth),
+            };
+            v.popup_shadow = Shadow {
+                offset: [0, 6],
+                blur: 16,
+                spread: 0,
+                color: Color32::from_black_alpha(depth),
+            };
             v.hyperlink_color = p.signal;
             v.warn_fg_color = p.warn;
             v.error_fg_color = p.error;
@@ -320,7 +369,7 @@ pub fn apply(ctx: &egui::Context) {
                 &mut v.widgets.active,
                 &mut v.widgets.open,
             ] {
-                w.corner_radius = CornerRadius::same(8);
+                w.corner_radius = CornerRadius::same(radius::MD);
                 w.expansion = 0.0;
             }
             v.widgets.noninteractive.bg_fill = p.paper;
@@ -352,12 +401,16 @@ pub fn set_motion(ctx: &egui::Context, reduce: bool) {
     ctx.all_styles_mut(|style| style.animation_time = if reduce { 0.0 } else { 0.14 });
 }
 
-/// The primary action: light-on-dark ink, like a filled pill.
+/// The primary action: filled with the accent.
 pub fn primary_button<'a>(text: impl Into<String>, dark: bool) -> egui::Button<'a> {
     let p = palette(dark);
-    egui::Button::new(egui::RichText::new(text.into()).color(p.paper))
-        .fill(p.ink)
-        .stroke(Stroke::NONE)
+    egui::Button::new(
+        egui::RichText::new(text.into())
+            .color(p.on_signal)
+            .variation("wght", SEMIBOLD),
+    )
+    .fill(p.signal)
+    .stroke(Stroke::NONE)
 }
 
 /// Text with a leading icon, e.g. `labelled(icon::PLUS, "New chat")`.
@@ -423,6 +476,8 @@ mod tests {
             for text in [p.ink, p.ink2] {
                 assert!(contrast(text, p.selected) >= 4.5);
             }
+            // Labels on accent fills: the primary button, the send button.
+            assert!(contrast(p.on_signal, p.signal) >= 4.5);
         }
     }
 }

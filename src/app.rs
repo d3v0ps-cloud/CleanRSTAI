@@ -750,7 +750,7 @@ impl ChatApp {
             format!("·  {summary}")
         };
         // Dimmer than the model name; the accent when this chat has its own options.
-        let label = RichText::new(text).size(13.0);
+        let label = RichText::new(text).size(theme::size::SMALL);
         let label = if options.is_empty() {
             label.color(theme::palette(dark).pencil)
         } else {
@@ -2687,7 +2687,7 @@ impl ChatApp {
             ui.spinner().on_hover_text("Transcribing…");
         } else if ui
             .add(egui::Button::new(
-                RichText::new(icon::MICROPHONE).size(17.0),
+                RichText::new(icon::MICROPHONE).size(theme::size::ICON),
             ))
             .on_hover_text("Dictate into the message box (⌘/Ctrl+Shift+M)")
             .clicked()
@@ -3272,9 +3272,7 @@ impl ChatApp {
         } else {
             provider.model.clone()
         };
-        let label = RichText::new(shell::short_model(&model))
-            .size(13.0)
-            .color(p.ink2);
+        let label = theme::mono(shell::short_model(&model), theme::size::SMALL).color(p.ink2);
         // A llama.cpp router's models and their load state, for this provider.
         let router: Option<Vec<crate::llm::RouterModel>> = self
             .server_info
@@ -3431,7 +3429,7 @@ impl ChatApp {
         let models = provider.models.clone();
         let default_model = provider.model.clone();
         let label = RichText::new(shell::short_model(&shown_model))
-            .size(13.0)
+            .size(theme::size::SMALL)
             .color(p.ink2);
         let mut changed = false;
         MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
@@ -4115,7 +4113,7 @@ impl ChatApp {
                 egui::Frame::new()
                     .fill(p.raised)
                     .stroke(egui::Stroke::new(1.0, p.hairline))
-                    .corner_radius(12)
+                    .corner_radius(theme::radius::LG)
                     .inner_margin(6)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -4124,7 +4122,7 @@ impl ChatApp {
                             if last != Some(*skill) {
                                 ui.label(
                                     RichText::new(if *skill { "Skills" } else { "Commands" })
-                                        .size(12.0)
+                                        .size(theme::size::SMALL)
                                         .color(p.pencil),
                                 );
                                 last = Some(*skill);
@@ -4134,14 +4132,17 @@ impl ChatApp {
                             job.append(
                                 &format!("{glyph}  /{name}"),
                                 0.0,
-                                egui::TextFormat::simple(egui::FontId::proportional(14.0), p.ink),
+                                egui::TextFormat::simple(
+                                    egui::FontId::proportional(theme::size::UI),
+                                    p.ink,
+                                ),
                             );
                             if !description.is_empty() {
                                 job.append(
                                     description,
                                     12.0,
                                     egui::TextFormat::simple(
-                                        egui::FontId::proportional(13.0),
+                                        egui::FontId::proportional(theme::size::SMALL),
                                         p.pencil,
                                     ),
                                 );
@@ -4203,7 +4204,7 @@ impl ChatApp {
                     1.0,
                     if has_focus { p.outline } else { p.hairline },
                 ))
-                .corner_radius(14)
+                .corner_radius(theme::radius::LG)
                 .inner_margin(egui::Margin {
                     left: 16,
                     right: 8,
@@ -4247,8 +4248,12 @@ impl ChatApp {
                             ui.add(
                                 egui::TextEdit::multiline(&mut self.input)
                                     .id(id)
-                                    .font(egui::FontId::proportional(15.5))
-                                    .hint_text(RichText::new(hint).size(15.5).color(p.pencil))
+                                    .font(egui::FontId::proportional(theme::size::READING))
+                                    .hint_text(
+                                        RichText::new(hint)
+                                            .size(theme::size::READING)
+                                            .color(p.pencil),
+                                    )
                                     .frame(egui::Frame::NONE)
                                     .desired_rows(2)
                                     // Tab moves on to the buttons below, so keyboard users
@@ -4272,10 +4277,12 @@ impl ChatApp {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            RichText::new(icon::STOP).size(15.0).color(p.paper),
+                                            RichText::new(icon::STOP)
+                                                .size(theme::size::ICON)
+                                                .color(p.paper),
                                         )
                                         .fill(p.ink)
-                                        .corner_radius(8)
+                                        .corner_radius(theme::radius::MD)
                                         .min_size(egui::vec2(32.0, 32.0)),
                                     )
                                     .on_hover_text("Stop")
@@ -4289,11 +4296,11 @@ impl ChatApp {
                                     .add(
                                         egui::Button::new(
                                             RichText::new(icon::ARROW_UP)
-                                                .size(16.0)
-                                                .color(egui::Color32::WHITE),
+                                                .size(theme::size::ICON)
+                                                .color(p.on_signal),
                                         )
                                         .fill(p.signal)
-                                        .corner_radius(8)
+                                        .corner_radius(theme::radius::MD)
                                         .min_size(egui::vec2(32.0, 32.0)),
                                     )
                                     .on_hover_text(if self.settings.general.send_with_enter {
@@ -4345,27 +4352,31 @@ impl ChatApp {
         let p = theme::palette(ui.visuals().dark_mode);
         let mut attach = false;
         let mut slash = false;
-        let (resp, _) = MenuButton::new(RichText::new(icon::PLUS).size(18.0).color(p.ink2))
-            .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
-            .ui(ui, |ui| {
-                ui.set_min_width(230.0);
-                if ui
-                    .button(theme::labelled(icon::PAPERCLIP, "Attach files…"))
-                    .clicked()
-                {
-                    attach = true;
-                    ui.close();
-                }
-                self.tools_menu(ui);
-                self.mcp_menu(ui);
-                if ui
-                    .button(theme::labelled(icon::COMMAND, "Commands and skills  /"))
-                    .clicked()
-                {
-                    slash = true;
-                    ui.close();
-                }
-            });
+        let (resp, _) = MenuButton::new(
+            RichText::new(icon::PLUS)
+                .size(theme::size::ICON_LG)
+                .color(p.ink2),
+        )
+        .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+        .ui(ui, |ui| {
+            ui.set_min_width(230.0);
+            if ui
+                .button(theme::labelled(icon::PAPERCLIP, "Attach files…"))
+                .clicked()
+            {
+                attach = true;
+                ui.close();
+            }
+            self.tools_menu(ui);
+            self.mcp_menu(ui);
+            if ui
+                .button(theme::labelled(icon::COMMAND, "Commands and skills  /"))
+                .clicked()
+            {
+                slash = true;
+                ui.close();
+            }
+        });
         resp.on_hover_text("Attach files, tools, resources and prompts (or drop files here)");
         if attach
             && let Some(paths) = rfd::FileDialog::new()
@@ -4856,7 +4867,7 @@ impl eframe::App for ChatApp {
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
                 "Drop to attach",
-                egui::FontId::proportional(28.0),
+                egui::FontId::proportional(theme::size::DISPLAY),
                 egui::Color32::WHITE,
             );
         }

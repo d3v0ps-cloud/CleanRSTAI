@@ -12,8 +12,9 @@ nav_order: 1
 
 ## The window
 
-The window is dark first and quiet: a sidebar on the left and a large canvas holding the chat,
-with hairline dividers and greys rather than colour. On macOS the window has no title bar of its
+The window is dark first and quiet: a darker sidebar on the left and a large canvas holding the
+chat, with hairline dividers and cool greys; green marks what is live or primary, such as the
+send button and switches that are on. On macOS the window has no title bar of its
 own: the traffic lights sit at the top of the sidebar, and the strip along the top (the *title
 row*) moves the window when dragged and zooms it on a double click.
 
@@ -229,7 +230,8 @@ Each message has small action icons:
 
 - Your messages: **Edit and resend**, **Copy**, and **Fork from here**.
 - Replies: **Copy**, **Retry** to generate the reply again (the latest reply only), and
-  **Fork from here**. A reply with other versions shows the **‹ k/N ›** arrows.
+  **Fork from here**. A reply with other versions shows the **‹ k/N ›** arrows. When a reply
+  calls tools along the way, the icons come once, under its last message.
 
 **Fork from here** copies the chat up to that message into a new chat, titled with
 "(fork)" after the original title. The new chat keeps the original's workspace folder, tool

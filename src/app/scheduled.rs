@@ -126,7 +126,11 @@ impl ChatApp {
                         {
                             acts.master = Some(on);
                         }
-                        ui.label(RichText::new("Run agents").size(13.0).color(p.pencil));
+                        ui.label(
+                            RichText::new("Run agents")
+                                .size(theme::size::SMALL)
+                                .color(p.pencil),
+                        );
                     });
                     ui.label(
                         RichText::new(
@@ -196,7 +200,7 @@ impl ChatApp {
         egui::Frame::new()
             .fill(p.raised)
             .stroke(egui::Stroke::new(1.0, p.hairline))
-            .corner_radius(12)
+            .corner_radius(theme::radius::LG)
             .inner_margin(egui::Margin::symmetric(14, 12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -214,24 +218,27 @@ impl ChatApp {
                             acts.enable = Some((task.id, on));
                         }
                         ui.add_space(4.0);
-                        ui.label(RichText::new(&task.name).size(16.0).color(if task.enabled {
-                            p.ink
-                        } else {
-                            p.ink2
-                        }));
+                        ui.label(
+                            RichText::new(&task.name)
+                                .size(theme::size::READING)
+                                .color(if task.enabled { p.ink } else { p.ink2 }),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.menu_button(RichText::new(icon::DOTS).size(16.0), |ui| {
-                                if ui
-                                    .button(theme::labelled(icon::COPY, "Duplicate"))
-                                    .clicked()
-                                {
-                                    acts.duplicate = Some(task.id);
-                                }
-                                ui.separator();
-                                if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
-                                    acts.delete = Some(task.id);
-                                }
-                            });
+                            ui.menu_button(
+                                RichText::new(icon::DOTS).size(theme::size::ICON),
+                                |ui| {
+                                    if ui
+                                        .button(theme::labelled(icon::COPY, "Duplicate"))
+                                        .clicked()
+                                    {
+                                        acts.duplicate = Some(task.id);
+                                    }
+                                    ui.separator();
+                                    if ui.button(theme::labelled(icon::TRASH, "Delete")).clicked() {
+                                        acts.delete = Some(task.id);
+                                    }
+                                },
+                            );
                             if ui.button(theme::labelled(icon::EDIT, "Edit")).clicked() {
                                 acts.edit = Some(task.id);
                             }
@@ -273,7 +280,7 @@ impl ChatApp {
                     }
                     ui.label(
                         RichText::new(format!("{}  {}", icon::CLOCK, when.join("  ·  ")))
-                            .size(13.0)
+                            .size(theme::size::SMALL)
                             .color(p.ink2),
                     );
 
@@ -307,7 +314,7 @@ impl ChatApp {
                     ui.add(
                         egui::Label::new(
                             RichText::new(how.join("   ·   "))
-                                .size(13.0)
+                                .size(theme::size::SMALL)
                                 .color(p.pencil),
                         )
                         .truncate(),
@@ -319,7 +326,10 @@ impl ChatApp {
                         .unwrap_or("No prompt yet");
                     ui.add(
                         egui::Label::new(
-                            RichText::new(prompt).size(13.0).italics().color(p.pencil),
+                            RichText::new(prompt)
+                                .size(theme::size::SMALL)
+                                .italics()
+                                .color(p.pencil),
                         )
                         .truncate(),
                     );
@@ -335,7 +345,7 @@ impl ChatApp {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(format!("Recent runs ({})", runs.len()))
-                                .size(12.0)
+                                .size(theme::size::SMALL)
                                 .color(p.pencil),
                         );
                         ui.spacing_mut().item_spacing.y = chrome::ROW_GAP;
@@ -381,20 +391,20 @@ impl ChatApp {
         egui::Frame::new()
             .fill(p.raised)
             .stroke(egui::Stroke::new(1.0, p.outline))
-            .corner_radius(12)
+            .corner_radius(theme::radius::LG)
             .inner_margin(egui::Margin::symmetric(16, 14))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.push_id(("agent-editor", task.id), |ui| {
                     ui.label(
                         RichText::new(if *new { "New agent" } else { "Edit agent" })
-                            .size(12.0)
+                            .size(theme::size::SMALL)
                             .color(p.pencil),
                     );
                     ui.add(
                         egui::TextEdit::singleline(&mut task.name)
                             .hint_text("Name")
-                            .font(egui::FontId::proportional(16.0))
+                            .font(egui::FontId::proportional(theme::size::READING))
                             .desired_width(f32::INFINITY),
                     );
                     ui.add_space(4.0);
@@ -439,7 +449,7 @@ impl ChatApp {
         let p = theme::palette(ui.visuals().dark_mode);
         ui.label(
             RichText::new("Start from a template")
-                .size(13.0)
+                .size(theme::size::SMALL)
                 .color(p.pencil),
         );
         ui.add_space(8.0);
@@ -466,7 +476,7 @@ impl ChatApp {
                     inner.left_top() + egui::vec2(0.0, 24.0),
                     egui::Align2::LEFT_TOP,
                     name,
-                    egui::FontId::proportional(14.0),
+                    egui::FontId::proportional(theme::size::UI),
                     p.ink,
                 );
                 let mut job = egui::text::LayoutJob::single_section(
@@ -479,7 +489,10 @@ impl ChatApp {
                             ""
                         }
                     ),
-                    egui::TextFormat::simple(egui::FontId::proportional(12.0), p.pencil),
+                    egui::TextFormat::simple(
+                        egui::FontId::proportional(theme::size::SMALL),
+                        p.pencil,
+                    ),
                 );
                 job.wrap = egui::text::TextWrapping {
                     max_width: inner.width(),

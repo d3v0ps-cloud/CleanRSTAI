@@ -74,7 +74,7 @@ pub fn show(
                     .fit_to_original_size(1.0)
                     .max_height(220.0)
                     .max_width(320.0_f32.min(ui.available_width()))
-                    .corner_radius(6)
+                    .corner_radius(super::theme::radius::MD)
                     .sense(egui::Sense::click()),
             )
             .on_hover_text(format!(
