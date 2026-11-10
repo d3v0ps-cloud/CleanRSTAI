@@ -26,8 +26,8 @@ row*) moves the window when dragged and zooms it on a double click.
   link when a new version is out, and the MCP status when servers are set up.
 - **Sidebar**: **New** (a new chat), then **Search** (a box that filters chats by title and text,
   in both modes), **Projects**, **Artifacts** and **Scheduled** (pages in the canvas, below)
-  and **Customize**
-  ([Skills & hooks](../settings/skills-and-hooks.html)). **Recents** (click the label to fold it
+  and **Settings**
+  ([Settings](../settings/index.html)). **Recents** (click the label to fold it
   away) lists the chats, pinned ones first; a long title fades out on the right, and a mark at the
   right edge shows a chat's state ([below](#running-chats-in-the-background)) or, with a document
   icon, that it has artifacts. The footer shows your name and the active provider, with a menu for
@@ -94,7 +94,7 @@ changes any; **Reset to defaults** clears the chat's own. Changes apply from the
 ### Reasoning
 
 Models that return `reasoning_content` or `reasoning` show it in a **Thought process** section
-above the answer. It starts collapsed; [Settings → General → Reasoning](../settings/general.html#reasoning)
+above the answer. It starts collapsed; [Settings → General → Reasoning](../settings/appearance.html#reasoning)
 can keep it expanded, or expanded only while the model is thinking.
 
 ### Stats
@@ -107,7 +107,7 @@ the stream. Hover over the line for the full breakdown.
 A LiteLLM proxy doesn't report the cost of streamed replies, so the app estimates it from
 the per-token prices the proxy lists for the model. An estimated cost shows with a "~", such
 as *~$0.0123*, and so does the chat's total when it includes one. Turn the stats off in
-[General](../settings/general.html#stats).
+[General](../settings/appearance.html#speed-stats).
 
 #### Prompt progress
 
@@ -218,10 +218,10 @@ expands to show the summary. Everything above it stays in the chat for you to re
 model no longer sees it. While the summary is written, *Summarising older messages…* shows. The
 request that writes the summary counts in the chat's totals and cost.
 
-**Compact now** in the tools menu (under **Chat features**) or **Compact this chat** in the
+**Compact now** in the tools menu (under **Chat options**) or **Compact this chat** in the
 command palette does it straight away. Switch automatic compaction off for a chat in the tools
 menu, and set when it happens, how much is kept and which model writes the summary in
-[Context & files](../settings/context.html#context-compaction). For servers that don't report
+[Context & memory](../settings/context.html#context-compaction). For servers that don't report
 their context size, set **Context size** there, or compaction only happens when you ask.
 
 ## Editing and retrying
@@ -256,7 +256,7 @@ of the version shown. Arrows are unavailable while a reply runs or waits in the 
 
 Settings → General → Branches keeps up to **Versions kept per message** (default 10) older
 versions per message and drops the oldest beyond that. Turn it off there, or with **Branches**
-under **Chat features** in the tools menu for one chat: off, Retry and Edit replace the
+under **Chat options** in the tools menu for one chat: off, Retry and Edit replace the
 version as they always did (versions already kept stay switchable).
 
 ## Replies
@@ -268,7 +268,7 @@ tables and images.
 - ```` ```svg ```` blocks and inline `<svg>` markup are shown as images.
 - Click a drawing to enlarge it, copy its source or save it as an SVG file.
 - Images from the web show as links unless **Load web images in replies** is on in
-  [General](../settings/general.html#images). Loading them tells the image's server that the
+  [General](../settings/privacy.html#load-web-images-in-replies). Loading them tells the image's server that the
   chat was opened, so it is off by default.
 - **Save as…** (the download icon under the reply) saves it as a Word document, a PDF or an
   Excel workbook; see [Saving as files](#saving-as-files).
@@ -301,7 +301,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   on. Made-up names like "Flowchart" never make versions.
 - **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
   that runs the page's scripts but, by default, blocks everything from the network (set in
-  [General](../settings/general.html#web-page-preview)); links open in your browser. On Linux,
+  [General](../settings/artifacts.html#web-page-preview)); links open in your browser. On Linux,
   **Open live preview** shows the page in a window of its own, with the same settings, when
   WebKitGTK is installed; the window follows the page as a reply streams. Without WebKitGTK it
   opens in your browser, with a notice. **Open in browser** writes the page to a temporary file
@@ -309,7 +309,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   load anything. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
-  panel** in [General](../settings/general.html#artifacts); **Open in panel** and the top-bar
+  panel** in [General](../settings/artifacts.html#artifacts); **Open in panel** and the top-bar
   button still open it.
 - **Save as…** in the panel's title row saves Markdown documents, code, and CSV or TSV
   artifacts as a Word document, a PDF or (for CSV and TSV) an Excel workbook.
@@ -317,7 +317,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
 ## Saving as files
 
 A reply or a Markdown, code or CSV artifact can be saved as a file from its **Save as…** menu.
-Each format is switched on or off in [General](../settings/general.html#save-as-files); the menu
+Each format is switched on or off in [General](../settings/artifacts.html#save-as-files); the menu
 offers only the enabled ones that suit the content. The file dialog suggests the chat's name (or
 the artifact's title) with the new extension.
 
@@ -344,7 +344,7 @@ attached; text beyond a million characters is cut, with a note saying so.
 | Kind | Sent as |
 |---|---|
 | Images (PNG, JPEG, GIF, WebP) | images for vision models; click one to enlarge it |
-| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Context & files](../settings/context.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
+| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Artifacts & files](../settings/artifacts.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
 | Word (`.docx`, `.doc`) | its text |
 | Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`) | one CSV block per sheet |
 | PowerPoint (`.pptx`, `.ppt`) | numbered slides, with speaker notes |
@@ -406,9 +406,43 @@ unless the agent catches up.
 
 Nobody watches a run, so a tool that asks for approval waits for you (with a notification). Give
 an agent the permission mode it needs and no more. Changes on this page are saved at once; the
-same agents are also listed in [Background](../settings/background.html#scheduled-tasks) settings.
+same agents are also listed in [Background](../using/chats.html#scheduled-agents) settings.
 **Run scheduled task: …** in the command palette starts one at once. Runs share the queue and the
 limits of background replies.
+
+### Task settings
+
+A scheduled task sends a saved prompt into a chat at set times. Tasks run only while CleanRSTAI is
+open. **Run scheduled tasks** is the master switch; each task has its own **On** switch. The
+**Scheduled** page in the sidebar shows the same tasks as agents, with their recent runs (see
+[Scheduled agents](../using/chats.html#scheduled-agents)).
+
+| Setting | Default | Description |
+|---|---|---|
+| **Name** | Scheduled task | The name of the task. New chats it makes are titled with the name and the time they started. |
+| **Prompt** | empty | The message the task sends. A task with no prompt never runs. |
+| **Repeats** | Every day | **Every so many minutes** (5–10080, the minutes between runs), **Every day** or **Every week** (on a weekday), at a time of day in local time. |
+| **Runs in** | A new chat each time | **A new chat each time**, or a chat you picked from the list. A new chat takes the task's folder and provider; a picked chat keeps its own folder and provider, and its approval mode is set to the task's on each run. |
+| **Approvals** | Read only | The approval mode of the run's chat: read only, plan, default, auto in workspace, or allow all. Read only is the default so a task cannot change files or run commands unless you choose it. Other tools still ask, so a run can wait for your answer; the notification says so. |
+| **Folder** | None | The working folder of a new chat (see [Built-in tools and workspace](../using/tools.html#workspace)). |
+| **Provider** | The active provider | The provider the run uses, for example a local model for a frequent task. |
+| **Catch up after the app was closed** | off | A run that was due while the app was closed runs once when the app starts. When off, it is skipped to the next time. |
+
+**Run now** starts the task at once, using what the form shows (unsaved edits included), and counts
+as its last run. Each task shows its next run under it.
+
+The timing works like this. An interval counts from the task's last run, or, before its first run,
+from when it was saved, so the first run is one interval after saving. A daily or weekly task runs
+at its time on its days. A run that is due is started within about a minute and a half; a run that
+is missed while the app was closed or the computer slept is skipped, unless **Catch up** is on. On
+a day when the clocks go forward, a time that does not exist (such as 02:30) runs an hour later.
+
+Runs go through the same queue, parallel limit and time limit as replies you send (see below). A
+run that is still replying when its time comes is skipped that time. If a task's chat has been
+deleted, the task is switched off and CleanRSTAI says so.
+
+Each run sends its prompt to the provider without anyone watching. Read the approval mode and the
+folder before you turn a task on.
 
 ## Managing chats
 
@@ -422,7 +456,7 @@ Chats are saved automatically. In the sidebar:
 **Export as Markdown** includes tool calls, results and images. **Share as HTML…** writes the
 same chat as a single, self-contained `.html` file styled like the app: it opens in any browser
 with no network, fonts or scripts, so it is easy to send to someone. To back up every chat at
-once, use **Export conversations…** in [General](../settings/general.html#export--import).
+once, use **Export conversations…** in [General](../settings/privacy.html#export--import).
 
 ## Command palette
 

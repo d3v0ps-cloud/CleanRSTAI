@@ -27,7 +27,7 @@ nav_order: 2
 
 On macOS and Linux, settings, export files and the remote access key are created readable only
 by you. If the keychain is off or unavailable, secrets are kept in `settings.json` instead
-([Secrets](../settings/general.html#secrets)).
+([Secrets](../settings/privacy.html#secrets)).
 
 Remote access logins are kept in memory only. Nothing is written to disk, and every login ends
 when the server restarts ([Remote access](../using/remote-access.html)).
@@ -42,16 +42,16 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   default) lets Anthropic hold the cached prompt briefly (minutes) to reuse it.
 - **Tool calls**: MCP tools go to their servers; web fetch requests the URL the model chose;
   web search sends the model's query to the search service chosen in
-  [Built-in Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
+  [Tools](../settings/built-in-tools.html#web-search) (DuckDuckGo by default; Brave,
   Tavily and Kagi also get your API key). They ask for approval unless you turned that off.
   With **Search with** set to the provider's own search, the query goes to the chat's provider
   instead, which searches on its side; the search service isn't contacted and nothing is asked.
 - **OCR for scanned PDFs**, when on: each page image of a PDF with no text layer goes to the
-  vision model's provider (chosen in [Context & files](../settings/context.html#ocr-for-scanned-pdfs)),
+  vision model's provider (chosen in [Artifacts & files](../settings/artifacts.html#ocr-for-scanned-pdfs)),
   one request per page, with the prompt to transcribe it. With **Tesseract** the pages are read
   by the `tesseract` program on this computer and nothing leaves it.
 - **Context compaction** sends the older messages of a long chat (shortened where they are
-  long) to the provider and model chosen in [Context & files](../settings/context.html), to
+  long) to the provider and model chosen in [Context & memory](../settings/context.html), to
   have them summarised.
 - **Command line** (`cleanrstai exec`): a run sends its prompt, the piped text read from stdin and
   its tools' results to the provider, as a chat does, with no one asked before a call runs.
@@ -91,13 +91,13 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   the computer. Git hooks don't run for them.
 - **Code review** sends the working folder's git diff (up to the size you set, and the names of
   new files) to the provider and model chosen in
-  [Context & files](../settings/context.html#code-review), when you choose Review changes.
+  [Workspace](../settings/workspace.html#code-review), when you choose Review changes.
 - **Update checks** ask the [update source](../using/updates.html#update-source) for its latest
   release, at startup if enabled and when you check by hand.
 - **Scheduled tasks** send their prompt to the provider chosen for the task (or the active one)
   while the app is open, without anyone watching. The prompt goes with the chat's messages and
   tools as for any reply, and the tools may run as the task's approval mode allows (read only by
-  default). Settings → Background lists them; see [Scheduled tasks](../settings/background.html#scheduled-tasks).
+  default). Settings → Background lists them; see [Scheduled tasks](../using/chats.html#scheduled-agents).
 - **Notifications** when a reply finishes, fails or needs approval are handed to the system's notification service (Notification Center, Windows notifications, or D-Bus on Linux). They contain the chat's title and what happened, never the reply, and the system may show them on your other devices. Off in [Background](../settings/background.html) settings, or per chat.
 - **Web images** in replies are loaded only if **Load web images in replies** is on.
 - **Docker sandbox**: while it is on, the app runs the `docker` command on your computer to run
@@ -128,11 +128,11 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   The app only does this when you click **Open in browser**.
 - **Web pages previewed in the panel** (macOS and Windows) can't load anything from the network
   unless **Let pages load from the network** is on in
-  [General](../settings/general.html#web-page-preview).
+  [General](../settings/artifacts.html#web-page-preview).
 
 Nothing else is sent: there is no telemetry.
 
 ## Backups
 
 **Settings → General → Export & import** saves your settings and conversations to files you
-choose. See [Export & import](../settings/general.html#export--import).
+choose. See [Export & import](../settings/privacy.html#export--import).

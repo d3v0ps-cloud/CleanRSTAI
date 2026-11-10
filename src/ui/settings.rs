@@ -1,5 +1,7 @@
-//! Settings window: providers, MCP servers and general preferences. Edits are made on a
-//! draft and only take effect on Apply / Save.
+//! Settings window: sixteen pages in four groups (App, Chats, Models & tools, This computer).
+//! Edits are made on a draft and only take effect on Apply / Save. Pages are built from rows
+//! (`chrome::setting_row`: label and description on the left, control on the right) under mono
+//! section labels; see the helpers below (`section`, `switch`, `choice`, `text_row`, …).
 
 mod appearance;
 mod background;
@@ -14,6 +16,7 @@ mod voice;
 
 use eframe::egui;
 
+use super::chrome::{setting_row, toggle};
 use super::theme::icon;
 use super::widgets::{code_block, icon_button, kv_editor, list_editor};
 use crate::approval::ApprovalMode;
@@ -30,7 +33,6 @@ use crate::mcp::manager::{ServerStatus, ServerView};
 use crate::memory::{MAX_KB, MIN_KB, Memory, MemoryScope, MemorySettings, Scope};
 use crate::ocr::OcrEngine;
 use crate::remote::{RemoteStatus, TunnelStatus};
-use crate::schedule::ScheduledTask;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -142,17 +144,191 @@ fn protocol_label(protocol: NetProtocol) -> &'static str {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
+    // App
     General,
     Appearance,
+    Voice,
+    /// Data & privacy.
+    Privacy,
+    // Chats
+    Permissions,
+    /// Context & memory.
+    Context,
+    Workspace,
+    /// Artifacts & files.
+    Artifacts,
+    // Models & tools
     Providers,
     Mcp,
     Tools,
+    /// Skills & hooks.
     Extensions,
-    Context,
-    Docker,
     Subagents,
+    // This computer
+    Docker,
     Background,
-    Voice,
+    /// Remote access.
+    Remote,
+}
+
+/// A settings page's scrolling body.
+fn page(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // Room for the scroll bar beside the controls on the right.
+            ui.set_max_width(ui.available_width() - 10.0);
+            add(ui);
+            ui.add_space(12.0);
+        });
+}
+
+/// A section's label in mono capitals, with room above.
+fn section(ui: &mut egui::Ui, title: &str) {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    ui.add_space(20.0);
+    ui.label(super::theme::caps(title, p.pencil));
+    ui.add_space(2.0);
+}
+
+/// Muted explanatory text across the page.
+fn note(ui: &mut egui::Ui, text: &str) {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .size(super::theme::size::SMALL)
+                .color(p.pencil),
+        )
+        .wrap(),
+    );
+}
+
+/// A row with an on/off switch.
+fn switch(ui: &mut egui::Ui, label: &str, description: &str, on: &mut bool) {
+    setting_row(ui, label, description, |ui| {
+        let name = label.to_owned();
+        let value = *on;
+        toggle(ui, on).widget_info(move || {
+            egui::WidgetInfo::selected(egui::Role::CheckBox, true, value, &name)
+        });
+    });
+}
+
+/// A row with a dropdown of `options`.
+fn choice<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    description: &str,
+    value: &mut T,
+    options: &[(T, &str)],
+) {
+    setting_row(ui, label, description, |ui| {
+        let shown = options
+            .iter()
+            .find(|(v, _)| v == value)
+            .map_or("", |(_, l)| *l);
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for (v, l) in options {
+                    ui.selectable_value(value, *v, *l);
+                }
+            });
+    });
+}
+
+/// A row with a one-line text field.
+fn text_row(ui: &mut egui::Ui, label: &str, description: &str, value: &mut String, hint: &str) {
+    setting_row(ui, label, description, |ui| {
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text(hint)
+                .desired_width(250.0),
+        );
+    });
+}
+
+/// A label, an optional note and a text area across the page; with `default`, a Reset button
+/// while the text differs from it.
+fn long_text(
+    ui: &mut egui::Ui,
+    label: &str,
+    description: &str,
+    value: &mut String,
+    rows: usize,
+    default: Option<&str>,
+) {
+    let p = super::theme::palette(ui.visuals().dark_mode);
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).color(p.ink));
+        if let Some(default) = default
+            && value != default
+            && ui.small_button("Reset").clicked()
+        {
+            *value = default.to_owned();
+        }
+    });
+    if !description.is_empty() {
+        note(ui, description);
+    }
+    ui.add(
+        egui::TextEdit::multiline(value)
+            .desired_rows(rows)
+            .desired_width(f32::INFINITY),
+    );
+    ui.add_space(8.0);
+}
+
+/// A row choosing a provider by id; empty is "The chat's provider".
+fn provider_row(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    description: &str,
+    value: &mut String,
+    providers: &[(String, String, Vec<String>)],
+) {
+    setting_row(ui, label, description, |ui| {
+        let current = providers
+            .iter()
+            .find(|(pid, ..)| pid == value)
+            .map_or("The chat's provider".to_owned(), |(_, n, _)| n.clone());
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(value, String::new(), "The chat's provider");
+                for (pid, name, _) in providers {
+                    ui.selectable_value(value, pid.clone(), name);
+                }
+            });
+    });
+}
+
+/// A row with a model name: a field, and a menu of the provider's known models.
+fn model_row(ui: &mut egui::Ui, label: &str, value: &mut String, models: &[String]) {
+    setting_row(ui, label, "Empty: the provider's selected model", |ui| {
+        if !models.is_empty() {
+            ui.menu_button(icon::CARET_DOWN, |ui| {
+                ui.set_max_height(320.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for m in models {
+                        if ui.button(m).clicked() {
+                            *value = m.clone();
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        }
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text("the provider's selected model")
+                .desired_width(220.0),
+        );
+    });
 }
 
 pub enum SettingsAction {
@@ -182,8 +358,6 @@ pub enum SettingsAction {
     CheckSandbox(SandboxSettings),
     /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
     PrepareSandbox(SandboxSettings),
-    /// Run a scheduled task now, as the draft has it (Settings → Background "Run now").
-    RunScheduledTask(Box<ScheduledTask>),
 }
 
 pub struct SettingsUi {
@@ -234,8 +408,8 @@ pub struct SettingsUi {
 
 pub const FIELD_WIDTH: f32 = 420.0;
 
-/// The "Remote access" rows of the General grid (below Secrets), with the Cloudflare Tunnel
-/// rows under them.
+/// The "Remote access" rows of the Remote access page's grid, with the Cloudflare Tunnel rows
+/// under them.
 fn remote_rows(
     ui: &mut egui::Ui,
     r: &mut RemoteSettings,
@@ -752,7 +926,9 @@ fn web_search_rows(
                                 .password(!*show_key)
                                 .desired_width(FIELD_WIDTH - 60.0),
                         )
-                        .on_hover_text("Kept in the system keychain when that is on (General)");
+                        .on_hover_text(
+                            "Kept in the system keychain when that is on (Data & privacy)",
+                        );
                         ui.checkbox(show_key, "Show");
                     });
                     ui.end_row();
@@ -882,7 +1058,6 @@ impl SettingsUi {
         remote: &RemoteStatus,
         tunnel: &TunnelStatus,
         access_error: Option<&str>,
-        chats: &[(Uuid, String)],
         memories: &[Memory],
         projects: &[(Uuid, String)],
     ) -> Vec<SettingsAction> {
@@ -951,13 +1126,19 @@ impl SettingsUi {
                             super::chrome::section_label(ui, group);
                             for (tab, glyph, label) in tabs {
                                 shown += 1;
-                                if super::chrome::nav_row(ui, glyph, label, self.tab == *tab, false)
-                                    .clicked()
+                                if super::chrome::nav_row_sized(
+                                    ui,
+                                    glyph,
+                                    label,
+                                    self.tab == *tab,
+                                    false,
+                                    26.0,
+                                )
+                                .clicked()
                                 {
                                     self.tab = *tab;
                                 }
                             }
-                            ui.add_space(6.0);
                         }
                         if !query.is_empty() {
                             if hits.is_empty() && shown == 0 {
@@ -990,7 +1171,7 @@ impl SettingsUi {
                 ui.horizontal(|ui| {
                     let dirty = &self.draft != live;
                     if ui
-                        .add_enabled(dirty, super::theme::primary_button("Save & Close", dark))
+                        .add_enabled(dirty, super::theme::primary_button("Save", dark))
                         .clicked()
                     {
                         actions.push(SettingsAction::Apply(Box::new(self.draft.clone())));
@@ -999,10 +1180,7 @@ impl SettingsUi {
                     if ui.add_enabled(dirty, egui::Button::new("Apply")).clicked() {
                         actions.push(SettingsAction::Apply(Box::new(self.draft.clone())));
                     }
-                    if ui
-                        .button(if dirty { "Discard changes" } else { "Close" })
-                        .clicked()
-                    {
+                    if ui.button(if dirty { "Cancel" } else { "Close" }).clicked() {
                         actions.push(SettingsAction::Close);
                     }
                     if dirty {
@@ -1023,49 +1201,103 @@ impl SettingsUi {
                 bottom: 8,
             }))
             .show(ui, |ui| {
-            ui.label(egui::RichText::new(match self.tab {
-                Tab::Appearance => "Appearance",
-                Tab::Providers => "Providers",
-                Tab::Mcp => "MCP Servers",
-                Tab::Tools => "Built-in Tools",
-                Tab::Extensions => "Skills & hooks",
-                Tab::Context => "Context & files",
-                Tab::Docker => "Docker sandbox",
-                Tab::Subagents => "Subagents",
-                Tab::Background => "Background",
-                Tab::Voice => "Voice",
-                Tab::General => "General",
-            }).size(super::theme::size::TITLE).color(p.ink));
-            ui.weak(match self.tab {
-                Tab::Appearance => "Theme, size, motion, your name, and how replies look.",
-                Tab::Providers => "OpenAI-compatible endpoints the app can talk to.",
-                Tab::Mcp => "Model Context Protocol servers that give the model tools, resources and prompts.",
-                Tab::Tools => "Tools that ship with the app, so they work without an MCP server.",
-                Tab::Extensions => "Saved prompts you type as /name, skills the model loads when a task matches, and hooks: commands that run around tool calls and when a reply is done.",
-                Tab::Context => "Context compaction, project instructions from the workspace, projects (instructions and files for groups of chats), memory (facts kept across chats), diffs and undo for file edits, code review, and OCR for scanned PDFs.",
-                Tab::Docker => "Run the workspace shell tool in a Docker container instead of on this computer.",
-                Tab::Subagents => "Let the model delegate independent tasks to agents that work in parallel and report back.",
-                Tab::Background => "Replies that keep running while you work in another chat: notifications, how many run at once, and a time limit.",
-                Tab::Voice => "Dictate into the message box, and read replies aloud: the speech providers, models and voices.",
-                Tab::General => "Behaviour, secrets, remote access, updates and data.",
-            });
-            ui.add_space(8.0);
-            match self.tab {
-                Tab::Providers => self.providers_tab(ui, &mut actions),
-                Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
-                Tab::Tools => self.tools_tab(ui),
-                Tab::Extensions => self.extensions_tab(ui),
-                Tab::Context => self.context_tab(ui, memories, projects, &mut actions),
-                Tab::Docker => self.docker_tab(ui, &mut actions),
-                Tab::Subagents => self.subagents_tab(ui),
-                Tab::Background => self.background_tab(ui, chats, &mut actions),
-                Tab::Voice => self.voice_tab(ui),
-                Tab::Appearance => self.appearance_tab(ui),
-                Tab::General => {
-                    self.general_tab(ui, live, remote, (tunnel, access_error), &mut actions)
+                let (title, about) = match self.tab {
+                    Tab::General => (
+                        "General",
+                        "The system prompt, your name, the send key and updates.",
+                    ),
+                    Tab::Appearance => ("Appearance", "Theme, size, motion and how replies look."),
+                    Tab::Voice => (
+                        "Voice",
+                        "Dictate into the message box, and read replies aloud: the speech \
+                         providers, models and voices.",
+                    ),
+                    Tab::Privacy => (
+                        "Data & privacy",
+                        "Where secrets are kept, what replies may load from the web, export and \
+                         import, and where the app keeps its files.",
+                    ),
+                    Tab::Permissions => (
+                        "Permissions",
+                        "What runs without asking, how far one reply may go, and plan mode.",
+                    ),
+                    Tab::Context => (
+                        "Context & memory",
+                        "What a chat carries along: compaction of long chats, memory across \
+                         chats, projects, and the versions a regenerated reply keeps.",
+                    ),
+                    Tab::Workspace => (
+                        "Workspace",
+                        "What the model may do in a chat's working folder: the file and shell \
+                         tools, commits, project instructions, undo for file edits and code review.",
+                    ),
+                    Tab::Artifacts => (
+                        "Artifacts & files",
+                        "The artifact panel, live web pages, the Save as formats, and reading \
+                         scanned PDFs.",
+                    ),
+                    Tab::Providers => (
+                        "Providers",
+                        "OpenAI-compatible endpoints the app can talk to.",
+                    ),
+                    Tab::Mcp => (
+                        "MCP servers",
+                        "Model Context Protocol servers that give the model tools, resources and \
+                         prompts.",
+                    ),
+                    Tab::Tools => (
+                        "Tools",
+                        "Tools that ship with the app, so they work without an MCP server.",
+                    ),
+                    Tab::Extensions => (
+                        "Skills & hooks",
+                        "Saved prompts you type as /name, skills the model loads when a task \
+                         matches, and hooks: commands that run around tool calls and when a \
+                         reply is done.",
+                    ),
+                    Tab::Subagents => (
+                        "Subagents",
+                        "Let the model delegate independent tasks to agents that work in \
+                         parallel and report back.",
+                    ),
+                    Tab::Docker => (
+                        "Docker sandbox",
+                        "Run the workspace shell tool in a Docker container instead of on this \
+                         computer.",
+                    ),
+                    Tab::Background => (
+                        "Background",
+                        "Keeping the app running, notifications, how many replies run at once, \
+                         and the command line.",
+                    ),
+                    Tab::Remote => (
+                        "Remote access",
+                        "Use your chats from a browser on another device: the built-in server, \
+                         a Cloudflare Tunnel and Cloudflare Access.",
+                    ),
+                };
+                ui.label(super::theme::display(title, super::theme::size::TITLE).color(p.ink));
+                note(ui, about);
+                ui.add_space(8.0);
+                match self.tab {
+                    Tab::General => self.general_tab(ui, &mut actions),
+                    Tab::Appearance => self.appearance_tab(ui),
+                    Tab::Voice => self.voice_tab(ui),
+                    Tab::Privacy => self.privacy_tab(ui, live, &mut actions),
+                    Tab::Permissions => self.permissions_tab(ui),
+                    Tab::Context => self.context_tab(ui, memories, projects, &mut actions),
+                    Tab::Workspace => self.workspace_tab(ui),
+                    Tab::Artifacts => self.artifacts_tab(ui),
+                    Tab::Providers => self.providers_tab(ui, &mut actions),
+                    Tab::Mcp => self.mcp_tab(ui, live, servers, &mut actions),
+                    Tab::Tools => self.tools_tab(ui),
+                    Tab::Extensions => self.extensions_tab(ui),
+                    Tab::Subagents => self.subagents_tab(ui),
+                    Tab::Docker => self.docker_tab(ui, &mut actions),
+                    Tab::Background => self.background_tab(ui),
+                    Tab::Remote => self.remote_tab(ui, live, remote, (tunnel, access_error)),
                 }
-            }
-        });
+            });
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) && &self.draft == live {
             actions.push(SettingsAction::Close);
         }
@@ -1090,7 +1322,6 @@ fn memory_section(
             .find(|(pid, _)| *pid == id)
             .map_or_else(|| "Deleted project".to_owned(), |(_, name)| name.clone())
     };
-    ui.label(egui::RichText::new(format!("{}  Memory", icon::EDIT)).strong());
     ui.indent("memory-help", |ui| {
         ui.weak(
             "Facts the model saves when you ask it to remember something, or that you state about \
@@ -1409,11 +1640,31 @@ type NavPage = (Tab, &'static str, &'static str);
 
 const NAV_GROUPS: &[(&str, &[NavPage])] = &[
     (
-        "Preferences",
+        "App",
         &[
             (Tab::General, icon::GEAR, "General"),
             (Tab::Appearance, icon::PALETTE, "Appearance"),
             (Tab::Voice, icon::MICROPHONE, "Voice"),
+            (Tab::Privacy, icon::SHIELD, "Data & privacy"),
+        ],
+    ),
+    (
+        "Chats",
+        &[
+            (Tab::Permissions, icon::SHIELD_CHECK, "Permissions"),
+            (Tab::Context, icon::STACK, "Context & memory"),
+            (Tab::Workspace, icon::FOLDER, "Workspace"),
+            (Tab::Artifacts, icon::SHAPES, "Artifacts & files"),
+        ],
+    ),
+    (
+        "Models & tools",
+        &[
+            (Tab::Providers, icon::CLOUD, "Providers"),
+            (Tab::Mcp, icon::PLUGS, "MCP servers"),
+            (Tab::Tools, icon::TOOLBOX, "Tools"),
+            (Tab::Extensions, icon::BOOKS, "Skills & hooks"),
+            (Tab::Subagents, icon::ROBOT, "Subagents"),
         ],
     ),
     (
@@ -1421,17 +1672,7 @@ const NAV_GROUPS: &[(&str, &[NavPage])] = &[
         &[
             (Tab::Docker, icon::TERMINAL, "Docker sandbox"),
             (Tab::Background, icon::CLOCK, "Background"),
-        ],
-    ),
-    (
-        "Customize",
-        &[
-            (Tab::Providers, icon::CLOUD, "Providers"),
-            (Tab::Mcp, icon::PLUGS, "MCP servers"),
-            (Tab::Tools, icon::TOOLBOX, "Built-in tools"),
-            (Tab::Extensions, icon::BOOKS, "Skills & hooks"),
-            (Tab::Context, icon::FILE, "Context & files"),
-            (Tab::Subagents, icon::ROBOT, "Subagents"),
+            (Tab::Remote, icon::LAPTOP, "Remote access"),
         ],
     ),
 ];
@@ -1510,66 +1751,98 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Appearance, "Appearance", "Theme (light / dark)"),
     (Tab::Appearance, "Appearance", "UI scale / zoom"),
     (Tab::General, "General", "Send with Enter"),
-    (Tab::General, "General", "Keychain / secrets"),
-    (Tab::General, "General", "Remote access (browser)"),
-    (Tab::General, "General", "Remote access password"),
-    (Tab::General, "General", "Remote access port"),
-    (Tab::General, "General", "Remote access HTTPS certificate"),
-    (Tab::General, "General", "Cloudflare Tunnel"),
-    (Tab::General, "General", "Cloudflare Tunnel token"),
-    (Tab::General, "General", "Cloudflare Tunnel public hostname"),
+    (Tab::Privacy, "Data & privacy", "Keychain / secrets"),
+    (Tab::Remote, "Remote access", "Remote access (browser)"),
+    (Tab::Remote, "Remote access", "Remote access password"),
+    (Tab::Remote, "Remote access", "Remote access port"),
     (
-        Tab::General,
-        "General",
+        Tab::Remote,
+        "Remote access",
+        "Remote access HTTPS certificate",
+    ),
+    (Tab::Remote, "Remote access", "Cloudflare Tunnel"),
+    (Tab::Remote, "Remote access", "Cloudflare Tunnel token"),
+    (
+        Tab::Remote,
+        "Remote access",
+        "Cloudflare Tunnel public hostname",
+    ),
+    (
+        Tab::Remote,
+        "Remote access",
         "Cloudflare quick tunnel (trycloudflare.com)",
     ),
-    (Tab::General, "General", "cloudflared path"),
-    (Tab::General, "General", "Cloudflare Access"),
-    (Tab::General, "General", "Cloudflare Access team domain"),
+    (Tab::Remote, "Remote access", "cloudflared path"),
+    (Tab::Remote, "Remote access", "Cloudflare Access"),
     (
-        Tab::General,
-        "General",
+        Tab::Remote,
+        "Remote access",
+        "Cloudflare Access team domain",
+    ),
+    (
+        Tab::Remote,
+        "Remote access",
         "Cloudflare Access audience (AUD) tag",
     ),
     (
-        Tab::General,
-        "General",
+        Tab::Remote,
+        "Remote access",
         "Cloudflare Access sign in without the app password",
     ),
     (Tab::Appearance, "Appearance", "Show speed stats"),
-    (Tab::General, "General", "Save as Word document (.docx)"),
-    (Tab::General, "General", "Save as PDF"),
-    (Tab::General, "General", "Save as Excel workbook (.xlsx)"),
-    (Tab::General, "General", "Save reply as file"),
-    (Tab::Appearance, "Appearance", "Load web images in replies"),
+    (
+        Tab::Artifacts,
+        "Artifacts & files",
+        "Save as Word document (.docx)",
+    ),
+    (Tab::Artifacts, "Artifacts & files", "Save as PDF"),
+    (
+        Tab::Artifacts,
+        "Artifacts & files",
+        "Save as Excel workbook (.xlsx)",
+    ),
+    (Tab::Artifacts, "Artifacts & files", "Save reply as file"),
+    (Tab::Privacy, "Data & privacy", "Load web images in replies"),
     (
         Tab::Appearance,
         "Appearance",
         "Reasoning / thinking display (collapsed by default)",
     ),
-    (Tab::Appearance, "Appearance", "Your name (greeting)"),
+    (Tab::General, "General", "Your name (greeting)"),
     (Tab::Appearance, "Appearance", "Reduce motion / animations"),
-    (Tab::Appearance, "Appearance", "Artifacts in a side panel"),
-    (Tab::Voice, "Voice", "Microphone (input device)"),
-    (Tab::General, "General", "Auto-approve tool calls"),
     (
-        Tab::General,
-        "General",
+        Tab::Artifacts,
+        "Artifacts & files",
+        "Artifacts in a side panel",
+    ),
+    (Tab::Voice, "Voice", "Microphone (input device)"),
+    (Tab::Permissions, "Permissions", "Auto-approve tool calls"),
+    (
+        Tab::Permissions,
+        "Permissions",
         "Default permission mode for new chats",
     ),
-    (Tab::General, "General", "Plan mode"),
-    (Tab::General, "General", "Plan mode after approval"),
-    (Tab::General, "General", "Plan approval message"),
-    (Tab::General, "General", "Plan instructions"),
-    (Tab::General, "General", "Branches"),
-    (Tab::General, "General", "Keep the version a reply replaces"),
-    (Tab::General, "General", "Versions kept per message"),
-    (Tab::General, "General", "Max tool rounds"),
-    (Tab::General, "General", "Tool timeout"),
-    (Tab::General, "General", "Export settings"),
-    (Tab::General, "General", "Export conversations"),
-    (Tab::General, "General", "Import settings"),
-    (Tab::General, "General", "Import conversations"),
+    (Tab::Permissions, "Permissions", "Plan mode"),
+    (Tab::Permissions, "Permissions", "Plan mode after approval"),
+    (Tab::Permissions, "Permissions", "Plan approval message"),
+    (Tab::Permissions, "Permissions", "Plan instructions"),
+    (Tab::Context, "Context & memory", "Branches"),
+    (
+        Tab::Context,
+        "Context & memory",
+        "Keep the version a reply replaces",
+    ),
+    (
+        Tab::Context,
+        "Context & memory",
+        "Versions kept per message",
+    ),
+    (Tab::Permissions, "Permissions", "Max tool rounds"),
+    (Tab::Permissions, "Permissions", "Tool timeout"),
+    (Tab::Privacy, "Data & privacy", "Export settings"),
+    (Tab::Privacy, "Data & privacy", "Export conversations"),
+    (Tab::Privacy, "Data & privacy", "Import settings"),
+    (Tab::Privacy, "Data & privacy", "Import conversations"),
     (Tab::General, "General", "Check for updates"),
     (Tab::General, "General", "Update from (release source)"),
     (Tab::Providers, "Providers", "Base URL / endpoint"),
@@ -1638,91 +1911,87 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Extensions, "Skills & hooks", "Hook timeout"),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
         "Context compaction (summarise long chats)",
     ),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
         "Compaction threshold and context size",
     ),
-    (Tab::Context, "Context & files", "Compaction summary model"),
+    (Tab::Context, "Context & memory", "Compaction summary model"),
+    (Tab::Workspace, "Workspace", "Code review (review changes)"),
+    (Tab::Workspace, "Workspace", "Review prompt and model"),
+    (Tab::Workspace, "Workspace", "Code review strictness"),
     (
-        Tab::Context,
-        "Context & files",
-        "Code review (review changes)",
-    ),
-    (Tab::Context, "Context & files", "Review prompt and model"),
-    (Tab::Context, "Context & files", "Code review strictness"),
-    (
-        Tab::Context,
-        "Context & files",
+        Tab::Workspace,
+        "Workspace",
         "Project instructions (AGENTS.md, CLAUDE.md)",
     ),
-    (Tab::Context, "Context & files", "Projects (on / off)"),
-    (Tab::Context, "Context & files", "Memory (on / off)"),
-    (Tab::Context, "Context & files", "Memory: ask before saving"),
-    (Tab::Context, "Context & files", "Memory: size limit"),
+    (Tab::Context, "Context & memory", "Projects (on / off)"),
+    (Tab::Context, "Context & memory", "Memory (on / off)"),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
+        "Memory: ask before saving",
+    ),
+    (Tab::Context, "Context & memory", "Memory: size limit"),
+    (
+        Tab::Context,
+        "Context & memory",
         "Memory: global or per project",
     ),
-    (Tab::Context, "Context & files", "Memory: saved memories"),
+    (Tab::Context, "Context & memory", "Memory: saved memories"),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
         "Memory: delete all memories",
     ),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
         "Projects: files size limit",
     ),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
         "Projects: default instructions",
     ),
-    (Tab::Context, "Context & files", "Projects: default folder"),
+    (Tab::Context, "Context & memory", "Projects: default folder"),
     (
         Tab::Context,
-        "Context & files",
+        "Context & memory",
         "Projects: default provider",
     ),
+    (Tab::Workspace, "Workspace", "Diff preview for file edits"),
+    (Tab::Workspace, "Workspace", "Undo file edits (checkpoints)"),
     (
-        Tab::Context,
-        "Context & files",
-        "Diff preview for file edits",
+        Tab::Artifacts,
+        "Artifacts & files",
+        "Read scanned PDFs (OCR)",
     ),
     (
-        Tab::Context,
-        "Context & files",
-        "Undo file edits (checkpoints)",
-    ),
-    (Tab::Context, "Context & files", "Read scanned PDFs (OCR)"),
-    (
-        Tab::Context,
-        "Context & files",
+        Tab::Artifacts,
+        "Artifacts & files",
         "OCR engine and vision model",
     ),
     (
-        Tab::Context,
-        "Context & files",
+        Tab::Artifacts,
+        "Artifacts & files",
         "Tesseract program and languages",
     ),
     (
-        Tab::General,
-        "General",
+        Tab::Artifacts,
+        "Artifacts & files",
         "Live web page preview (scripts, network)",
     ),
     (
-        Tab::Tools,
-        "Tools",
+        Tab::Workspace,
+        "Workspace",
         "Workspace tools (files, search, shell)",
     ),
-    (Tab::Tools, "Tools", "Commit changes (git_commit)"),
-    (Tab::Tools, "Tools", "Allow signed commits"),
+    (Tab::Workspace, "Workspace", "Commit changes (git_commit)"),
+    (Tab::Workspace, "Workspace", "Allow signed commits"),
     (
         Tab::Subagents,
         "Subagents",
@@ -1771,16 +2040,6 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Background",
         "Keep running in the menu bar or system tray when the window is closed",
     ),
-    (Tab::Background, "Background", "Run scheduled tasks"),
-    (Tab::Background, "Background", "Scheduled task prompt"),
-    (
-        Tab::Background,
-        "Background",
-        "Scheduled task repeats every (minutes)",
-    ),
-    (Tab::Background, "Background", "Scheduled task approvals"),
-    (Tab::Background, "Background", "Scheduled task folder"),
-    (Tab::Background, "Background", "Scheduled task catch up"),
     (
         Tab::Background,
         "Background",
@@ -1794,6 +2053,16 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
         "Command line MCP wait (seconds)",
     ),
     (Tab::Background, "Background", "Command line save chats"),
+    (
+        Tab::Permissions,
+        "Permissions",
+        "Reply limits (tokens, cost)",
+    ),
+    (
+        Tab::Privacy,
+        "Data & privacy",
+        "Settings and conversations file locations",
+    ),
 ];
 
 fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
@@ -1820,9 +2089,9 @@ mod tests {
         assert_eq!(search_settings("oauth")[0].0, Tab::Mcp);
         assert_eq!(search_settings("calculator")[0].0, Tab::Tools);
         assert_eq!(search_settings("subagent model")[0].0, Tab::Subagents);
-        assert_eq!(search_settings("scanned pdf")[0].0, Tab::Context);
-        assert_eq!(search_settings("tesseract")[0].0, Tab::Context);
-        assert_eq!(search_settings("agents.md")[0].0, Tab::Context);
+        assert_eq!(search_settings("scanned pdf")[0].0, Tab::Artifacts);
+        assert_eq!(search_settings("tesseract")[0].0, Tab::Artifacts);
+        assert_eq!(search_settings("agents.md")[0].0, Tab::Workspace);
         assert_eq!(search_settings("projects")[0].0, Tab::Context);
         assert_eq!(search_settings("memory")[0].0, Tab::Context);
         assert_eq!(search_settings("memory size")[0].0, Tab::Context);
@@ -1830,11 +2099,11 @@ mod tests {
         assert_eq!(search_settings("delete all memories")[0].0, Tab::Context);
         assert_eq!(search_settings("project files size")[0].0, Tab::Context);
         assert_eq!(search_settings("compaction")[0].0, Tab::Context);
-        assert_eq!(search_settings("review changes")[0].0, Tab::Context);
-        assert_eq!(search_settings("review prompt")[0].0, Tab::Context);
+        assert_eq!(search_settings("review changes")[0].0, Tab::Workspace);
+        assert_eq!(search_settings("review prompt")[0].0, Tab::Workspace);
         assert_eq!(search_settings("searxng")[0].0, Tab::Tools);
-        assert_eq!(search_settings("git commit")[0].0, Tab::Tools);
-        assert_eq!(search_settings("signed commits")[0].0, Tab::Tools);
+        assert_eq!(search_settings("git commit")[0].0, Tab::Workspace);
+        assert_eq!(search_settings("signed commits")[0].0, Tab::Workspace);
         assert_eq!(search_settings("provider search")[0].0, Tab::Tools);
         assert_eq!(search_settings("searches per reply")[0].0, Tab::Tools);
         assert_eq!(search_settings("slash command")[0].0, Tab::Extensions);
@@ -1848,14 +2117,14 @@ mod tests {
         assert_eq!(search_settings("read aloud")[0].0, Tab::Voice);
         assert_eq!(search_settings("speech speed")[0].0, Tab::Voice);
         assert_eq!(search_settings("hook timeout")[0].0, Tab::Extensions);
-        assert_eq!(search_settings("web page preview")[0].0, Tab::General);
-        assert_eq!(search_settings("save as pdf")[0].0, Tab::General);
-        assert_eq!(search_settings("excel workbook")[0].0, Tab::General);
-        assert_eq!(search_settings("default permission")[0].0, Tab::General);
-        assert_eq!(search_settings("plan mode")[0].0, Tab::General);
-        assert_eq!(search_settings("plan instructions")[0].0, Tab::General);
-        assert_eq!(search_settings("branches")[0].0, Tab::General);
-        assert_eq!(search_settings("versions kept")[0].0, Tab::General);
+        assert_eq!(search_settings("web page preview")[0].0, Tab::Artifacts);
+        assert_eq!(search_settings("save as pdf")[0].0, Tab::Artifacts);
+        assert_eq!(search_settings("excel workbook")[0].0, Tab::Artifacts);
+        assert_eq!(search_settings("default permission")[0].0, Tab::Permissions);
+        assert_eq!(search_settings("plan mode")[0].0, Tab::Permissions);
+        assert_eq!(search_settings("plan instructions")[0].0, Tab::Permissions);
+        assert_eq!(search_settings("branches")[0].0, Tab::Context);
+        assert_eq!(search_settings("versions kept")[0].0, Tab::Context);
         assert_eq!(search_settings("notify")[0].0, Tab::Background);
         assert_eq!(search_settings("replies at once")[0].0, Tab::Background);
         assert_eq!(search_settings("reply time limit")[0].0, Tab::Background);
@@ -1866,11 +2135,12 @@ mod tests {
         );
         assert_eq!(search_settings("menu bar")[0].0, Tab::Background);
         assert_eq!(search_settings("system tray")[0].0, Tab::Background);
-        assert_eq!(search_settings("scheduled tasks")[0].0, Tab::Background);
-        assert_eq!(search_settings("cloudflare access")[0].0, Tab::General);
-        assert_eq!(search_settings("team domain")[0].0, Tab::General);
-        assert_eq!(search_settings("AUD tag")[0].0, Tab::General);
-        assert_eq!(search_settings("catch up")[0].0, Tab::Background);
+        assert_eq!(search_settings("keychain")[0].0, Tab::Privacy);
+        assert_eq!(search_settings("export settings")[0].0, Tab::Privacy);
+        assert_eq!(search_settings("reply limits")[0].0, Tab::Permissions);
+        assert_eq!(search_settings("cloudflare access")[0].0, Tab::Remote);
+        assert_eq!(search_settings("team domain")[0].0, Tab::Remote);
+        assert_eq!(search_settings("AUD tag")[0].0, Tab::Remote);
         assert!(search_settings("zzzz").is_empty());
     }
 }

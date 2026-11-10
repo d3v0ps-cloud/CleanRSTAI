@@ -96,14 +96,14 @@ impl Usage {
         if g.reply_token_limit > 0 && self.tokens >= g.reply_token_limit {
             return Some(format!(
                 "Stopped: this reply used {} tokens, over the limit of {} \
-                 (Settings → General → Reply limits).",
+                 (Settings → Permissions).",
                 self.tokens, g.reply_token_limit
             ));
         }
         if g.reply_cost_limit_usd > 0.0 && self.cost_usd >= g.reply_cost_limit_usd {
             return Some(format!(
                 "Stopped: this reply cost ${:.4}, over the limit of ${:.2} \
-                 (Settings → General → Reply limits).",
+                 (Settings → Permissions).",
                 self.cost_usd, g.reply_cost_limit_usd
             ));
         }

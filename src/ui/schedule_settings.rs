@@ -1,102 +1,18 @@
-//! The "Scheduled tasks" section of Settings → Background: the master switch, then each task's
-//! name, prompt, schedule, target, approval mode, folder, provider and catch-up setting.
+//! The fields of one scheduled task, for the Scheduled page's editor: schedule, target,
+//! approval mode, folder, provider and catch-up setting.
 
-use chrono::{Local, Utc};
 use eframe::egui;
 use uuid::Uuid;
 
-use super::settings::{FIELD_WIDTH, SettingsAction};
-use super::theme::icon;
-use super::widgets::icon_button;
+use super::settings::FIELD_WIDTH;
 use crate::approval::ApprovalMode;
-use crate::schedule::{self, Kind, ScheduleSettings, ScheduledTask, Target};
+use crate::schedule::{self, Kind, ScheduledTask, Target};
 
 fn weak(ui: &mut egui::Ui, text: &str) {
     ui.scope(|ui| {
         ui.set_max_width(FIELD_WIDTH);
         ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
     });
-}
-
-/// The section. `providers` are (id, name) pairs and `chats` (id, title) pairs, for the pickers.
-pub fn section(
-    ui: &mut egui::Ui,
-    schedules: &mut ScheduleSettings,
-    providers: &[(String, String)],
-    chats: &[(Uuid, String)],
-    plan_on: bool,
-    actions: &mut Vec<SettingsAction>,
-) {
-    ui.add_space(14.0);
-    ui.heading("Scheduled tasks");
-    ui.checkbox(
-        &mut schedules.enabled,
-        egui::RichText::new("Run scheduled tasks").strong(),
-    );
-    weak(
-        ui,
-        "Tasks run only while CleanRSTAI is open. Each run goes through the replies queue and \
-         the limits above, and new chats start read only unless a task says otherwise. A task \
-         sends its prompt to the provider without anyone watching, so check what it may do.",
-    );
-    ui.add_space(8.0);
-
-    let now = Utc::now();
-    let mut remove = None;
-    for (i, task) in schedules.tasks.iter_mut().enumerate() {
-        ui.push_id(task.id, |ui| {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut task.enabled, "On");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut task.name)
-                            .hint_text("Name")
-                            .desired_width(FIELD_WIDTH - 80.0),
-                    );
-                    if icon_button(ui, icon::TRASH, "Delete task").clicked() {
-                        remove = Some(i);
-                    }
-                });
-                ui.add(
-                    egui::TextEdit::multiline(&mut task.prompt)
-                        .hint_text("The prompt to send")
-                        .desired_rows(3)
-                        .desired_width(FIELD_WIDTH),
-                );
-                task_fields(ui, task, providers, chats, plan_on);
-                ui.horizontal(|ui| {
-                    let ready = !task.prompt.trim().is_empty();
-                    let next = match (task.enabled, schedule::upcoming(task)) {
-                        (false, _) => "Off".to_owned(),
-                        (true, Some(at)) => format!(
-                            "Next run {}",
-                            at.with_timezone(&Local).format("%a %d %b %H:%M")
-                        ),
-                        (true, None) => "Next run once saved".to_owned(),
-                    };
-                    ui.weak(next);
-                    if ui
-                        .add_enabled(ready, egui::Button::new("Run now"))
-                        .on_disabled_hover_text("Write a prompt first")
-                        .clicked()
-                    {
-                        actions.push(SettingsAction::RunScheduledTask(Box::new(task.clone())));
-                    }
-                });
-            });
-        });
-        ui.add_space(6.0);
-    }
-    if let Some(i) = remove {
-        schedules.tasks.remove(i);
-    }
-    if ui.button(format!("{}  Add task", icon::PLUS)).clicked() {
-        schedules.tasks.push(ScheduledTask {
-            name: "New task".into(),
-            created: Some(now),
-            ..Default::default()
-        });
-    }
 }
 
 /// The grid of a task's schedule, target, approval, folder, provider and catch-up settings.

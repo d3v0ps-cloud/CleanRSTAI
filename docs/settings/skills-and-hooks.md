@@ -1,7 +1,7 @@
 ---
 title: Skills & hooks
 parent: Settings
-nav_order: 5
+nav_order: 12
 ---
 
 # Skills & hooks

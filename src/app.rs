@@ -944,6 +944,96 @@ impl ChatApp {
                 ui.separator();
                 crate::ui::widgets::permissions_picker(ui, &mut permissions, sandbox_on, plan_on);
                 ui.separator();
+                // What isn't a tool: compaction, memory, branches and the like, with the
+                // chat's one-off actions.
+                ui.menu_button(format!("{}  Chat options", icon::SLIDERS_H), |ui| {
+                    ui.set_min_width(260.0);
+                    for (key, name, desc) in crate::tools::FEATURES {
+                        // The project switch only means something in a project's chat.
+                        if key == crate::tools::PROJECT && !in_project {
+                            continue;
+                        }
+                        let mut on = sel.feature_on(key);
+                        let ic = match key {
+                            crate::tools::COMPACTION => icon::STACK,
+                            crate::tools::INSTRUCTIONS => icon::FILE,
+                            crate::tools::HOOKS => icon::TERMINAL,
+                            crate::tools::PROJECT => icon::FOLDER,
+                            crate::tools::MEMORY => icon::EDIT,
+                            _ => icon::UNDO,
+                        };
+                        let mut hover = desc.to_owned();
+                        if key == crate::tools::INSTRUCTIONS && !loaded.is_empty() {
+                            hover.push_str(&format!(". Last read: {}", loaded.join(", ")));
+                        }
+                        if ui
+                            .checkbox(&mut on, format!("{ic}  {name}"))
+                            .on_hover_text(hover)
+                            .changed()
+                        {
+                            changes.push((
+                                ToolOverrides::feature_key(key),
+                                on,
+                                sel.feature_default(key),
+                            ));
+                        }
+                        if key == crate::tools::INSTRUCTIONS && on && !loaded.is_empty() {
+                            ui.indent("instructions-loaded", |ui| {
+                                ui.label(
+                                    RichText::new(format!("Read: {}", loaded.join(", ")))
+                                        .small()
+                                        .weak(),
+                                );
+                            });
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            self.current.is_some_and(|id| !self.busy(id)),
+                            egui::Button::new(format!("{}  Compact now", icon::STACK)).small(),
+                        )
+                        .on_hover_text(
+                            "Summarise this chat's older messages now; the latest ones \
+                                     are kept word for word",
+                        )
+                        .clicked()
+                    {
+                        compact = true;
+                    }
+                    if self.settings.general.review.enabled {
+                        let idle = self.current.is_some_and(|id| !self.busy(id));
+                        if ui
+                            .add_enabled(
+                                idle && has_workspace,
+                                egui::Button::new(format!("{}  Review changes", icon::CODE))
+                                    .small(),
+                            )
+                            .on_hover_text(
+                                "Send the working folder's git diff to the model with the \
+                                         review instructions in Settings → Workspace",
+                            )
+                            .clicked()
+                        {
+                            review = true;
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            has_edits,
+                            egui::Button::new(format!("{}  Changed files", icon::FILE)).small(),
+                        )
+                        .on_hover_text("Every file this chat's edits changed, with their diffs")
+                        .clicked()
+                    {
+                        show_changed = true;
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Compaction, project instructions, undo, notifications, hooks, branches \
+                     and memory for this chat, and Compact now, Review changes and Changed files",
+                );
+                ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(420.0)
                     .show(ui, |ui| {
@@ -1001,88 +1091,6 @@ impl ChatApp {
                                     ));
                                 }
                             }
-                        }
-                        ui.add_space(4.0);
-                        ui.separator();
-                        ui.label(RichText::new("Chat features").small().weak());
-                        for (key, name, desc) in crate::tools::FEATURES {
-                            // The project switch only means something in a project's chat.
-                            if key == crate::tools::PROJECT && !in_project {
-                                continue;
-                            }
-                            let mut on = sel.feature_on(key);
-                            let ic = match key {
-                                crate::tools::COMPACTION => icon::STACK,
-                                crate::tools::INSTRUCTIONS => icon::FILE,
-                                crate::tools::HOOKS => icon::TERMINAL,
-                                crate::tools::PROJECT => icon::FOLDER,
-                                crate::tools::MEMORY => icon::EDIT,
-                                _ => icon::UNDO,
-                            };
-                            let mut hover = desc.to_owned();
-                            if key == crate::tools::INSTRUCTIONS && !loaded.is_empty() {
-                                hover.push_str(&format!(". Last read: {}", loaded.join(", ")));
-                            }
-                            if ui
-                                .checkbox(&mut on, format!("{ic}  {name}"))
-                                .on_hover_text(hover)
-                                .changed()
-                            {
-                                changes.push((
-                                    ToolOverrides::feature_key(key),
-                                    on,
-                                    sel.feature_default(key),
-                                ));
-                            }
-                            if key == crate::tools::INSTRUCTIONS && on && !loaded.is_empty() {
-                                ui.indent("instructions-loaded", |ui| {
-                                    ui.label(
-                                        RichText::new(format!("Read: {}", loaded.join(", ")))
-                                            .small()
-                                            .weak(),
-                                    );
-                                });
-                            }
-                        }
-                        if ui
-                            .add_enabled(
-                                self.current.is_some_and(|id| !self.busy(id)),
-                                egui::Button::new(format!("{}  Compact now", icon::STACK)).small(),
-                            )
-                            .on_hover_text(
-                                "Summarise this chat's older messages now; the latest ones \
-                                     are kept word for word",
-                            )
-                            .clicked()
-                        {
-                            compact = true;
-                        }
-                        if self.settings.general.review.enabled {
-                            let idle = self.current.is_some_and(|id| !self.busy(id));
-                            if ui
-                                .add_enabled(
-                                    idle && has_workspace,
-                                    egui::Button::new(format!("{}  Review changes", icon::CODE))
-                                        .small(),
-                                )
-                                .on_hover_text(
-                                    "Send the working folder's git diff to the model with the \
-                                         review instructions in Settings → Context & files",
-                                )
-                                .clicked()
-                            {
-                                review = true;
-                            }
-                        }
-                        if ui
-                            .add_enabled(
-                                has_edits,
-                                egui::Button::new(format!("{}  Changed files", icon::FILE)).small(),
-                            )
-                            .on_hover_text("Every file this chat's edits changed, with their diffs")
-                            .clicked()
-                        {
-                            show_changed = true;
                         }
                         for (id, name) in &servers {
                             ui.add_space(4.0);
@@ -1317,7 +1325,7 @@ impl ChatApp {
     /// Reads the working folder's diff in the background; `ReviewReady` then sends it.
     fn start_review(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
         if !self.settings.general.review.enabled {
-            return Err("Code review is off (Settings → Context & files)".into());
+            return Err("Code review is off (Settings → Workspace)".into());
         }
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
@@ -1490,7 +1498,7 @@ impl ChatApp {
         if n <= self.settings.general.compaction.keep_recent as usize {
             return Err(format!(
                 "Nothing to compact yet: the chat has {n} message(s) since the last summary, \
-                 and the latest {} are always kept (Settings → Context).",
+                 and the latest {} are always kept (Settings → Context & memory).",
                 self.settings.general.compaction.keep_recent
             ));
         }
@@ -2815,13 +2823,13 @@ impl ChatApp {
             ),
             Entry::new(
                 icon::TOOLBOX,
-                "Built-in tools",
+                "Tools",
                 "Settings",
                 Command::OpenSettings(Tab::Tools),
             ),
             Entry::new(
                 icon::STACK,
-                "Context & files",
+                "Context & memory",
                 "Settings",
                 Command::OpenSettings(Tab::Context),
             ),
@@ -3069,9 +3077,9 @@ impl ChatApp {
             | Command::ExportConversations
             | Command::ImportSettings
             | Command::ImportConversations => {
-                // These live on the General settings page, which shows their result and
-                // (for settings imports) the merge/replace choice.
-                self.open_settings(Tab::General);
+                // These live on the Data & privacy settings page, which shows their result
+                // and (for settings imports) the merge/replace choice.
+                self.open_settings(Tab::Privacy);
                 if let Some(sui) = &mut self.settings_ui {
                     sui.queue(match cmd {
                         Command::ExportSettings => SettingsAction::ExportSettings {
@@ -4769,7 +4777,9 @@ impl eframe::App for ChatApp {
             #[cfg(not(target_os = "linux"))]
             let own_window = None;
             let live_html = if !preview.enabled {
-                Err("Live preview is off (Settings → General); web pages open in your browser.")
+                Err(
+                    "Live preview is off (Settings → Artifacts & files); web pages open in your browser.",
+                )
             } else if crate::ui::webview::OWN_WINDOW {
                 Err(
                     "Web pages open in their own window (needs WebKitGTK); otherwise in your browser.",
@@ -4885,9 +4895,6 @@ impl eframe::App for ChatApp {
                         sui.draft.active_provider = self.settings.active_provider;
                     }
                     SettingsAction::Close => keep = false,
-                    SettingsAction::RunScheduledTask(task) => {
-                        self.run_now(*task, &ctx, Some(&mut sui.draft.general.schedules));
-                    }
                     SettingsAction::Memory(change) => self.apply_memory_change(change),
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,

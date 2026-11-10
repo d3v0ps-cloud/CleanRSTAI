@@ -40,9 +40,20 @@ pub fn nav_row(
     active: bool,
     filled: bool,
 ) -> egui::Response {
+    nav_row_sized(ui, icon, label, active, filled, ROW_HEIGHT)
+}
+
+/// A [`nav_row`] of another height: Settings lists sixteen pages in shorter rows.
+pub fn nav_row_sized(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    active: bool,
+    filled: bool,
+    height: f32,
+) -> egui::Response {
     let p = theme::palette(ui.visuals().dark_mode);
-    let (rect, resp) =
-        ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
     let name = label.to_owned();
     resp.widget_info(move || egui::WidgetInfo::selected(egui::Role::Button, true, active, &name));
     if ui.is_rect_visible(rect) {
@@ -276,8 +287,8 @@ pub fn segmented<T: PartialEq + Copy>(
     changed
 }
 
-/// One settings row, about 46px (56px with a description): the label (and a muted description under it) on the left,
-/// the control on the right, a hairline underneath.
+/// One settings row: the label (and a muted description under it, wrapped) on the left, the
+/// control on the right, a hairline underneath. The row grows with its description.
 pub fn setting_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -286,24 +297,38 @@ pub fn setting_row(
 ) {
     let p = theme::palette(ui.visuals().dark_mode);
     let width = ui.available_width();
-    let height = if description.is_empty() { 46.0 } else { 56.0 };
+    let text_w = (width * 0.56).floor();
+    let desc_font = egui::FontId::proportional(theme::size::SMALL);
+    let desc_h = if description.is_empty() {
+        0.0
+    } else {
+        ui.painter()
+            .layout(description.to_owned(), desc_font, p.pencil, text_w)
+            .size()
+            .y
+            + 2.0
+    };
+    let text = 17.0 + desc_h;
+    let height = (text + 20.0).max(44.0);
     ui.allocate_ui_with_layout(
         vec2(width, height),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_min_height(height);
             ui.vertical(|ui| {
-                ui.set_max_width(width * 0.58);
+                ui.set_max_width(text_w);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 // Centre the label (and description) on the row.
-                let text = if description.is_empty() { 17.0 } else { 36.0 };
                 ui.add_space(((height - text) / 2.0).max(0.0));
                 ui.label(RichText::new(label).size(theme::size::UI).color(p.ink));
                 if !description.is_empty() {
-                    ui.label(
-                        RichText::new(description)
-                            .size(theme::size::SMALL)
-                            .color(p.pencil),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(description)
+                                .size(theme::size::SMALL)
+                                .color(p.pencil),
+                        )
+                        .wrap(),
                     );
                 }
             });

@@ -5,113 +5,71 @@ use super::*;
 impl SettingsUi {
     pub(super) fn tools_tab(&mut self, ui: &mut egui::Ui) {
         let b = &mut self.draft.general.builtin_tools;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.label(
-                    "Built-in tools that run on this computer don't ask for approval; web fetch \
-                     reaches the internet, so it asks first, like MCP tools. These are the \
-                     defaults for new chats; switch them for one chat from the tools menu next \
-                     to the message box.",
+        page(ui, |ui| {
+            note(
+                ui,
+                "Built-in tools that run on this computer don't ask for approval; web fetch and \
+                 web search reach the internet, so they ask first, like MCP tools. These are the \
+                 defaults for new chats; switch them for one chat from the Tools menu next to \
+                 the message box.",
+            );
+            ui.add_space(6.0);
+            switch(
+                ui,
+                "Time & date",
+                "The current date, time, weekday and time zone, and the time at other UTC offsets",
+                &mut b.time,
+            );
+            switch(
+                ui,
+                "Calculator",
+                "Exact arithmetic and functions (powers, roots, logarithms, trigonometry, \
+                 rounding, min/max/avg) instead of mental maths",
+                &mut b.calculator,
+            );
+            switch(
+                ui,
+                "Task list",
+                "For multi-step requests the model breaks the work into tasks, shows them as a \
+                 checklist in the chat, and ticks them off as it goes",
+                &mut b.tasks,
+            );
+            switch(
+                ui,
+                "Web fetch",
+                "Reads a web URL: pages as text with their links, plain text and JSON as they \
+                 are, images as images. Asks for approval before each fetch",
+                &mut b.fetch,
+            );
+            ui.add_enabled_ui(b.fetch, |ui| {
+                switch(
+                    ui,
+                    "Let web fetch reach this computer and private networks",
+                    "Off: localhost, private (10.x, 192.168.x, …) and link-local addresses, \
+                     such as cloud metadata endpoints, are refused, also after a redirect. \
+                     Subagents and auto-approved calls fetch without asking, so leave this off \
+                     unless you need it",
+                    &mut b.fetch_private_networks,
                 );
-                ui.add_space(10.0);
-                for (on, ic, name, desc) in [
-                    (
-                        &mut b.time,
-                        icon::CLOCK,
-                        "Time & date",
-                        "The current date, time, weekday and time zone, and the time at other UTC offsets.",
-                    ),
-                    (
-                        &mut b.calculator,
-                        icon::CALCULATOR,
-                        "Calculator",
-                        "Exact arithmetic and functions (powers, roots, logarithms, trigonometry, rounding, min/max/avg) instead of mental maths.",
-                    ),
-                    (
-                        &mut b.tasks,
-                        icon::LIST_CHECKS,
-                        "Task list",
-                        "For multi-step requests the model breaks the work into actionable tasks, shows them as a checklist in the chat, and ticks them off as it goes.",
-                    ),
-                    (
-                        &mut b.fetch,
-                        icon::GLOBE,
-                        "Web fetch",
-                        "Reads a web URL: pages as text with their links, plain text and JSON as they are, images as images. Asks for approval before each fetch.",
-                    ),
-                    (
-                        &mut b.web_search,
-                        icon::SEARCH,
-                        "Web search",
-                        "Searches the web with the service below (or the provider's own search, when Search with says so) and lists the results (title, address, snippet), so the model can read the useful pages with web fetch.",
-                    ),
-                    (
-                        &mut b.workspace,
-                        icon::FOLDER,
-                        "Workspace tools",
-                        "When a chat has a working folder (set below the message box): read_file, file_glob_search, grep_search, get_info, git_status and git_diff run freely inside it; write_file, edit_file and exec_shell_command ask for approval. Paths can't leave the folder.",
-                    ),
-                ] {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(on, egui::RichText::new(format!("{ic}  {name}")).strong());
-                    });
-                    ui.indent(name, |ui| {
-                        ui.weak(desc);
-                    });
-                    ui.add_space(8.0);
-                }
-                ui.add_enabled_ui(b.workspace, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(
-                            &mut b.git_commit,
-                            egui::RichText::new(format!("{}  Commit (git_commit)", icon::CHECK_SQUARE))
-                                .strong(),
-                        );
-                    });
-                    ui.indent("git-commit", |ui| {
-                        ui.weak(
-                            "Lets the model commit the workspace's changes to its git repository as \
-                             one local commit. Every commit asks for approval, even in Auto in \
-                             workspace mode. Nothing is pushed, and git hooks don't run. Off by \
-                             default.",
-                        );
-                        ui.add_enabled_ui(b.git_commit, |ui| {
-                            ui.checkbox(&mut b.allow_signing, "Allow signed commits");
-                            ui.weak(
-                                "Off: commits are never signed. On: a repository set to sign its \
-                                 commits signs them, and gpg may ask for a passphrase.",
-                            );
-                        });
-                    });
-                    ui.add_space(8.0);
-                });
-                ui.add_enabled_ui(b.fetch, |ui| {
-                    ui.checkbox(
-                        &mut b.fetch_private_networks,
-                        "Let web fetch reach this computer and private networks",
-                    );
-                    ui.indent("fetch-private", |ui| {
-                        ui.weak(
-                            "Off: localhost, private (10.x, 192.168.x, …) and link-local addresses, \
-                             such as cloud metadata endpoints, are refused, also after a redirect. \
-                             Subagents and auto-approved calls fetch without asking, so leave \
-                             this off unless you need it.",
-                        );
-                    });
-                });
-                ui.add_space(12.0);
-                ui.add_enabled_ui(b.web_search, |ui| {
-                    web_search_rows(ui, &mut b.search, &mut self.show_search_key);
-                });
-                ui.add_space(8.0);
-                ui.weak(format!(
-                    "{}  The subagent tool has its own page: Subagents. Context compaction, \
-                     project instructions and undo for file edits are on Context & files. \
-                     Slash commands and skills are on Skills & hooks.",
-                    icon::ROBOT
-                ));
             });
+            switch(
+                ui,
+                "Web search",
+                "Searches the web with the service below (or the provider's own search) and \
+                 lists the results, so the model can read the useful pages with web fetch",
+                &mut b.web_search,
+            );
+            ui.add_space(14.0);
+            ui.add_enabled_ui(b.web_search, |ui| {
+                web_search_rows(ui, &mut b.search, &mut self.show_search_key);
+            });
+            ui.add_space(10.0);
+            note(
+                ui,
+                "The workspace tools (files, search, shell, commit) are on Workspace, the \
+                 subagent tool on Subagents, and slash commands and skills on Skills & hooks.",
+            );
+        });
     }
 
     pub(super) fn extensions_tab(&mut self, ui: &mut egui::Ui) {

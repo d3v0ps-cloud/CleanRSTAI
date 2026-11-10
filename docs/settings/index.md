@@ -5,26 +5,32 @@ nav_order: 4
 
 # Settings
 
-Open **Settings** from the menu on your name at the bottom of the sidebar, or press
-**⌘/Ctrl + ,**. It opens over the window (which dims behind it) on **General**; **Customize** in
-the sidebar opens it on Skills & hooks.
-The pages are grouped on the left: **Preferences** (General, Appearance, Voice), **This
-computer** (Docker sandbox, Background) and **Customize** (Providers, MCP servers, Built-in tools,
-Skills & hooks, Context & files, Subagents).
+Open **Settings** from the sidebar, from the menu on your name at the bottom of it, or with
+**⌘/Ctrl + ,**. It opens over the window (which dims behind it) on **General**.
+The pages are grouped on the left: **App**, **Chats**, **Models & tools** and **This computer**.
+Most settings are one row: its name and a short description on the left, a switch, list or
+field on the right.
 
-| Page | What you can set |
-|---|---|
-| [General](general.html) | System prompt, send key, secrets, updates, live web page preview, tool approval, tool rounds, reply limits and timeout, remote access and Cloudflare Tunnel, export and import |
-| [Appearance](appearance.html) | Theme, UI scale, your name, reduce motion, reasoning display, speed stats, web images, the artifact panel |
-| [Providers](providers.html) | Endpoints: base URL, API (Chat Completions, Responses, Anthropic), API key, model, reasoning effort and sampling options per provider and model, server type, token usage, streaming, timeout, extra headers |
-| [MCP Servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
-| [Built-in Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch, web search (service, key, results) and workspace tools on or off by default |
-| [Skills & hooks](skills-and-hooks.html) | Slash commands (saved prompts), skills: folders of instructions the model loads when a task matches, from your skills folder or the workspace, and hooks: commands that run before or after a tool call, or when a reply is done |
-| [Context & files](context.html) | Context compaction (threshold, kept messages, context size, summary model and instructions, shortening older tool results), project instructions (`AGENTS.md`, `CLAUDE.md`), diffs and undo for file edits |
-| [Subagents](subagents.html) | Delegation on or off; provider and model; tools, including the workspace in sandbox containers of their own; parallelism and limits; system prompt |
-| [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or custom Dockerfile (small and full examples), network (none, normal, or allowed hosts, protocols and ports), CPU, memory and process limits, read-only folder |
-| [Background](background.html) | Desktop notifications for finished, failed and approval-waiting replies; how many replies run at once (the rest queue); a time limit per reply; the command line (`cleanrstai exec`) |
-| [Voice](voice.html) | Voice input (dictation into the message box) with its provider, model, language, recording limit and microphone; reading replies aloud with the system voice or a speech endpoint, with its provider, model, voice, speed and length limit |
+| Group | Page | What you can set |
+|---|---|---|
+| App | [General](general.html) | System prompt, your name, send key, updates |
+| | [Appearance](appearance.html) | Theme, UI scale, reduce motion, reasoning display, speed stats |
+| | [Voice](voice.html) | Voice input (dictation) and reading replies aloud: provider, model, language, voice, speed and limits |
+| | [Data & privacy](privacy.html) | The keychain for secrets, web images in replies, export and import, where files are kept |
+| Chats | [Permissions](permissions.html) | The mode new chats start in, auto-approve, tool rounds, reply limits, tool timeout, plan mode |
+| | [Context & memory](context.html) | Context compaction, memory, projects, branches |
+| | [Workspace](workspace.html) | Workspace tools and commits, project instructions (`AGENTS.md`, `CLAUDE.md`), diffs and undo for file edits, code review |
+| | [Artifacts & files](artifacts.html) | The artifact panel, live web page preview, Save as formats, OCR for scanned PDFs |
+| Models & tools | [Providers](providers.html) | Endpoints: base URL, API, API key, model, reasoning effort and sampling options, server type, streaming, timeout, extra headers |
+| | [MCP servers](mcp-servers.html) | Add, import, enable or disable servers; stdio or HTTP connection; sign-in; per-tool toggles |
+| | [Tools](built-in-tools.html) | Time & date, calculator, task list, web fetch and web search (service, key, results) on or off by default |
+| | [Skills & hooks](skills-and-hooks.html) | Slash commands, skills, and hooks: commands that run before or after a tool call, or when a reply is done |
+| | [Subagents](subagents.html) | Delegation on or off; provider and model; tools; parallelism and limits; system prompt |
+| This computer | [Docker sandbox](docker.html) | Run shell commands in a Docker container: image or Dockerfile, network, CPU, memory and process limits |
+| | [Background](background.html) | Keep running in the tray, notifications, how many replies run at once, a time limit per reply, the command line (`cleanrstai exec`) |
+| | [Remote access](remote-access.html) | The browser client's server, password and HTTPS, Cloudflare Tunnel and Cloudflare Access |
+
+Scheduled agents are not in Settings: they have the **Scheduled** page in the sidebar.
 
 ## Finding a setting
 
@@ -36,9 +42,9 @@ to its page.
 
 Edits are made on a draft and take effect only when you save:
 
-- **Save & Close**: apply the changes and close settings.
+- **Save**: apply the changes and close settings.
 - **Apply**: apply them and stay.
-- **Discard changes** (or **Close** when nothing changed): leave without applying.
+- **Cancel** (or **Close** when nothing changed): leave without applying.
 
 **Unsaved changes** shows while there are changes. **Esc**, the **×** at the top right, or a
 click outside closes settings when there are no unsaved changes. Only MCP servers whose connection settings changed are reconnected.
@@ -51,5 +57,5 @@ click outside closes settings when there are no unsaved changes. Only MCP server
 | Linux | `~/.config/cleanrstai/settings.json` | `~/.local/share/cleanrstai/conversations/` |
 | Windows | `%APPDATA%\bukn\CleanRSTAI\config\settings.json` | `%APPDATA%\bukn\CleanRSTAI\data\conversations\` |
 
-The exact paths are shown at the bottom of the General page. API keys and other secrets are
-not in `settings.json`; see [Secrets](general.html#secrets).
+The exact paths are shown at the bottom of the Data & privacy page. API keys and other secrets are
+not in `settings.json`; see [Secrets](privacy.html#secrets).

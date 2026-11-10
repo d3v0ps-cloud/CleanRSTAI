@@ -651,7 +651,7 @@ fn plan_buttons(ui: &mut egui::Ui, conv: Uuid, actions: &mut Vec<Action>) {
         let approve = ui
             .button(theme::labelled(icon::LIST_CHECKS, "Approve plan"))
             .on_hover_text(
-                "Switch this chat to its approval mode after a plan (Settings → General → Plan \
+                "Switch this chat to its approval mode after a plan (Settings → Permissions → Plan \
                  mode) and have the model carry the plan out",
             );
         if approve.clicked() {

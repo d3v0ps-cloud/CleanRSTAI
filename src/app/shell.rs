@@ -502,7 +502,7 @@ impl ChatApp {
             (icon::FOLDERS, "Projects"),
             (icon::SHAPES, "Artifacts"),
             (icon::CALENDAR, "Scheduled"),
-            (icon::SLIDERS_H, "Customize"),
+            (icon::GEAR, "Settings"),
         ];
         for (glyph, label) in items {
             let active = match label {
@@ -517,7 +517,7 @@ impl ChatApp {
                 "Projects" => "Groups of chats with shared instructions, files and settings",
                 "Artifacts" => "Web pages, drawings and code from your chats",
                 "Scheduled" => "Agents that run a prompt on a schedule",
-                _ => "Skills, hooks and slash commands (Settings → Skills & hooks)",
+                _ => "Settings (⌘,)",
             };
             if chrome::nav_row(ui, glyph, label, active, false)
                 .on_hover_text(hover)
@@ -533,7 +533,7 @@ impl ChatApp {
                     "Projects" => self.page = Page::Projects,
                     "Artifacts" => self.page = Page::Artifacts,
                     "Scheduled" => self.page = Page::Scheduled,
-                    _ => self.open_settings(Tab::Extensions),
+                    _ => self.open_settings(Tab::General),
                 }
             }
         }
@@ -717,18 +717,6 @@ impl ChatApp {
                         .clicked()
                     {
                         self.open_settings(Tab::General);
-                    }
-                    if ui
-                        .button(theme::labelled(icon::CLOUD, "Providers and models"))
-                        .clicked()
-                    {
-                        self.open_settings(Tab::Providers);
-                    }
-                    if ui
-                        .button(theme::labelled(icon::PALETTE, "Appearance"))
-                        .clicked()
-                    {
-                        self.open_settings(Tab::Appearance);
                     }
                     if ui
                         .button(theme::labelled(icon::COMMAND, "Command palette  ⌘K"))
@@ -1484,11 +1472,6 @@ impl ChatApp {
         let views = self.mcp.snapshot();
         let tunnel = self.tunnel_status();
         let access_error = self.access.last_error();
-        let chats: Vec<(Uuid, String)> = self
-            .conversations
-            .iter()
-            .map(|c| (c.id, c.title.clone()))
-            .collect();
         let memories = self.memory.all();
         let projects: Vec<(Uuid, String)> = self
             .projects
@@ -1539,7 +1522,6 @@ impl ChatApp {
                 &self.remote_status,
                 &tunnel,
                 access_error.as_deref(),
-                &chats,
                 &memories,
                 &projects,
             )
