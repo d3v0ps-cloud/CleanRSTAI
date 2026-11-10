@@ -205,8 +205,8 @@ own sandbox containers (see [Subagents](subagents.html)).
 
 ## Limits
 
-- **Max tool rounds** (default 20): how many times the model may call tools before it must
+- **Tool rounds per reply** (default 20): how many times the model may call tools before it must
   answer.
 - **Tool timeout** (default 120 s): how long one tool call may take.
 
-Both are in [General](../settings/permissions.html#max-tool-rounds).
+Both are in [General](../settings/permissions.html#tool-rounds-per-reply).

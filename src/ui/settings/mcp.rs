@@ -175,234 +175,207 @@ impl SettingsUi {
         let view = view_of(&s.id);
         let live_cfg = live.mcp_servers.iter().find(|c| c.id == s.id);
 
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Grid::new("mcp-grid")
-                    .num_columns(2)
-                    .spacing([12.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Name");
-                        ui.text_edit_singleline(&mut s.name)
-                            .on_hover_text("Used to prefix tool names shown to the model");
-                        ui.end_row();
+        page(ui, |ui| {
+            text_row(
+                ui,
+                "Name",
+                "Used to prefix tool names shown to the model",
+                &mut s.name,
+                "",
+            );
+            switch(ui, "Enabled", "", &mut s.enabled);
+            let mut stdio = matches!(s.transport, McpTransportConfig::Stdio { .. });
+            let was = stdio;
+            choice(
+                ui,
+                "mcp-transport",
+                "Transport",
+                "",
+                &mut stdio,
+                &[(true, "stdio (local process)"), (false, "Streamable HTTP")],
+            );
+            if stdio != was {
+                s.transport = if stdio {
+                    McpTransportConfig::default()
+                } else {
+                    McpTransportConfig::new_http()
+                };
+            }
+            match &mut s.transport {
+                McpTransportConfig::Stdio {
+                    command,
+                    args,
+                    env,
+                    cwd,
+                } => {
+                    text_row(
+                        ui,
+                        "Command",
+                        "",
+                        command,
+                        "npx, uvx, docker, /path/to/server",
+                    );
+                    text_row(ui, "Working folder", "Optional", cwd, "");
+                    section(ui, "Arguments");
+                    ui.add_space(6.0);
+                    list_editor(ui, "args", args, "argument");
+                    section(ui, "Environment");
+                    ui.add_space(6.0);
+                    kv_editor(ui, "env", env, "NAME", "value", false);
+                }
+                McpTransportConfig::Http {
+                    url,
+                    headers,
+                    oauth_client_id,
+                } => {
+                    text_row(ui, "URL", "", url, "https://example.com/mcp");
+                    text_row(
+                        ui,
+                        "OAuth client ID",
+                        "Optional. Servers that require sign-in usually register CleanRSTAI \
+                         automatically; set this only if the server's documentation gives you a \
+                         client ID",
+                        oauth_client_id,
+                        "",
+                    );
+                    section(ui, "Headers");
+                    ui.add_space(6.0);
+                    kv_editor(ui, "headers", headers, "Authorization", "Bearer …", true);
+                }
+            }
 
-                        ui.label("Enabled");
-                        ui.checkbox(&mut s.enabled, "");
-                        ui.end_row();
-
-                        ui.label("Transport");
-                        ui.horizontal(|ui| {
-                            let is_stdio = matches!(s.transport, McpTransportConfig::Stdio { .. });
-                            if ui.radio(is_stdio, "stdio (local process)").clicked() && !is_stdio {
-                                s.transport = McpTransportConfig::default();
+            section(ui, "Status");
+            ui.add_space(4.0);
+            let unsaved = live_cfg.is_none_or(|l| l.needs_reconnect(s));
+            ui.horizontal_wrapped(|ui| {
+                match (live_cfg, view) {
+                    _ if unsaved => {
+                        ui.weak("Apply settings to connect with this configuration.");
+                    }
+                    (_, Some(v)) => {
+                        let color = status_color(ui, Some(&v.status));
+                        let text = match &v.status {
+                            ServerStatus::Disabled => "Disabled".to_owned(),
+                            ServerStatus::Connecting => "Connecting…".to_owned(),
+                            ServerStatus::Connected => {
+                                format!("Connected · {} tools · {}", v.tools.len(), v.server_info)
                             }
-                            if ui.radio(!is_stdio, "Streamable HTTP").clicked() && is_stdio {
-                                s.transport = McpTransportConfig::new_http();
+                            ServerStatus::NeedsSignIn => "Sign-in required".to_owned(),
+                            ServerStatus::SigningIn => {
+                                "Waiting for you to sign in in your browser…".to_owned()
                             }
-                        });
-                        ui.end_row();
-
-                        match &mut s.transport {
-                            McpTransportConfig::Stdio {
-                                command,
-                                args,
-                                env,
-                                cwd,
-                            } => {
-                                ui.label("Command");
-                                ui.add(
-                                    egui::TextEdit::singleline(command)
-                                        .hint_text("npx, uvx, docker, /path/to/server")
-                                        .desired_width(FIELD_WIDTH),
-                                );
-                                ui.end_row();
-                                ui.label("Arguments");
-                                ui.vertical(|ui| list_editor(ui, "args", args, "argument"));
-                                ui.end_row();
-                                ui.label("Environment");
-                                ui.vertical(|ui| kv_editor(ui, "env", env, "NAME", "value", false));
-                                ui.end_row();
-                                ui.label("Working dir");
-                                ui.add(
-                                    egui::TextEdit::singleline(cwd)
-                                        .hint_text("(optional)")
-                                        .desired_width(FIELD_WIDTH),
-                                );
-                                ui.end_row();
-                            }
-                            McpTransportConfig::Http {
-                                url,
-                                headers,
-                                oauth_client_id,
-                            } => {
-                                ui.label("URL");
-                                ui.add(
-                                    egui::TextEdit::singleline(url)
-                                        .hint_text("https://example.com/mcp")
-                                        .desired_width(FIELD_WIDTH),
-                                );
-                                ui.end_row();
-                                ui.label("Headers");
-                                ui.vertical(|ui| {
-                                    kv_editor(
-                                        ui,
-                                        "headers",
-                                        headers,
-                                        "Authorization",
-                                        "Bearer …",
-                                        true,
-                                    )
-                                });
-                                ui.end_row();
-                                ui.label("OAuth client ID");
-                                ui.add(
-                                    egui::TextEdit::singleline(oauth_client_id)
-                                        .hint_text("(optional) only if the server can't register CleanRSTAI automatically")
-                                        .desired_width(FIELD_WIDTH),
-                                )
-                                .on_hover_text(
-                                    "Servers that require sign-in usually register CleanRSTAI automatically. Set this only if the server's documentation gives you a client ID.",
-                                );
-                                ui.end_row();
-                            }
-                        }
-                    });
-
-                ui.add_space(8.0);
-                ui.separator();
-                let unsaved = live_cfg.is_none_or(|l| l.needs_reconnect(s));
-                ui.horizontal(|ui| {
-                    ui.strong("Status:");
-                    match (live_cfg, view) {
-                        _ if unsaved => {
-                            ui.weak("Apply settings to connect with this configuration.");
-                        }
-                        (_, Some(v)) => {
-                            let color = status_color(ui, Some(&v.status));
-                            let text = match &v.status {
-                                ServerStatus::Disabled => "Disabled".to_owned(),
-                                ServerStatus::Connecting => "Connecting…".to_owned(),
-                                ServerStatus::Connected => format!(
-                                    "Connected · {} tools · {}",
-                                    v.tools.len(),
-                                    v.server_info
-                                ),
-                                ServerStatus::NeedsSignIn => "Sign-in required".to_owned(),
-                                ServerStatus::SigningIn => {
-                                    "Waiting for you to sign in in your browser…".to_owned()
-                                }
-                                ServerStatus::Error(_) => "Error".to_owned(),
-                            };
-                            ui.colored_label(color, text);
-                            if matches!(
-                                v.status,
-                                ServerStatus::Connecting | ServerStatus::SigningIn
-                            ) {
-                                ui.spinner();
-                            }
-                        }
-                        _ => {
-                            ui.weak("Not connected");
+                            ServerStatus::Error(_) => "Error".to_owned(),
+                        };
+                        ui.colored_label(color, text);
+                        if matches!(v.status, ServerStatus::Connecting | ServerStatus::SigningIn) {
+                            ui.spinner();
                         }
                     }
-                    if !unsaved && s.enabled {
-                        let is_http = matches!(s.transport, McpTransportConfig::Http { .. });
-                        let status = view.map(|v| &v.status);
-                        if is_http
-                            && matches!(
-                                status,
-                                Some(ServerStatus::NeedsSignIn | ServerStatus::Error(_))
-                            )
-                            && ui
-                                .button(format!("{}  Sign in…", icon::SIGN_IN))
-                                .on_hover_text("Opens your browser to sign in to this server")
-                                .clicked()
-                        {
-                            actions.push(SettingsAction::SignIn(s.id.clone()));
-                        }
-                        if is_http
-                            && view.is_some_and(|v| v.signed_in)
-                            && ui.button("Sign out").clicked()
-                        {
-                            actions.push(SettingsAction::SignOut(s.id.clone()));
-                        }
-                        if ui.button("Reconnect").clicked() {
-                            actions.push(SettingsAction::Reconnect(s.id.clone()));
-                        }
-                        if view.is_some_and(|v| v.status == ServerStatus::Connected)
-                            && ui.button("Refresh").clicked()
-                        {
-                            actions.push(SettingsAction::RefreshTools(s.id.clone()));
-                        }
+                    _ => {
+                        ui.weak("Not connected");
                     }
-                });
+                }
+                if !unsaved && s.enabled {
+                    let is_http = matches!(s.transport, McpTransportConfig::Http { .. });
+                    let status = view.map(|v| &v.status);
+                    if is_http
+                        && matches!(
+                            status,
+                            Some(ServerStatus::NeedsSignIn | ServerStatus::Error(_))
+                        )
+                        && ui
+                            .button(format!("{}  Sign in…", icon::SIGN_IN))
+                            .on_hover_text("Opens your browser to sign in to this server")
+                            .clicked()
+                    {
+                        actions.push(SettingsAction::SignIn(s.id.clone()));
+                    }
+                    if is_http
+                        && view.is_some_and(|v| v.signed_in)
+                        && ui.button("Sign out").clicked()
+                    {
+                        actions.push(SettingsAction::SignOut(s.id.clone()));
+                    }
+                    if ui.button("Reconnect").clicked() {
+                        actions.push(SettingsAction::Reconnect(s.id.clone()));
+                    }
+                    if view.is_some_and(|v| v.status == ServerStatus::Connected)
+                        && ui.button("Refresh").clicked()
+                    {
+                        actions.push(SettingsAction::RefreshTools(s.id.clone()));
+                    }
+                }
+            });
 
-                if let Some(v) = view.filter(|_| !unsaved) {
-                    if let ServerStatus::Error(e) = &v.status {
-                        ui.colored_label(ui.visuals().error_fg_color, e);
-                    }
-                    if !v.tools.is_empty() {
-                        ui.add_space(6.0);
-                        ui.strong("Tools");
-                        ui.weak("Unchecked tools are not offered to the model.");
-                        for t in &v.tools {
-                            let mut on = !s.disabled_tools.contains(&t.name);
-                            let resp = ui.checkbox(&mut on, &t.name);
-                            let resp = if t.description.is_empty() {
-                                resp
+            if let Some(v) = view.filter(|_| !unsaved) {
+                if let ServerStatus::Error(e) = &v.status {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                if !v.tools.is_empty() {
+                    section(ui, "Tools");
+                    ui.add_space(4.0);
+                    note(ui, "Tools that are off are not offered to the model.");
+                    for t in &v.tools {
+                        let mut on = !s.disabled_tools.contains(&t.name);
+                        let before = on;
+                        switch(ui, &t.name, &t.description, &mut on);
+                        if on != before {
+                            if on {
+                                s.disabled_tools.retain(|n| n != &t.name);
                             } else {
-                                resp.on_hover_text(&t.description)
-                            };
-                            if resp.changed() {
-                                if on {
-                                    s.disabled_tools.retain(|n| n != &t.name);
-                                } else {
-                                    s.disabled_tools.push(t.name.clone());
-                                }
+                                s.disabled_tools.push(t.name.clone());
                             }
                         }
                     }
-                    if !v.resources.is_empty() {
-                        egui::CollapsingHeader::new(format!("Resources ({})", v.resources.len()))
-                            .id_salt(("resources", &s.id))
-                            .show(ui, |ui| {
-                                ui.weak(format!("Attach these to a message from the {} menu next to the input.", icon::BOOKS));
-                                for r in &v.resources {
-                                    ui.label(&r.name).on_hover_text(if r.description.is_empty() {
+                    ui.add_space(8.0);
+                }
+                if !v.resources.is_empty() {
+                    egui::CollapsingHeader::new(format!("Resources ({})", v.resources.len()))
+                        .id_salt(("resources", &s.id))
+                        .show(ui, |ui| {
+                            ui.weak(format!(
+                                "Attach these to a message from the {} menu next to the input.",
+                                icon::BOOKS
+                            ));
+                            for r in &v.resources {
+                                ui.label(&r.name)
+                                    .on_hover_text(if r.description.is_empty() {
                                         r.uri.clone()
                                     } else {
                                         format!("{}\n{}", r.description, r.uri)
                                     });
-                                }
-                            });
-                    }
-                    if !v.prompts.is_empty() {
-                        egui::CollapsingHeader::new(format!("Prompts ({})", v.prompts.len()))
-                            .id_salt(("prompts", &s.id))
-                            .show(ui, |ui| {
-                                ui.weak(format!("Insert these from the {} menu next to the input.", icon::BOOKS));
-                                for p in &v.prompts {
-                                    let args: Vec<&str> =
-                                        p.arguments.iter().map(|a| a.name.as_str()).collect();
-                                    let label = if args.is_empty() {
-                                        p.name.clone()
-                                    } else {
-                                        format!("{} ({})", p.name, args.join(", "))
-                                    };
-                                    ui.label(label).on_hover_text(&p.description);
-                                }
-                            });
-                    }
-                    if !v.stderr.is_empty() {
-                        egui::CollapsingHeader::new("Server log (stderr)")
-                            .id_salt(("stderr", &s.id))
-                            .show(ui, |ui| {
-                                let start = v.stderr.len().saturating_sub(60);
-                                code_block(ui, &v.stderr[start..].join("\n"));
-                            });
-                    }
+                            }
+                        });
                 }
-            });
+                if !v.prompts.is_empty() {
+                    egui::CollapsingHeader::new(format!("Prompts ({})", v.prompts.len()))
+                        .id_salt(("prompts", &s.id))
+                        .show(ui, |ui| {
+                            ui.weak(format!(
+                                "Insert these from the {} menu next to the input.",
+                                icon::BOOKS
+                            ));
+                            for p in &v.prompts {
+                                let args: Vec<&str> =
+                                    p.arguments.iter().map(|a| a.name.as_str()).collect();
+                                let label = if args.is_empty() {
+                                    p.name.clone()
+                                } else {
+                                    format!("{} ({})", p.name, args.join(", "))
+                                };
+                                ui.label(label).on_hover_text(&p.description);
+                            }
+                        });
+                }
+                if !v.stderr.is_empty() {
+                    egui::CollapsingHeader::new("Server log (stderr)")
+                        .id_salt(("stderr", &s.id))
+                        .show(ui, |ui| {
+                            let start = v.stderr.len().saturating_sub(60);
+                            code_block(ui, &v.stderr[start..].join("\n"));
+                        });
+                }
+            }
+        });
     }
 }

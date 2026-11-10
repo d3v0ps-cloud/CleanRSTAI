@@ -47,7 +47,7 @@ appear when it is on. See [Remote access](../using/remote-access.html) for setup
     [Cloudflare Access](../using/cloudflare-tunnel.html#cloudflare-access-sign-in-before-the-login).
   - **cloudflared**: the path to `cloudflared`, or empty (the default) to find it on `PATH`,
     with **Browse…**.
-  - **Tunnel status**: *Connecting to Cloudflare…*, *Online at* the public address with a copy
+  - The tunnel's status line: *Connecting to Cloudflare…*, *Online at* the public address with a copy
     button and the number of connections, or the error (*Trying again shortly* when it will).
     A warning appears while the password is shorter than 12 characters, which the tunnel
     needs. For a named tunnel, a note gives the service to enter in the route in the

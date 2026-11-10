@@ -49,7 +49,7 @@ present.
 
 | Setting | Default | Description |
 |---|---|---|
-| **Sandbox** | off | Ticked, the box reads "Run shell commands in a Docker container". Turning it on or off applies to new commands. |
+| **Run shell commands in a Docker container** | off | Turning it on or off applies to new commands. |
 | **Image** | Docker image | **Docker image** uses an image you name. **Custom Dockerfile** builds one from the text you write. See [Images](#images). |
 | **Image name** | `python:3.13-slim` | Shown for **Docker image**. Any image name and tag. An empty name is replaced by the default. |
 | **Get the image** | Pull when missing | Shown for **Docker image**. **Pull when missing**, **Pull every time the app starts**, or **Only use an image already on this computer**. |
@@ -59,9 +59,9 @@ present.
 | **CPUs** | 2 | How many CPUs a container may use, from 0.25 to 64. |
 | **Memory** | 2048 MB | How much memory a container may use, from 256 to 262144 MB. |
 | **Processes** | 512 | How many processes a container may run at once, from 32 to 65536. |
-| **Workspace folder** | Read-write | Tick **Mount read-only (commands can't change files)** to stop commands changing the folder. |
+| **Mount the workspace read-only** | off | Turn it on to stop commands changing the folder. |
 | **docker** | found on `PATH` | The path to the `docker` command. Leave it empty to find `docker` on `PATH`, or type a path or use **Browse…**. |
-| **Status** | | **Test**, and **Pull now** or **Build now**. See [Status](#status). |
+| **Check** | | **Test**, and **Pull now** or **Build now**. See [Status](#status). |
 
 Values outside a range are kept within it. The sandbox applies to new commands; settings
 changes remove the running containers.
@@ -270,7 +270,7 @@ The message is returned as the command's error, so the model sees it and can tel
 
 ## Status
 
-The **Status** row at the bottom of the page has these buttons:
+The **Check** row under the image settings has these buttons:
 
 - **Test** checks that Docker is running and the image is present. A successful result looks
   like "Docker 27.3.1 is running · image python:3.13-slim is present". For a Dockerfile it reads

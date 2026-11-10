@@ -24,7 +24,7 @@ What runs without asking, how far one reply may go, and plan mode. Each chat pic
 a new chat starts in: Default permissions, Auto in workspace, Allow all or Read only. Each chat
 can change its own mode in the tools menu or with ⌘K; chats that already exist keep theirs.
 
-## Max tool rounds
+## Tool rounds per reply
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.
 

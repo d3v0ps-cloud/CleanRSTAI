@@ -68,258 +68,239 @@ impl SettingsUi {
         let is_active = draft.active_provider == idx;
         let p = &mut draft.providers[idx];
         let mut make_active = false;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Grid::new("provider-grid")
-                    .num_columns(2)
-                    .spacing([12.0, 8.0])
-                    .striped(false)
-                    .show(ui, |ui| {
-                        ui.label("Name");
-                        ui.text_edit_singleline(&mut p.name);
-                        ui.end_row();
-
-                        ui.label("Base URL");
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p.base_url)
-                                    .hint_text("https://api.openai.com/v1")
-                                    .desired_width(FIELD_WIDTH - 100.0),
-                            );
-                            egui::ComboBox::from_id_salt("preset")
-                                .selected_text("Presets")
-                                .width(90.0)
-                                .show_ui(ui, |ui| {
-                                    for (name, url) in PRESETS {
-                                        if ui.selectable_label(false, *name).clicked() {
-                                            p.base_url = (*url).to_owned();
-                                        }
-                                    }
-                                });
-                        });
-                        ui.end_row();
-
-                        ui.label("API key");
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p.api_key)
-                                    .password(!self.show_key)
-                                    .hint_text("sk-… (leave empty for local servers)")
-                                    .desired_width(FIELD_WIDTH - 100.0),
-                            );
-                            ui.checkbox(&mut self.show_key, "Show");
-                        });
-                        ui.end_row();
-
-                        ui.label("Model");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut p.model).desired_width(220.0));
-                            if !p.models.is_empty() {
-                                egui::ComboBox::from_id_salt("model-pick")
-                                    .selected_text(format!("{} models", p.models.len()))
-                                    .width(110.0)
-                                    .height(400.0)
-                                    .show_ui(ui, |ui| {
-                                        for m in &p.models {
-                                            ui.selectable_value(&mut p.model, m.clone(), m);
-                                        }
-                                    });
+        page(ui, |ui| {
+            if is_active {
+                setting_row(ui, "Active provider", "New chats use this provider", |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{}  Active", icon::OK))
+                            .color(crate::ui::theme::success(ui.visuals().dark_mode)),
+                    );
+                });
+            } else {
+                setting_row(ui, "Active provider", "New chats use another one", |ui| {
+                    if ui.button("Use this provider").clicked() {
+                        make_active = true;
+                    }
+                });
+            }
+            text_row(ui, "Name", "", &mut p.name, "");
+            setting_row(ui, "Base URL", "", |ui| {
+                egui::ComboBox::from_id_salt("preset")
+                    .selected_text("Presets")
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        for (name, url) in PRESETS {
+                            if ui.selectable_label(false, *name).clicked() {
+                                p.base_url = (*url).to_owned();
                             }
-                            let label = if self.fetching_models {
-                                "Fetching…"
-                            } else {
-                                "Fetch models"
-                            };
-                            if ui
-                                .add_enabled(!self.fetching_models, egui::Button::new(label))
-                                .clicked()
-                            {
-                                self.fetching_models = true;
-                                self.models_error = None;
-                                actions.push(SettingsAction::FetchModels(p.clone()));
-                            }
-                        });
-                        ui.end_row();
-                        if let Some(err) = &self.models_error {
-                            ui.label("");
-                            ui.colored_label(ui.visuals().error_fg_color, err);
-                            ui.end_row();
                         }
-
-                        ui.label("Context size").on_hover_text(
-                            "Used when the server doesn't report the model's context size; for \
-                             compaction and the context-use figure",
-                        );
-                        crate::ui::widgets::inherited_value(
-                            ui,
-                            &mut p.context_tokens,
-                            None,
-                            8192,
-                            1024..=10_000_000,
-                            256.0,
-                        );
-                        ui.end_row();
-
-                        ui.label("API");
-                        ui.vertical(|ui| {
-                            egui::ComboBox::from_id_salt("provider-api")
-                                .selected_text(p.api.label())
-                                .width(260.0)
-                                .show_ui(ui, |ui| {
-                                    for api in crate::config::ProviderApi::ALL {
-                                        ui.selectable_value(&mut p.api, api, api.label())
-                                            .on_hover_text(api.description());
-                                    }
-                                });
-                            ui.weak(p.api.description());
-                        });
-                        ui.end_row();
-
-                        if p.api == crate::config::ProviderApi::Anthropic {
-                            ui.label("Prompt caching");
-                            ui.checkbox(
-                                &mut p.prompt_caching,
-                                "Cache the system prompt, tools and conversation so far",
-                            )
-                            .on_hover_text(
-                                "Later requests read the cached part at a tenth of the price; \
-                                 writing it costs a quarter more once.",
-                            );
-                            ui.end_row();
-                        }
-
-                        ui.label("Server type");
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                egui::ComboBox::from_id_salt("provider-kind")
-                                    .selected_text(p.kind.label())
-                                    .width(220.0)
-                                    .show_ui(ui, |ui| {
-                                        for kind in crate::config::ProviderKind::ALL {
-                                            ui.selectable_value(&mut p.kind, kind, kind.label())
-                                                .on_hover_text(kind.description());
-                                        }
-                                    });
-                                let label = if self.detecting_kind { "Detecting…" } else { "Detect" };
-                                if ui
-                                    .add_enabled(!self.detecting_kind, egui::Button::new(label))
-                                    .on_hover_text("Probe the server to find out what it is")
-                                    .clicked()
-                                {
-                                    self.detecting_kind = true;
-                                    self.detect_result = None;
-                                    actions.push(SettingsAction::DetectKind(p.clone()));
+                    });
+                ui.add(
+                    egui::TextEdit::singleline(&mut p.base_url)
+                        .hint_text("https://api.openai.com/v1")
+                        .desired_width(210.0),
+                );
+            });
+            secret_row(
+                ui,
+                "API key",
+                "Leave empty for local servers",
+                &mut p.api_key,
+                "sk-…",
+                &mut self.show_key,
+            );
+            setting_row(
+                ui,
+                "Model",
+                "Fetch models asks the server for its list",
+                |ui| {
+                    let label = if self.fetching_models {
+                        "Fetching…"
+                    } else {
+                        "Fetch models"
+                    };
+                    if ui
+                        .add_enabled(!self.fetching_models, egui::Button::new(label))
+                        .clicked()
+                    {
+                        self.fetching_models = true;
+                        self.models_error = None;
+                        actions.push(SettingsAction::FetchModels(p.clone()));
+                    }
+                    if !p.models.is_empty() {
+                        egui::ComboBox::from_id_salt("model-pick")
+                            .selected_text(format!("{} models", p.models.len()))
+                            .width(90.0)
+                            .height(400.0)
+                            .show_ui(ui, |ui| {
+                                for m in &p.models {
+                                    ui.selectable_value(&mut p.model, m.clone(), m);
                                 }
                             });
-                            ui.weak(p.kind.description());
-                            if let Some(r) = &self.detect_result {
-                                ui.weak(r);
-                            }
-                        });
-                        ui.end_row();
-
-                        ui.label("Token usage");
-                        ui.checkbox(
-                            &mut p.request_usage,
-                            "Request usage in streamed responses (stream_options)",
-                        )
-                        .on_hover_text(
-                            "Needed for exact token counts and speeds. Turn off if the server rejects the request.",
-                        );
-                        ui.end_row();
-
-                        ui.label("Streaming");
-                        ui.checkbox(
-                            &mut p.stream,
-                            "Stream responses (disable if the server doesn't support SSE)",
-                        );
-                        ui.end_row();
-
-                        ui.label("Timeout");
-                        ui.add(
-                            egui::DragValue::new(&mut p.timeout_secs)
-                                .range(10..=3600)
-                                .suffix(" s"),
-                        )
-                        .on_hover_text(
-                            "How long to wait for the server to start answering, and the longest pause while a reply streams in.",
-                        );
-                        ui.end_row();
-
-                        ui.label("Retries");
-                        ui.add(
-                            egui::DragValue::new(&mut p.retries)
-                                .range(0..=crate::config::MAX_RETRIES),
-                        )
-                        .on_hover_text(
-                            "Times a request is tried again after a connection failure, a rate limit (429) or a busy server (5xx), before the reply starts.",
-                        );
-                        ui.end_row();
-
-                        ui.label("Extra headers");
-                        ui.vertical(|ui| {
-                            kv_editor(
-                                ui,
-                                "provider-headers",
-                                &mut p.extra_headers,
-                                "Header",
-                                "Value",
-                                false,
-                            );
-                        });
-                        ui.end_row();
-                    });
-
-                ui.add_space(12.0);
-                ui.label(egui::RichText::new("Reasoning and sampling").strong());
-                ui.weak(
-                    "Unset options leave the server's default. A chat can change them under \
-                     the message box.",
-                );
-                ui.add_space(4.0);
-                crate::ui::widgets::model_options_grid(
-                    ui,
-                    "provider-options",
-                    &mut p.options,
-                    &Default::default(),
-                    p.api,
-                );
-                let model = p.model.trim().to_owned();
-                if !model.is_empty() {
-                    ui.add_space(6.0);
-                    let mut own = p.model_options.get(&model).cloned().unwrap_or_default();
-                    let title = if own.is_empty() {
-                        format!("Only for {model}")
-                    } else {
-                        format!("Only for {model} (changed)")
-                    };
-                    egui::CollapsingHeader::new(title)
-                        .id_salt(("model-options", idx))
-                        .show(ui, |ui| {
-                            ui.weak("These win over the options above for this model.");
-                            crate::ui::widgets::model_options_grid(
-                                ui,
-                                "model-options-grid",
-                                &mut own,
-                                &p.options,
-                                p.api,
-                            );
-                        });
-                    if own.is_empty() {
-                        p.model_options.remove(&model);
-                    } else {
-                        p.model_options.insert(model, own);
                     }
-                }
+                    ui.add(egui::TextEdit::singleline(&mut p.model).desired_width(150.0));
+                },
+            );
+            if let Some(err) = &self.models_error {
+                ui.colored_label(ui.visuals().error_fg_color, err);
+            }
+            setting_row(
+                ui,
+                "Context size",
+                "Used when the server doesn't report the model's context size; for compaction \
+                 and the context-use figure",
+                |ui| {
+                    crate::ui::widgets::inherited_value(
+                        ui,
+                        &mut p.context_tokens,
+                        None,
+                        8192,
+                        1024..=10_000_000,
+                        256.0,
+                    );
+                },
+            );
 
-                ui.add_space(8.0);
-                if is_active {
-                    ui.weak("● This is the active provider.");
-                } else if ui.button("Use this provider").clicked() {
-                    make_active = true;
-                }
+            section(ui, "Server");
+            setting_row(ui, "API", p.api.description(), |ui| {
+                egui::ComboBox::from_id_salt("provider-api")
+                    .selected_text(p.api.label())
+                    .show_ui(ui, |ui| {
+                        for api in crate::config::ProviderApi::ALL {
+                            ui.selectable_value(&mut p.api, api, api.label())
+                                .on_hover_text(api.description());
+                        }
+                    });
             });
+            if p.api == crate::config::ProviderApi::Anthropic {
+                switch(
+                    ui,
+                    "Prompt caching",
+                    "Cache the system prompt, tools and conversation so far. Later requests read \
+                     the cached part at a tenth of the price; writing it costs a quarter more once",
+                    &mut p.prompt_caching,
+                );
+            }
+            let kind_about = match &self.detect_result {
+                Some(r) => format!("{} {r}", p.kind.description()),
+                None => p.kind.description().to_owned(),
+            };
+            setting_row(ui, "Server type", &kind_about, |ui| {
+                let label = if self.detecting_kind {
+                    "Detecting…"
+                } else {
+                    "Detect"
+                };
+                if ui
+                    .add_enabled(!self.detecting_kind, egui::Button::new(label))
+                    .on_hover_text("Probe the server to find out what it is")
+                    .clicked()
+                {
+                    self.detecting_kind = true;
+                    self.detect_result = None;
+                    actions.push(SettingsAction::DetectKind(p.clone()));
+                }
+                egui::ComboBox::from_id_salt("provider-kind")
+                    .selected_text(p.kind.label())
+                    .show_ui(ui, |ui| {
+                        for kind in crate::config::ProviderKind::ALL {
+                            ui.selectable_value(&mut p.kind, kind, kind.label())
+                                .on_hover_text(kind.description());
+                        }
+                    });
+            });
+            switch(
+                ui,
+                "Request token usage",
+                "In streamed responses (stream_options). Needed for exact token counts and \
+                 speeds. Turn off if the server rejects the request",
+                &mut p.request_usage,
+            );
+            switch(
+                ui,
+                "Stream responses",
+                "Turn off if the server doesn't support SSE",
+                &mut p.stream,
+            );
+            setting_row(
+                ui,
+                "Timeout",
+                "How long to wait for the server to start answering, and the longest pause \
+                 while a reply streams in",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.timeout_secs)
+                            .range(10..=3600)
+                            .suffix(" s"),
+                    );
+                },
+            );
+            setting_row(
+                ui,
+                "Retries",
+                "Times a request is tried again after a connection failure, a rate limit (429) \
+                 or a busy server (5xx), before the reply starts",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.retries).range(0..=crate::config::MAX_RETRIES),
+                    );
+                },
+            );
+
+            section(ui, "Extra headers");
+            ui.add_space(6.0);
+            kv_editor(
+                ui,
+                "provider-headers",
+                &mut p.extra_headers,
+                "Header",
+                "Value",
+                false,
+            );
+
+            section(ui, "Reasoning and sampling");
+            ui.add_space(4.0);
+            note(
+                ui,
+                "Unset options leave the server's default. A chat can change them under the \
+                 message box.",
+            );
+            ui.add_space(4.0);
+            crate::ui::widgets::model_options_grid(
+                ui,
+                "provider-options",
+                &mut p.options,
+                &Default::default(),
+                p.api,
+            );
+            let model = p.model.trim().to_owned();
+            if !model.is_empty() {
+                ui.add_space(6.0);
+                let mut own = p.model_options.get(&model).cloned().unwrap_or_default();
+                let title = if own.is_empty() {
+                    format!("Only for {model}")
+                } else {
+                    format!("Only for {model} (changed)")
+                };
+                egui::CollapsingHeader::new(title)
+                    .id_salt(("model-options", idx))
+                    .show(ui, |ui| {
+                        ui.weak("These win over the options above for this model.");
+                        crate::ui::widgets::model_options_grid(
+                            ui,
+                            "model-options-grid",
+                            &mut own,
+                            &p.options,
+                            p.api,
+                        );
+                    });
+                if own.is_empty() {
+                    p.model_options.remove(&model);
+                } else {
+                    p.model_options.insert(model, own);
+                }
+            }
+        });
         if make_active {
             draft.active_provider = idx;
         }

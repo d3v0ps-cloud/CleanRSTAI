@@ -59,7 +59,6 @@ impl SettingsUi {
                  lists the results, so the model can read the useful pages with web fetch",
                 &mut b.web_search,
             );
-            ui.add_space(14.0);
             ui.add_enabled_ui(b.web_search, |ui| {
                 web_search_rows(ui, &mut b.search, &mut self.show_search_key);
             });
@@ -73,57 +72,58 @@ impl SettingsUi {
     }
 
     pub(super) fn extensions_tab(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                slash_command_rows(ui, &mut self.draft.general.slash_commands);
-                ui.add_space(16.0);
-                self.skill_rows(ui);
-                ui.add_space(16.0);
-                hook_rows(ui, &mut self.draft.general.hooks);
-            });
+        page(ui, |ui| {
+            section(ui, "Slash commands");
+            slash_command_rows(ui, &mut self.draft.general.slash_commands);
+            section(ui, "Skills");
+            self.skill_rows(ui);
+            section(ui, "Hooks");
+            hook_rows(ui, &mut self.draft.general.hooks);
+        });
     }
 
     /// Skills: the on/off switch, the workspace switch, the size limit, the skills folder and
     /// the skills it holds, each with its own switch.
     pub(super) fn skill_rows(&mut self, ui: &mut egui::Ui) {
         let s = &mut self.draft.general.skills;
-        ui.label(egui::RichText::new(format!("{}  Skills", icon::BOOKS)).strong());
-        ui.indent("skills-help", |ui| {
-            ui.weak(
-                "A skill is a folder with a SKILL.md file: instructions the model reads with \
-                 its load_skill tool when a task matches the skill's description. Only the \
-                 names and descriptions are sent with each message; the text is sent when the \
-                 model loads it.",
-            );
-        });
-        ui.add_space(4.0);
-        ui.checkbox(&mut s.enabled, "Offer skills to the model");
+        switch(
+            ui,
+            "Offer skills to the model",
+            "A skill is a folder with a SKILL.md file: instructions the model reads with its \
+             load_skill tool when a task matches the skill's description. Only the names and \
+             descriptions are sent with each message; the text is sent when the model loads it",
+            &mut s.enabled,
+        );
         ui.add_enabled_ui(s.enabled, |ui| {
-            ui.checkbox(
-                &mut s.workspace_skills,
-                "Load skills from the workspace's .cleanrstai/skills folder",
-            )
-            .on_hover_text(
+            switch(
+                ui,
+                "Load skills from the workspace",
                 "Each .cleanrstai/skills/<name>/SKILL.md in a chat's working folder is a skill. \
-                 It replaces a skill from your skills folder with the same name.",
+                 It replaces a skill from your skills folder with the same name",
+                &mut s.workspace_skills,
             );
-            ui.horizontal(|ui| {
-                ui.label("Size limit per load");
-                ui.add(
-                    egui::DragValue::new(&mut s.max_kb)
-                        .range(1..=1024)
-                        .suffix(" KB"),
-                )
-                .on_hover_text("Text beyond this is left out when the model loads a skill");
-            });
+            setting_row(
+                ui,
+                "Size limit per load",
+                "Text beyond this is left out when the model loads a skill",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut s.max_kb)
+                            .range(1..=1024)
+                            .suffix(" KB"),
+                    );
+                },
+            );
         });
-        ui.add_space(8.0);
 
         let folder = crate::skills::user_root();
-        ui.horizontal(|ui| {
+        let folder_text = folder.display().to_string();
+        setting_row(ui, "Your skills folder", &folder_text, |ui| {
+            if ui.button("Refresh").clicked() {
+                self.user_skills = None;
+            }
             if ui
-                .button(format!("{}  Open skills folder", icon::FOLDER))
+                .button("Open folder")
                 .on_hover_text("Create the folder if it's missing and show it")
                 .clicked()
             {
@@ -136,15 +136,10 @@ impl SettingsUi {
                 };
                 self.user_skills = None;
             }
-            if ui.button("Refresh").clicked() {
-                self.user_skills = None;
-            }
         });
-        ui.weak(format!("Your skills folder: {}", folder.display()));
         if let Some(e) = &self.skills_folder_error {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
-        ui.add_space(6.0);
 
         let found = self
             .user_skills
@@ -158,37 +153,30 @@ impl SettingsUi {
             })
             .clone();
         if found.is_empty() {
-            ui.weak(
+            ui.add_space(6.0);
+            note(
+                ui,
                 "No skills yet. Add a folder with a SKILL.md file to the skills folder above, \
                  then press Refresh.",
             );
         }
         let disabled = &mut self.draft.general.skills.disabled;
         for skill in &found {
-            ui.push_id(("skill", &skill.dir), |ui| {
-                let mut on = !disabled.contains(&skill.name);
-                ui.horizontal(|ui| {
-                    if ui
-                        .checkbox(&mut on, egui::RichText::new(&skill.name).strong())
-                        .changed()
-                    {
-                        if on {
-                            disabled.retain(|n| *n != skill.name);
-                        } else if !disabled.contains(&skill.name) {
-                            disabled.push(skill.name.clone());
-                        }
-                    }
-                    ui.weak(skill.source.label());
-                });
-                ui.indent("skill-desc", |ui| {
-                    if skill.description.is_empty() {
-                        ui.weak("No description");
-                    } else {
-                        ui.weak(skill.description.as_str());
-                    }
-                });
-            });
-            ui.add_space(4.0);
+            let mut on = !disabled.contains(&skill.name);
+            let before = on;
+            let about = if skill.description.is_empty() {
+                format!("{} · no description", skill.source.label())
+            } else {
+                format!("{} · {}", skill.source.label(), skill.description)
+            };
+            switch(ui, &skill.name, &about, &mut on);
+            if on != before {
+                if on {
+                    disabled.retain(|n| *n != skill.name);
+                } else if !disabled.contains(&skill.name) {
+                    disabled.push(skill.name.clone());
+                }
+            }
         }
     }
 }

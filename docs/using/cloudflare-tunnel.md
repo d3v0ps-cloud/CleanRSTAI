@@ -63,7 +63,7 @@ checks for changes every few seconds instead (every second while a reply is writ
    such as `me@example.com, *@example.org`. Cloudflare then asks visitors for a one-time PIN
    sent to one of those addresses before they reach the login page. This needs `cloudflared`
    2026.10 or later. Leave it empty to let anyone with the address reach the login page.
-3. Click **Apply**. **Tunnel status** shows *Connecting to Cloudflare…*, then
+3. Click **Apply**. The tunnel's status line shows *Connecting to Cloudflare…*, then
    *Online at https://….trycloudflare.com/* with a copy button.
 4. Open that address on your phone or another computer and log in with your remote access
    password.
@@ -101,7 +101,7 @@ application**, and enter:
   **HTTPS**, URL `127.0.0.1:8484`; then expand **Additional application settings → TLS** and
   turn on **No TLS Verify** (the certificate is self-signed). With **HTTPS → Off (plain
   HTTP)** it is type **HTTP**, URL `127.0.0.1:8484`. Use your port if you changed it. The
-  **Tunnel status** note in Settings shows the exact service to enter.
+  The tunnel's status line note in Settings shows the exact service to enter.
 
 Select **Add route**. Cloudflare also creates the DNS record that points the hostname at the
 tunnel.
@@ -117,13 +117,13 @@ hostname yet* even though the route exists.
 
 ### 4. Apply and connect
 
-Click **Apply**. **Tunnel status** shows *Connecting to Cloudflare…*, then *Online at
+Click **Apply**. The tunnel's status line shows *Connecting to Cloudflare…*, then *Online at
 https://chat.example.com/* and the number of connections (usually 4). Open the address on any
 device and log in.
 
 ## What the status means
 
-| Tunnel status | What to do |
+| Status line | What to do |
 |---|---|
 | *cloudflared isn't installed* | Install it (see [Before you start](#before-you-start)) or set its location. |
 | *use a password of at least 12 characters* | Choose a longer remote access password. |
@@ -135,8 +135,8 @@ device and log in.
 In the browser:
 
 - **Error 1033**: Cloudflare can't find a running tunnel. Check that the app is open and
-  **Tunnel status** is *Online*.
-- **502 Bad Gateway**: the route's service is wrong. Use the one **Tunnel status** shows, with
+  The tunnel's status line is *Online*.
+- **502 Bad Gateway**: the route's service is wrong. Use the one The tunnel's status line shows, with
   **No TLS Verify** on for the self-signed certificate.
 - **"unknown host"**: the app doesn't know the hostname yet: enter it in **Public hostname**
   (or, for a quick tunnel, the tunnel restarted with a new address).

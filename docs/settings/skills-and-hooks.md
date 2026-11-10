@@ -36,7 +36,7 @@ provider only when the model loads it (see [Data and privacy](../reference/data-
 | **Offer skills to the model** | on | Lists the skills in the system prompt and offers the `load_skill` tool. Off: no skill is listed and the tool isn't offered. |
 | **Load skills from the workspace's .cleanrstai/skills folder** | on | Each `.cleanrstai/skills/<name>/SKILL.md` in a chat's working folder is a skill for that chat. A workspace skill replaces a skill from your skills folder with the same name. |
 | **Size limit per load** | 64 KB (1–1024) | Text beyond this is left out when the model loads a skill, with a note saying so. |
-| **Open skills folder** | | Creates the skills folder if it's missing and opens it in the file manager. Its path is shown under the button. |
+| **Your skills folder → Open folder** | | Creates the skills folder if it's missing and opens it in the file manager. Its path is shown under the button. |
 | **Skill checkboxes** | on | Lists the skills in your skills folder. Switch one off and it is neither listed nor loadable, in any chat. **Refresh** reads the folder again. |
 
 Typing **/** in the message box lists the skills (under **Skills**, after the slash commands)

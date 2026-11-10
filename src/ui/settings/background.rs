@@ -143,17 +143,12 @@ impl SettingsUi {
             access_error,
         };
         page(ui, |ui| {
-            egui::Grid::new("remote-grid")
-                .num_columns(2)
-                .spacing([12.0, 10.0])
-                .show(ui, |ui| {
-                    remote_rows(
-                        ui,
-                        &mut self.draft.general.remote,
-                        &mut self.show_remote_password,
-                        &status,
-                    );
-                });
+            remote_rows(
+                ui,
+                &mut self.draft.general.remote,
+                &mut self.show_remote_password,
+                &status,
+            );
         });
     }
 }

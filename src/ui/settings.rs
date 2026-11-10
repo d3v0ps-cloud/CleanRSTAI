@@ -239,6 +239,18 @@ fn choice<T: PartialEq + Copy>(
     });
 }
 
+/// A warning line under a row, with the warning glyph.
+fn warning(ui: &mut egui::Ui, text: &str) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(format!("{}  {text}", icon::WARNING))
+                .size(super::theme::size::SMALL)
+                .color(ui.visuals().warn_fg_color),
+        )
+        .wrap(),
+    );
+}
+
 /// A row with a one-line text field.
 fn text_row(ui: &mut egui::Ui, label: &str, description: &str, value: &mut String, hint: &str) {
     setting_row(ui, label, description, |ui| {
@@ -291,15 +303,36 @@ fn provider_row(
     value: &mut String,
     providers: &[(String, String, Vec<String>)],
 ) {
+    provider_row_or(
+        ui,
+        id,
+        label,
+        description,
+        value,
+        providers,
+        "The chat's provider",
+    );
+}
+
+/// [`provider_row`] with another name for "no provider chosen".
+fn provider_row_or(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    description: &str,
+    value: &mut String,
+    providers: &[(String, String, Vec<String>)],
+    none: &str,
+) {
     setting_row(ui, label, description, |ui| {
         let current = providers
             .iter()
             .find(|(pid, ..)| pid == value)
-            .map_or("The chat's provider".to_owned(), |(_, n, _)| n.clone());
+            .map_or(none.to_owned(), |(_, n, _)| n.clone());
         egui::ComboBox::from_id_salt(id)
             .selected_text(current)
             .show_ui(ui, |ui| {
-                ui.selectable_value(value, String::new(), "The chat's provider");
+                ui.selectable_value(value, String::new(), none);
                 for (pid, name, _) in providers {
                     ui.selectable_value(value, pid.clone(), name);
                 }
@@ -408,135 +441,307 @@ pub struct SettingsUi {
 
 pub const FIELD_WIDTH: f32 = 420.0;
 
-/// The "Remote access" rows of the Remote access page's grid, with the Cloudflare Tunnel rows
-/// under them.
+/// A row with a path field and a Browse… button. `filter` limits the dialog to these
+/// extensions (none: any file).
+fn file_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    description: &str,
+    path: &mut String,
+    hint: &str,
+    title: &str,
+    filter: &[&str],
+) {
+    setting_row(ui, label, description, |ui| {
+        if ui.button("Browse…").clicked() {
+            let mut dialog = rfd::FileDialog::new().set_title(title);
+            if !filter.is_empty() {
+                dialog = dialog.add_filter("Files", filter);
+            }
+            if let Some(file) = dialog.pick_file() {
+                *path = file.display().to_string();
+            }
+        }
+        ui.add(
+            egui::TextEdit::singleline(path)
+                .hint_text(hint)
+                .desired_width(190.0),
+        );
+    });
+}
+
+/// A row with a secret field and a Show switch beside it.
+fn secret_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    description: &str,
+    value: &mut String,
+    hint: &str,
+    show: &mut bool,
+) {
+    setting_row(ui, label, description, |ui| {
+        ui.checkbox(show, "Show");
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .password(!*show)
+                .hint_text(hint)
+                .desired_width(190.0),
+        );
+    });
+}
+
+/// The Remote access page: the server's rows, then the Cloudflare Tunnel and Access sections.
 fn remote_rows(
     ui: &mut egui::Ui,
     r: &mut RemoteSettings,
     show_password: &mut bool,
     status: &RemoteUiStatus,
 ) {
-    let remote = status.server;
-    ui.label("Remote access");
-    ui.checkbox(
-        &mut r.enabled,
+    let (warn, error) = (ui.visuals().warn_fg_color, ui.visuals().error_fg_color);
+    switch(
+        ui,
+        "Remote access",
         "Serve the chat interface to browsers on other devices",
+        &mut r.enabled,
     );
-    ui.end_row();
     if !r.enabled {
         return;
     }
-
-    ui.label("Listen on");
-    ui.vertical(|ui| {
-        ui.radio_value(&mut r.bind, RemoteBind::Local, "This computer only");
-        ui.radio_value(&mut r.bind, RemoteBind::Network, "Local network");
+    choice(
+        ui,
+        "remote-bind",
+        "Listen on",
+        "",
+        &mut r.bind,
+        &[
+            (RemoteBind::Local, "This computer only"),
+            (RemoteBind::Network, "Local network"),
+        ],
+    );
+    setting_row(ui, "Port", "", |ui| {
+        ui.add(egui::DragValue::new(&mut r.port).range(1..=65535));
     });
-    ui.end_row();
-
-    ui.label("Port");
-    ui.add(egui::DragValue::new(&mut r.port).range(1..=65535));
-    ui.end_row();
-
-    ui.label("Password");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut r.password)
-                .password(!*show_password)
-                .hint_text("needed to log in from a browser")
-                .desired_width(FIELD_WIDTH - 100.0),
-        );
-        ui.checkbox(show_password, "Show");
-    });
-    ui.end_row();
-
-    ui.label("HTTPS");
-    let tls_label = |t: RemoteTls| match t {
-        RemoteTls::SelfSigned => "Self-signed certificate",
-        RemoteTls::Files => "Certificate files",
-        RemoteTls::Off => "Off (plain HTTP)",
-    };
-    egui::ComboBox::from_id_salt("remote-tls")
-        .selected_text(tls_label(r.tls))
-        .width(220.0)
-        .show_ui(ui, |ui| {
-            for tls in [RemoteTls::SelfSigned, RemoteTls::Files, RemoteTls::Off] {
-                ui.selectable_value(&mut r.tls, tls, tls_label(tls));
+    secret_row(
+        ui,
+        "Password",
+        "Needed to log in from a browser",
+        &mut r.password,
+        "",
+        show_password,
+    );
+    choice(
+        ui,
+        "remote-tls",
+        "HTTPS",
+        match r.tls {
+            RemoteTls::Off => "",
+            RemoteTls::SelfSigned => {
+                "Browsers warn about a self-signed certificate the first time; check the \
+                 address and continue"
             }
-        });
-    ui.end_row();
-
+            RemoteTls::Files => "",
+        },
+        &mut r.tls,
+        &[
+            (RemoteTls::SelfSigned, "Self-signed certificate"),
+            (RemoteTls::Files, "Certificate files"),
+            (RemoteTls::Off, "Off (plain HTTP)"),
+        ],
+    );
+    if r.tls == RemoteTls::Off {
+        warning(
+            ui,
+            "Plain HTTP: the password and chats cross the network unencrypted. Use it only on \
+             a network you trust.",
+        );
+    }
     if r.tls == RemoteTls::Files {
-        for (label, path, title) in [
-            (
-                "Certificate file",
-                &mut r.cert_path,
-                "Choose the certificate file",
-            ),
-            ("Key file", &mut r.key_path, "Choose the private key file"),
-        ] {
-            ui.label(label);
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(path)
-                        .hint_text("PEM file")
-                        .desired_width(FIELD_WIDTH - 100.0),
-                );
-                if ui.button("Browse…").clicked()
-                    && let Some(file) = rfd::FileDialog::new()
-                        .set_title(title)
-                        .add_filter("PEM", &["pem", "crt", "cer", "key"])
-                        .pick_file()
-                {
-                    *path = file.display().to_string();
-                }
-            });
-            ui.end_row();
-        }
+        let pem = ["pem", "crt", "cer", "key"];
+        file_row(
+            ui,
+            "Certificate file",
+            "",
+            &mut r.cert_path,
+            "PEM file",
+            "Choose the certificate file",
+            &pem,
+        );
+        file_row(
+            ui,
+            "Key file",
+            "",
+            &mut r.key_path,
+            "PEM file",
+            "Choose the private key file",
+            &pem,
+        );
     }
 
-    ui.label("Status");
-    ui.vertical(|ui| {
-        match remote {
-            RemoteStatus::Running { urls, .. } => {
-                for url in urls {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Running at {url}"));
-                        if super::widgets::icon_button(ui, icon::COPY, "Copy address").clicked() {
-                            ui.ctx().copy_text(url.clone());
-                        }
-                    });
-                }
-            }
-            RemoteStatus::Failed(e) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
-            RemoteStatus::Off if r.password.is_empty() => {
-                ui.label("Set a password to start the server");
-            }
-            RemoteStatus::Off => {
-                ui.label("Stopped");
+    section(ui, "Status");
+    ui.add_space(4.0);
+    match status.server {
+        RemoteStatus::Running { urls, .. } => {
+            for url in urls {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Running at {url}"));
+                    if super::widgets::icon_button(ui, icon::COPY, "Copy address").clicked() {
+                        ui.ctx().copy_text(url.clone());
+                    }
+                });
             }
         }
-        if status.server_dirty {
-            ui.weak("Apply to restart the server with these settings.");
+        RemoteStatus::Failed(e) => {
+            ui.colored_label(error, e);
         }
-        match r.tls {
-            RemoteTls::Off => {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "Plain HTTP: the password and chats cross the network unencrypted. Use it only on a network you trust.",
+        RemoteStatus::Off if r.password.is_empty() => {
+            ui.label("Set a password to start the server");
+        }
+        RemoteStatus::Off => {
+            ui.label("Stopped");
+        }
+    }
+    if status.server_dirty {
+        note(ui, "Apply to restart the server with these settings.");
+    }
+
+    section(ui, "Cloudflare Tunnel");
+    switch(
+        ui,
+        "Cloudflare Tunnel",
+        "Reach this computer from outside the network through a Cloudflare Tunnel",
+        &mut r.tunnel.enabled,
+    );
+    if !r.tunnel.enabled {
+        return;
+    }
+    let service = crate::remote::tunnel_service_url(r);
+    let t = &mut r.tunnel;
+    choice(
+        ui,
+        "tunnel-mode",
+        "Tunnel type",
+        match t.mode {
+            TunnelMode::Quick => {
+                "A random trycloudflare.com address, no account needed. The address changes \
+                 each time the tunnel starts. Quick tunnels are for trying things out: \
+                 Cloudflare gives them no uptime guarantee, and the browser checks for new \
+                 messages every few seconds instead of live"
+            }
+            TunnelMode::Named => "Your own domain, with a Cloudflare account",
+        },
+        &mut t.mode,
+        &[
+            (TunnelMode::Quick, "Quick tunnel"),
+            (TunnelMode::Named, "Named tunnel"),
+        ],
+    );
+    match t.mode {
+        TunnelMode::Quick => text_row(
+            ui,
+            "Allowed emails",
+            "Cloudflare asks visitors for a one-time PIN sent to one of these addresses before \
+             the login page. Empty: anyone with the address reaches the login page",
+            &mut t.allowed_emails,
+            "me@example.com, *@example.org",
+        ),
+        TunnelMode::Named => {
+            secret_row(
+                ui,
+                "Tunnel token",
+                "From the tunnel's page in the Cloudflare dashboard",
+                &mut t.token,
+                "",
+                show_password,
+            );
+            text_row(
+                ui,
+                "Public hostname",
+                "The hostname of the tunnel's route in the Cloudflare dashboard. Optional: the \
+                 app also learns it from cloudflared once the tunnel connects",
+                &mut t.hostname,
+                "chat.example.com",
+            );
+        }
+    }
+    file_row(
+        ui,
+        "cloudflared program",
+        "Empty: found on PATH",
+        &mut t.cloudflared,
+        "found on PATH",
+        "Choose cloudflared",
+        &[],
+    );
+
+    ui.add_space(8.0);
+    match status.tunnel {
+        TunnelStatus::Off => {
+            ui.label("Tunnel stopped");
+        }
+        TunnelStatus::Connecting(last_error) => {
+            ui.label("Connecting to Cloudflare…");
+            if let Some(e) = last_error {
+                ui.colored_label(warn, e);
+            }
+        }
+        TunnelStatus::Connected { connections, hosts } => {
+            for host in hosts {
+                let url = format!("https://{host}/");
+                ui.horizontal(|ui| {
+                    ui.label(format!("Online at {url}"));
+                    if super::widgets::icon_button(ui, icon::COPY, "Copy address").clicked() {
+                        ui.ctx().copy_text(url.clone());
+                    }
+                });
+            }
+            if hosts.is_empty() {
+                warning(
+                    ui,
+                    "Connected, but the tunnel has no public hostname yet: add a route for it \
+                     in the Cloudflare dashboard.",
                 );
             }
-            RemoteTls::SelfSigned => {
-                ui.weak("Browsers warn about a self-signed certificate the first time; check the address and continue.");
-            }
-            RemoteTls::Files => {}
+            let plural = if *connections == 1 { "" } else { "s" };
+            note(
+                ui,
+                &format!("{connections} connection{plural} to Cloudflare"),
+            );
         }
-    });
-    ui.end_row();
-
-    tunnel_rows(ui, r, show_password, status);
+        TunnelStatus::Failed { error: e, retrying } => {
+            ui.colored_label(error, e);
+            if *retrying {
+                note(ui, "Trying again shortly.");
+            }
+        }
+    }
+    if status.tunnel_dirty {
+        note(ui, "Apply to start the tunnel with these settings.");
+    }
+    if r.password.trim().chars().count() < crate::remote::MIN_TUNNEL_PASSWORD_CHARS {
+        warning(
+            ui,
+            &format!(
+                "Use a password of at least {} characters: the tunnel puts the server on the \
+                 internet.",
+                crate::remote::MIN_TUNNEL_PASSWORD_CHARS
+            ),
+        );
+    }
+    if r.tunnel.mode == TunnelMode::Named {
+        let tls_note = if r.tls == RemoteTls::Off {
+            ""
+        } else {
+            ", with No TLS Verify on"
+        };
+        note(
+            ui,
+            &format!(
+                "In the Cloudflare dashboard, give the tunnel a published application route to \
+                 {service}{tls_note}."
+            ),
+        );
+    }
+    access_rows(ui, &mut r.tunnel.access, r.tunnel.mode, status.access_error);
 }
 
 /// What the Remote access rows show besides the draft: the applied server and tunnel state,
@@ -550,264 +755,78 @@ pub struct RemoteUiStatus<'a> {
     pub access_error: Option<&'a str>,
 }
 
-/// The "Cloudflare Tunnel" rows, under the Remote access status.
-fn tunnel_rows(
-    ui: &mut egui::Ui,
-    r: &mut RemoteSettings,
-    show_password: &mut bool,
-    status: &RemoteUiStatus,
-) {
-    ui.label("Cloudflare Tunnel");
-    ui.checkbox(
-        &mut r.tunnel.enabled,
-        "Reach this computer from outside the network through a Cloudflare Tunnel",
-    );
-    ui.end_row();
-    if !r.tunnel.enabled {
-        return;
-    }
-    let service = crate::remote::tunnel_service_url(r);
-    let t = &mut r.tunnel;
-
-    ui.label("Tunnel type");
-    ui.vertical(|ui| {
-        ui.radio_value(
-            &mut t.mode,
-            TunnelMode::Quick,
-            "Quick tunnel: a random trycloudflare.com address, no account needed",
-        );
-        ui.radio_value(
-            &mut t.mode,
-            TunnelMode::Named,
-            "Named tunnel: your own domain, with a Cloudflare account",
-        );
-    });
-    ui.end_row();
-
-    let secret = |ui: &mut egui::Ui, value: &mut String, hint: &str, show: &mut bool| {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(value)
-                    .password(!*show)
-                    .hint_text(hint)
-                    .desired_width(FIELD_WIDTH - 100.0),
-            );
-            ui.checkbox(show, "Show");
-        });
-    };
-    match t.mode {
-        TunnelMode::Quick => {
-            ui.label("Allowed emails");
-            ui.add(
-                egui::TextEdit::singleline(&mut t.allowed_emails)
-                    .hint_text("optional: me@example.com, *@example.org")
-                    .desired_width(FIELD_WIDTH - 100.0),
-            )
-            .on_hover_text(
-                "Cloudflare asks visitors for a one-time PIN sent to one of these addresses \
-                 before the login page. Empty: anyone with the address reaches the login page.",
-            );
-            ui.end_row();
-        }
-        TunnelMode::Named => {
-            ui.label("Tunnel token");
-            secret(
-                ui,
-                &mut t.token,
-                "from the tunnel's page in the Cloudflare dashboard",
-                show_password,
-            );
-            ui.end_row();
-
-            ui.label("Public hostname");
-            ui.add(
-                egui::TextEdit::singleline(&mut t.hostname)
-                    .hint_text("optional: chat.example.com")
-                    .desired_width(FIELD_WIDTH - 100.0),
-            )
-            .on_hover_text(
-                "The hostname of the tunnel's route in the Cloudflare dashboard. Optional: the \
-                 app also learns it from cloudflared once the tunnel connects.",
-            );
-            ui.end_row();
-        }
-    }
-
-    ui.label("cloudflared");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut t.cloudflared)
-                .hint_text("found on PATH")
-                .desired_width(FIELD_WIDTH - 100.0),
-        );
-        if ui.button("Browse…").clicked()
-            && let Some(file) = rfd::FileDialog::new()
-                .set_title("Choose cloudflared")
-                .pick_file()
-        {
-            t.cloudflared = file.display().to_string();
-        }
-    });
-    ui.end_row();
-
-    ui.label("Tunnel status");
-    ui.vertical(|ui| {
-        let warn = ui.visuals().warn_fg_color;
-        let error = ui.visuals().error_fg_color;
-        match status.tunnel {
-            TunnelStatus::Off => {
-                ui.label("Stopped");
-            }
-            TunnelStatus::Connecting(last_error) => {
-                ui.label("Connecting to Cloudflare…");
-                if let Some(e) = last_error {
-                    ui.colored_label(warn, e);
-                }
-            }
-            TunnelStatus::Connected { connections, hosts } => {
-                for host in hosts {
-                    let url = format!("https://{host}/");
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Online at {url}"));
-                        if super::widgets::icon_button(ui, icon::COPY, "Copy address").clicked() {
-                            ui.ctx().copy_text(url.clone());
-                        }
-                    });
-                }
-                if hosts.is_empty() {
-                    ui.colored_label(
-                        warn,
-                        "Connected, but the tunnel has no public hostname yet: add a route \
-                         for it in the Cloudflare dashboard.",
-                    );
-                }
-                let plural = if *connections == 1 { "" } else { "s" };
-                ui.weak(format!("{connections} connection{plural} to Cloudflare"));
-            }
-            TunnelStatus::Failed { error: e, retrying } => {
-                ui.colored_label(error, e);
-                if *retrying {
-                    ui.weak("Trying again shortly.");
-                }
-            }
-        }
-        if status.tunnel_dirty {
-            ui.weak("Apply to start the tunnel with these settings.");
-        }
-        if r.password.trim().chars().count() < crate::remote::MIN_TUNNEL_PASSWORD_CHARS {
-            ui.colored_label(
-                warn,
-                format!(
-                    "Use a password of at least {} characters: the tunnel puts the server on \
-                     the internet.",
-                    crate::remote::MIN_TUNNEL_PASSWORD_CHARS
-                ),
-            );
-        }
-        match r.tunnel.mode {
-            TunnelMode::Quick => {
-                ui.weak(
-                    "The address changes each time the tunnel starts. Quick tunnels are for \
-                     trying things out: Cloudflare gives them no uptime guarantee, and the \
-                     browser checks for new messages every few seconds instead of live.",
-                );
-            }
-            TunnelMode::Named => {
-                let tls_note = if r.tls == RemoteTls::Off {
-                    ""
-                } else {
-                    ", with No TLS Verify on"
-                };
-                ui.weak(format!(
-                    "In the Cloudflare dashboard, give the tunnel a published application \
-                     route to {service}{tls_note}."
-                ));
-            }
-        }
-    });
-    ui.end_row();
-    access_rows(ui, &mut r.tunnel.access, r.tunnel.mode, status.access_error);
-}
-
-/// The "Cloudflare Access" rows of the tunnel: a login gate in front of a named tunnel's
-/// hostname, set up in the Cloudflare dashboard (see `remote::access`).
+/// The "Cloudflare Access" section: a login gate in front of a named tunnel's hostname, set
+/// up in the Cloudflare dashboard (see `remote::access`).
 fn access_rows(
     ui: &mut egui::Ui,
     access: &mut AccessSettings,
     mode: TunnelMode,
     error: Option<&str>,
 ) {
-    ui.label("Cloudflare Access");
+    section(ui, "Cloudflare Access");
     if mode == TunnelMode::Quick {
-        ui.weak("Only for named tunnels: a quick tunnel's address can't be put behind an Access application.");
-        ui.end_row();
+        ui.add_space(4.0);
+        note(
+            ui,
+            "Only for named tunnels: a quick tunnel's address can't be put behind an Access \
+             application.",
+        );
         return;
     }
-    ui.checkbox(
+    switch(
+        ui,
+        "Require Cloudflare Access",
+        "In front of the tunnel's hostname. Requests that skip Access are refused",
         &mut access.enabled,
-        "Require Cloudflare Access in front of the tunnel's hostname",
     );
-    ui.end_row();
     if !access.enabled {
         return;
     }
-
-    ui.label("Team domain");
-    ui.add(
-        egui::TextEdit::singleline(&mut access.team_domain)
-            .hint_text("myteam.cloudflareaccess.com")
-            .desired_width(FIELD_WIDTH - 100.0),
+    text_row(
+        ui,
+        "Team domain",
+        "The name.cloudflareaccess.com address your team signs in to",
+        &mut access.team_domain,
+        "myteam.cloudflareaccess.com",
     );
-    ui.end_row();
-
-    ui.label("Audience (AUD) tag");
-    ui.add(
-        egui::TextEdit::singleline(&mut access.audience)
-            .hint_text("from the Access application's overview")
-            .desired_width(FIELD_WIDTH - 100.0),
+    text_row(
+        ui,
+        "Audience (AUD) tag",
+        "From the Access application's overview",
+        &mut access.audience,
+        "",
     );
-    ui.end_row();
-
-    ui.label("Sign in with Access");
-    ui.checkbox(
-        &mut access.skip_password,
+    switch(
+        ui,
+        "Sign in with Access",
         "A valid Access login also signs the browser in, so the app password is not asked",
+        &mut access.skip_password,
     );
-    ui.end_row();
-
-    ui.label("Access status");
-    ui.vertical(|ui| {
-        let warn = ui.visuals().warn_fg_color;
-        let team = crate::config::team_host(&access.team_domain);
-        if !crate::remote::valid_team_domain(&team) {
-            ui.colored_label(
-                warn,
-                "Enter the team domain, e.g. myteam.cloudflareaccess.com.",
-            );
-        }
-        if access.audience.trim().is_empty() {
-            ui.colored_label(warn, "Enter the application's audience (AUD) tag.");
-        }
-        match error {
-            Some(e) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
-            None => {
-                ui.weak("No Access errors so far.");
-            }
-        }
-        weak_note(
+    ui.add_space(8.0);
+    let team = crate::config::team_host(&access.team_domain);
+    if !crate::remote::valid_team_domain(&team) {
+        warning(
             ui,
-            "In the Cloudflare Zero Trust dashboard, add a self-hosted application for the \
-             tunnel's public hostname, with a policy for who may sign in. Copy its Application \
-             Audience (AUD) tag here, and your team domain (the name.cloudflareaccess.com \
-             address your team signs in to). Requests that skip Access are refused.",
+            "Enter the team domain, e.g. myteam.cloudflareaccess.com.",
         );
-    });
-    ui.end_row();
+    }
+    if access.audience.trim().is_empty() {
+        warning(ui, "Enter the application's audience (AUD) tag.");
+    }
+    match error {
+        Some(e) => {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+        None => note(ui, "No Access errors so far."),
+    }
+    note(
+        ui,
+        "In the Cloudflare Zero Trust dashboard, add a self-hosted application for the tunnel's \
+         public hostname, with a policy for who may sign in, and copy its Application Audience \
+         (AUD) tag here.",
+    );
 }
 
-/// Weak text in a grid cell, wrapped at the width of the fields.
 /// A combo box for the provider a voice feature uses: None is the active provider.
 fn provider_choice(
     ui: &mut egui::Ui,
@@ -830,13 +849,6 @@ fn provider_choice(
         });
 }
 
-fn weak_note(ui: &mut egui::Ui, text: &str) {
-    ui.scope(|ui| {
-        ui.set_max_width(FIELD_WIDTH);
-        ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
-    });
-}
-
 /// The web search tool's service and options (Settings → Built-in Tools).
 fn web_search_rows(
     ui: &mut egui::Ui,
@@ -844,132 +856,116 @@ fn web_search_rows(
     show_key: &mut bool,
 ) {
     use crate::config::{MAX_NATIVE_SEARCH_USES, NativeSearch, SearchBackend};
-    ui.strong("Web search");
     // The provider's own search replaces the service below for providers that have one.
     let native = s.native == NativeSearch::PreferProvider;
-    egui::Grid::new("web-search-grid")
-        .num_columns(2)
-        .spacing([12.0, 10.0])
-        .show(ui, |ui| {
-            ui.label("Search with");
+    section(ui, "Web search");
+    setting_row(
+        ui,
+        "Search with",
+        if native {
+            "Anthropic (Messages API), OpenAI (Responses API) and OpenRouter search on the \
+             provider's side and cite the pages they used. Other providers keep the service \
+             below; its settings are not used otherwise"
+        } else {
+            ""
+        },
+        |ui| {
             egui::ComboBox::from_id_salt("search-native")
                 .selected_text(s.native.label())
-                .width(FIELD_WIDTH)
                 .show_ui(ui, |ui| {
                     for n in NativeSearch::ALL {
                         ui.selectable_value(&mut s.native, n, n.label());
                     }
                 });
-            ui.end_row();
-            if native {
-                ui.label("");
-                weak_note(
-                    ui,
-                    "Anthropic (Messages API), OpenAI (Responses API) and OpenRouter search \
-                     on the provider's side and cite the pages they used. Other providers \
-                     keep the service below. The service's settings are not used then.",
-                );
-                ui.end_row();
-                ui.label("Searches");
+        },
+    );
+    if native {
+        setting_row(
+            ui,
+            "Searches per reply",
+            "The most searches the model may run for one reply",
+            |ui| {
                 ui.add(
-                    egui::DragValue::new(&mut s.native_max_uses)
-                        .range(1..=MAX_NATIVE_SEARCH_USES)
-                        .suffix(" per reply"),
-                )
-                .on_hover_text("The most searches the model may run for one reply");
-                ui.end_row();
-            }
-
-            ui.add_enabled_ui(!native, |ui| {
-                ui.label("Service");
-            });
-            ui.add_enabled_ui(!native, |ui| {
+                    egui::DragValue::new(&mut s.native_max_uses).range(1..=MAX_NATIVE_SEARCH_USES),
+                );
+            },
+        );
+    }
+    ui.add_enabled_ui(!native, |ui| {
+        setting_row(
+            ui,
+            "Service",
+            if s.backend == SearchBackend::DuckDuckGo {
+                "No account or key. DuckDuckGo may ask for a human check when it sees many \
+                 searches; choose another service then"
+            } else {
+                ""
+            },
+            |ui| {
                 egui::ComboBox::from_id_salt("search-backend")
                     .selected_text(s.backend.label())
-                    .width(FIELD_WIDTH)
                     .show_ui(ui, |ui| {
                         for b in SearchBackend::ALL {
                             ui.selectable_value(&mut s.backend, b, b.label());
                         }
                     });
-            });
-            ui.end_row();
-
-            match s.backend {
-                SearchBackend::DuckDuckGo => {
-                    ui.label("");
-                    weak_note(
-                        ui,
-                        "No account or key. DuckDuckGo may ask for a human check when it sees \
-                         many searches; choose another service then.",
-                    );
-                    ui.end_row();
-                }
-                SearchBackend::Searxng => {
-                    ui.label("Instance");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut s.searxng_url)
-                            .hint_text("https://searx.example.org or http://localhost:8888")
-                            .desired_width(FIELD_WIDTH),
-                    )
-                    .on_hover_text(
-                        "The instance must allow JSON results: add `json` to `search.formats` \
-                         in its settings.yml",
-                    );
-                    ui.end_row();
-                }
-                SearchBackend::Brave | SearchBackend::Tavily | SearchBackend::Kagi => {
-                    ui.label("API key");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut s.api_key)
-                                .password(!*show_key)
-                                .desired_width(FIELD_WIDTH - 60.0),
-                        )
-                        .on_hover_text(
-                            "Kept in the system keychain when that is on (Data & privacy)",
-                        );
-                        ui.checkbox(show_key, "Show");
-                    });
-                    ui.end_row();
-                }
-            }
-
-            ui.label("Results");
-            ui.add_enabled(
-                !native,
-                egui::DragValue::new(&mut s.max_results)
-                    .range(1..=crate::config::MAX_SEARCH_RESULTS)
-                    .suffix(" per search"),
-            )
-            .on_hover_text("The model may ask for more, up to 20");
-            ui.end_row();
-
-            ui.label("Options");
-            ui.vertical(|ui| {
-                ui.add_enabled(
-                    !native && !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
-                    egui::Checkbox::new(&mut s.safe_search, "Safe search"),
+            },
+        );
+    });
+    match s.backend {
+        SearchBackend::DuckDuckGo => {}
+        SearchBackend::Searxng => text_row(
+            ui,
+            "Instance",
+            "The instance must allow JSON results: add `json` to `search.formats` in its \
+             settings.yml",
+            &mut s.searxng_url,
+            "https://searx.example.org",
+        ),
+        SearchBackend::Brave | SearchBackend::Tavily | SearchBackend::Kagi => secret_row(
+            ui,
+            "API key",
+            "Kept in the system keychain when that is on (Data & privacy)",
+            &mut s.api_key,
+            "",
+            show_key,
+        ),
+    }
+    ui.add_enabled_ui(!native, |ui| {
+        setting_row(
+            ui,
+            "Results per search",
+            "The model may ask for more, up to 20",
+            |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut s.max_results)
+                        .range(1..=crate::config::MAX_SEARCH_RESULTS),
                 );
-                ui.checkbox(&mut s.ask, "Ask before each search")
-                    .on_hover_text(
-                        "The query leaves this computer and can contain parts of the chat. \
-                         Subagents and auto-approved calls never ask.",
-                    );
-                if native {
-                    weak_note(
-                        ui,
-                        "Doesn't apply to the provider's own search: it runs on the provider's \
-                         side, so it can't ask before each search.",
-                    );
-                }
-                ui.checkbox(
-                    &mut s.subagents,
-                    "Subagents may search (when they may use the built-in tools)",
-                );
-            });
-            ui.end_row();
-        });
+            },
+        );
+    });
+    ui.add_enabled_ui(
+        !native && !matches!(s.backend, SearchBackend::Tavily | SearchBackend::Kagi),
+        |ui| switch(ui, "Safe search", "", &mut s.safe_search),
+    );
+    switch(
+        ui,
+        "Ask before each search",
+        if native {
+            "Doesn't apply to the provider's own search: it runs on the provider's side, so it \
+             can't ask before each search"
+        } else {
+            "The query leaves this computer and can contain parts of the chat. Subagents and \
+             auto-approved calls never ask"
+        },
+        &mut s.ask,
+    );
+    switch(
+        ui,
+        "Subagents may search",
+        "When they may use the built-in tools",
+        &mut s.subagents,
+    );
 }
 
 const PRESETS: &[(&str, &str)] = &[
@@ -1322,63 +1318,54 @@ fn memory_section(
             .find(|(pid, _)| *pid == id)
             .map_or_else(|| "Deleted project".to_owned(), |(_, name)| name.clone())
     };
-    ui.indent("memory-help", |ui| {
-        ui.weak(
-            "Facts the model saves when you ask it to remember something, or that you state about \
-             yourself. A chat with memory on gets them in its system prompt with every request, so \
-             they are sent to your provider. Off, or a chat switched to incognito, uses none of \
-             them and the model can't save any.",
-        );
-    });
-    ui.add_space(6.0);
-    ui.checkbox(&mut m.enabled, "New chats use memory")
-        .on_hover_text("Each chat can switch it off for itself (Chat features in the tools menu)");
-    ui.checkbox(
-        &mut m.ask_before_saving,
+    switch(
+        ui,
+        "New chats use memory",
+        "Facts the model saves when you ask it to remember something, or that you state about \
+         yourself. A chat with memory on gets them in its system prompt with every request, so \
+         they are sent to your provider. Off, or a chat switched to incognito under Chat \
+         options, uses none of them and the model can't save any",
+        &mut m.enabled,
+    );
+    switch(
+        ui,
         "Ask before saving or deleting a memory",
-    )
-    .on_hover_text("Off, the model saves and deletes memories without asking");
-    egui::Grid::new("memory-grid")
-        .num_columns(2)
-        .spacing([12.0, 10.0])
-        .show(ui, |ui| {
-            ui.label("Size limit");
+        "Off, the model saves and deletes memories without asking",
+        &mut m.ask_before_saving,
+    );
+    setting_row(
+        ui,
+        "Size limit",
+        "The memories sent with each request, newest first; older ones are left out past this",
+        |ui| {
             ui.add(
                 egui::DragValue::new(&mut m.max_kb)
                     .range(MIN_KB..=MAX_KB)
                     .suffix(" KB"),
-            )
-            .on_hover_text(
-                "The memories sent with each request, newest first; older ones are left out \
-                 past this",
             );
-            ui.end_row();
-
-            ui.label("Scope");
-            egui::ComboBox::from_id_salt("memory-scope")
-                .selected_text(match m.scope {
-                    MemoryScope::Global => "Global",
-                    MemoryScope::PerProject => "Per project",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut m.scope, MemoryScope::Global, "Global")
-                        .on_hover_text("One set of memories for every chat");
-                    ui.selectable_value(&mut m.scope, MemoryScope::PerProject, "Per project")
-                        .on_hover_text(
-                            "A project's chats also see and save that project's memories, \
-                             besides the global ones; other chats see only the global ones",
-                        );
-                });
-            ui.end_row();
-        });
+        },
+    );
+    choice(
+        ui,
+        "memory-scope",
+        "Scope",
+        "Global: one set of memories for every chat. Per project: a project's chats also see \
+         and save that project's memories, besides the global ones",
+        &mut m.scope,
+        &[
+            (MemoryScope::Global, "Global"),
+            (MemoryScope::PerProject, "Per project"),
+        ],
+    );
 
     ui.add_space(10.0);
     editor
         .drafts
         .retain(|id, _| memories.iter().any(|m| m.id == *id));
-    ui.strong(format!("Saved memories ({})", memories.len()));
+    let ink = super::theme::palette(ui.visuals().dark_mode).ink;
+    ui.label(egui::RichText::new(format!("Saved memories ({})", memories.len())).color(ink));
     if memories.is_empty() {
-        ui.weak("None yet.");
+        note(ui, "None yet.");
     }
     for memory in memories.iter().rev() {
         ui.horizontal(|ui| {
@@ -1439,7 +1426,7 @@ fn memory_section(
     }
 
     ui.add_space(8.0);
-    ui.strong("Add a memory");
+    ui.label(egui::RichText::new("Add a memory").color(ink));
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut editor.new_text)
@@ -1478,32 +1465,24 @@ fn memory_section(
 }
 
 fn slash_command_rows(ui: &mut egui::Ui, s: &mut SlashCommandSettings) {
-    ui.checkbox(
+    switch(
+        ui,
+        "Slash commands",
+        "Type / and a name in the message box to send a saved prompt. {{args}} in a prompt is \
+         replaced by what you type after the name; without it, that text is added after a \
+         blank line. Names use letters, digits, - and _",
         &mut s.enabled,
-        egui::RichText::new(format!(
-            "{}  Slash commands (saved prompts)",
-            icon::LIGHTNING
-        ))
-        .strong(),
     );
-    ui.indent("slash-help", |ui| {
-        ui.weak(
-            "Type / and a name in the message box to send a saved prompt. {{args}} in a prompt \
-             is replaced by what you type after the name; without it, that text is added after \
-             a blank line. Names use letters, digits, - and _.",
-        );
-    });
     ui.add_enabled_ui(s.enabled, |ui| {
-        ui.checkbox(
+        switch(
+            ui,
+            "Also load commands from the working folder",
+            "Each .cleanrstai/commands/<name>.md file in a chat's folder is a command. A first \
+             line description: ... gives its description; a command there replaces one here \
+             with the same name",
             &mut s.workspace_commands,
-            "Also load commands from the chat's working folder",
-        )
-        .on_hover_text(
-            "Each .cleanrstai/commands/<name>.md file in the folder is a command. A first line \
-             description: ... gives its description; a command there replaces one here with the \
-             same name.",
         );
-        ui.add_space(6.0);
+        ui.add_space(10.0);
         let mut remove = None;
         for (i, c) in s.commands.iter_mut().enumerate() {
             ui.push_id(("slash-command", i), |ui| {
@@ -1553,32 +1532,30 @@ fn slash_command_rows(ui: &mut egui::Ui, s: &mut SlashCommandSettings) {
 /// switch, name, event, tool patterns, command and timeout.
 fn hook_rows(ui: &mut egui::Ui, h: &mut HookSettings) {
     let HookSettings { enabled, hooks } = h;
-    ui.label(egui::RichText::new(format!("{}  Hooks", icon::TERMINAL)).strong());
-    ui.indent("hooks-help", |ui| {
-        ui.weak(
-            "Commands that run around the model's tool calls: before a tool runs (a non-zero \
-             exit or a timeout blocks the call), after it (the output is added to the result), \
-             and when a reply is done (the output is shown as a notice). Each command gets the \
-             call in CLEANRSTAI_* environment variables. Each chat can switch hooks off from \
-             the tools menu.",
-        );
-        weak_note(
-            ui,
-            "Hooks run commands with your user's rights on this computer, or in the Docker \
-             sandbox when it's on. They are read only from these settings, never from a \
-             workspace or from the model.",
-        );
-    });
-    ui.checkbox(enabled, "Run hooks").on_hover_text(
-        "The default for each chat. A chat's own Hooks switch in the tools menu overrides it.",
+    switch(
+        ui,
+        "Run hooks",
+        "Commands that run around the model's tool calls: before a tool runs (a non-zero exit \
+         or a timeout blocks the call), after it (the output is added to the result), and when \
+         a reply is done (the output is shown as a notice). Each command gets the call in \
+         CLEANRSTAI_* environment variables. This is the default for each chat; a chat's own \
+         Hooks switch under Chat options overrides it",
+        enabled,
     );
+    ui.add_space(6.0);
+    warning(
+        ui,
+        "Hooks run commands with your user's rights on this computer, or in the Docker sandbox \
+         when it's on. They are read only from these settings, never from a workspace or from \
+         the model.",
+    );
+    ui.add_space(6.0);
     ui.add_enabled_ui(*enabled, |ui| {
         let mut remove = None;
         for (i, hook) in hooks.iter_mut().enumerate() {
             ui.push_id(("hook", i), |ui| {
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut hook.enabled, "")
-                        .on_hover_text("Run this hook");
+                    toggle(ui, &mut hook.enabled).on_hover_text("Run this hook");
                     ui.add(
                         egui::TextEdit::singleline(&mut hook.name)
                             .hint_text("name")
