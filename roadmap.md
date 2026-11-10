@@ -77,6 +77,18 @@ Unticked items are still open.
   text pickers under the composer (project or folder, model, effort, permission mode), skills in
   the slash menu, voice mode and a microphone picker, Settings as a dimmed modal with grouped
   pages, live search and an Appearance page, and Reduce motion
+- [x] "Instrument" look in **v0.9.5-dev.1**: cool graphite greys with a signal green accent, IBM Plex
+  Sans in place of Instrument Sans and the serif, mono capitals for section labels and mono for
+  model and provider names, tighter corners and a 13px interface from shared radius and size
+  tokens, shadows under menus and windows only, code blocks on the palette's own surface, one
+  action row per reply (steps of a tool-calling reply no longer repeat it), and the browser
+  client in the same palette and font
+- [x] Settings reorganised in **v0.9.5-dev.1**: sixteen smaller pages in four groups (App, Chats,
+  Models & tools, This computer) in place of eleven, with new Permissions, Data & privacy,
+  Workspace, Artifacts & files and Remote access pages taken out of General, Context & files and
+  Built-in tools; the moved pages are rows with switches; scheduled agents are edited only on
+  the Scheduled page; the sidebar's Customize row is Settings; the per-chat Tools menu keeps
+  tools, with a Chat options submenu for the rest
 - [x] Command palette (⌘K) and keyboard shortcuts
 - [x] Screen-reader labels on icon-only buttons
 - [x] Accessibility pass: focus order and a high-contrast check. A visible focus ring while

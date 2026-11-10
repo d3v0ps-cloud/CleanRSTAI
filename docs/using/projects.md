@@ -10,7 +10,7 @@ A project groups related chats in the sidebar and gives them shared context: ins
 and reference files that every chat in the project gets, and defaults for new chats (a
 working folder, a provider, a model, tool switches and a permission mode).
 
-Projects are on by default. Turn them off under **Settings → Context & files → Projects**:
+Projects are on by default. Turn them off under **Settings → Context & memory → Projects**:
 the project list leaves the sidebar, and no project context is added to requests. The
 projects and their chats stay on disk.
 
@@ -32,7 +32,7 @@ or right-click the **Projects** heading. The editor has:
 - **Tool switches**: the switches a new chat starts with. They are set from a chat, see below.
 
 The defaults for a new project (its instructions, folder and provider) come from
-**Settings → Context & files → Projects**.
+**Settings → Context & memory → Projects**.
 
 ## Chats in a project
 

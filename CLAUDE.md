@@ -66,9 +66,17 @@ The user docs live in `docs/` (Just the Docs remote theme, built by GitHub Pages
 `/docs`, no workflow). When a change adds, removes or renames a feature, setting, default,
 range or shortcut, update the matching page in the same PR:
 
-- settings (labels, defaults and ranges in `ui/settings.rs`, one child module per tab in
-  `ui/settings/<tab>.rs`, and `config.rs`) →
-  `docs/settings/<tab>.md` (the Docker tab is `docs/settings/docker.md`);
+- settings (labels, defaults and ranges in `ui/settings.rs` and its child modules, and
+  `config.rs`) → `docs/settings/<page>.md`. Settings has sixteen pages in four groups (`Tab`,
+  `NAV_GROUPS`): App (General, Appearance, Voice, Data & privacy → `privacy.md`), Chats
+  (Permissions, Context & memory → `context.md`, Workspace, Artifacts & files → `artifacts.md`),
+  Models & tools (Providers, MCP servers, Tools → `built-in-tools.md`, Skills & hooks,
+  Subagents) and This computer (Docker sandbox → `docker.md`, Background, Remote access →
+  `remote-access.md`). Several pages share a module: `general.rs` holds General, Permissions and
+  Data & privacy; `context.rs` Context & memory, Workspace and Artifacts & files;
+  `background.rs` Background and Remote access. Build pages from the row helpers in
+  `ui/settings.rs` (`section`, `switch`, `choice`, `text_row`, `long_text`, over
+  `chrome::setting_row`), and add each setting to `SEARCH_INDEX`;
 - chats, attachments, tools and approvals, MCP, subagents, updates → `docs/using/*.md`;
 - shortcuts → `docs/reference/keyboard-shortcuts.md`; storage, secrets or anything that
   leaves the computer → `docs/reference/data-and-privacy.md`;
@@ -189,7 +197,7 @@ Per-chat permission modes live in `approval.rs` (`ApprovalMode`: Default, AutoWo
 AllowAll, ReadOnly, Plan; `ChatPermissions` with `no_sandbox`, stored on `Conversation.permissions`).
 `ApprovalMode::runs_unasked` lets `agent::run` skip asking, and ReadOnly and Plan switch the
 write/shell workspace tools off via `ToolSelection::with_mode` (`is_read_only`). Plan mode (`plan.rs`,
-Settings → General → Plan mode) appends its prompt to the system prompt; `plan::approve` switches the
+Settings → Permissions → Plan mode) appends its prompt to the system prompt; `plan::approve` switches the
 chat to its after-approval mode and returns the approval message, and `plan::awaiting_approval` decides
 whether the buttons under a finished reply are shown. `offered` and `effective` hide Plan and map it to
 ReadOnly while plan mode is off.
@@ -203,8 +211,8 @@ drop). Subagent tool calls never ask for approval. Progress streams back as
 `SubagentProgress` events.
 
 **Background replies** (`background.rs`): `ChatApp` starts a reply through `start_run_with`, which queues it (`RunQueue`, FIFO) when `background.max_parallel` replies already run or others wait; `logic()` starts queued ones, enforces `background.time_limit_mins` from each `Run::started`, and frees slots of tasks that ended without `Done`. A queued chat counts as busy (`ChatApp::busy`) and stopping it removes it from the queue. `should_notify` decides desktop notifications (`notify-rust`, sent on `spawn_blocking`, never in tests), and the `feature:notify` chat switch can override the setting per chat.
-**Scheduled tasks** (`schedule.rs`, UI in `ui/schedule_settings.rs`, and the Scheduled page in
-`app/scheduled.rs`, which edits `general.schedules` directly and saves at once; a run's new chat
+**Scheduled tasks** (`schedule.rs`; edited only on the Scheduled page in `app/scheduled.rs`, not in
+Settings, with a task's fields from `ui/schedule_settings.rs`; the page edits `general.schedules` directly and saves at once; a run's new chat
 records its task in `Conversation.scheduled_task` for the page's run list): `GeneralSettings.schedules` holds the tasks, with `Schedule` (interval, daily, weekly, local time), `Target` (new chat or a chat) and a last run. `logic()` calls `ChatApp::run_schedules` at most every `schedule::CHECK_EVERY`, which runs `schedule::check` (pure: `step` decides wait, run or skip for each task) and starts each due task through `run_task` and the reply queue (`enqueue_run`, which takes a `Queued.provider`). Run times are saved with the settings; a Settings draft gets them copied by `copy_run_state`.
 
 **Command line** (`exec.rs`): `main` hands `exec …` to `exec::run` and answers `--version`, before the window opens. It parses the arguments by hand (`parse_args`), loads `Settings` as the app does, builds the request with `AgentRequest::for_chat` (the same builder `launch_run` uses), waits for MCP servers, and runs `drive`, which consumes the `agent::run` events on a task. `headless_allows` answers approvals: only what `ApprovalMode::runs_unasked` allows, everything else is denied. `ExecSettings` (`general.exec`) is on the Background tab. Windows attaches to the parent console with `AttachConsole`.
@@ -328,12 +336,17 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
 
 ## UI conventions
 
-- The look is dark first and flat: palette (including the translucent `hover`, `active` and
-  `hairline` tokens), fonts and widget styling live in `ui/theme.rs` (`theme::palette(dark)`).
-  Fonts are bundled in `assets/fonts` (Instrument Sans for the interface and replies, Newsreader
-  for the greeting and page headings via `theme::serif`, IBM Plex Mono for code, Phosphor for
-  icons; codepoints in `theme::icon`). The interface is 14px (`TextStyle::Body`); `markdown.rs`
-  sets `Body` to `theme::READING_SIZE` around reply prose. `theme::set_motion` sets the
+- The look ("Instrument") is dark first and flat: cool graphite greys with one signal green
+  accent (`signal`, with `on_signal` for text on it). Palette (including the translucent
+  `hover`, `active` and `hairline` tokens), fonts and widget styling live in `ui/theme.rs`
+  (`theme::palette(dark)`). Use `theme::radius::{SM, MD, LG, XL}` for corners and
+  `theme::size::*` for text and icon sizes instead of literals; `theme::display` makes
+  semibold headings, `theme::caps` the mono capital section labels, `theme::mono` names such as
+  models. Fonts are bundled in `assets/fonts` (the variable IBM Plex Sans for the interface and
+  replies, IBM Plex Mono for code and metadata, Phosphor for icons; codepoints in
+  `theme::icon`; the static Instrument Sans files are only for PDF export). The interface is
+  13px (`TextStyle::Body`); `markdown.rs` sets `Body` to `theme::READING_SIZE` (15px) around
+  reply prose. Only menus and windows cast a shadow. `theme::set_motion` sets the
   animation time (0 with `general.reduce_motion`).
 - `app.rs` has child modules that use `ChatApp`'s private fields: `app/events.rs`
   (`handle_events`, `handle_chat_event`), `app/remote.rs` (remote access: `sync_remote`,
@@ -354,13 +367,14 @@ An Anthropic `pause_turn` continues the reply in the agent loop.
   and the 256 px `window-{light,dark}.png` that `theme::window_icon` embeds. The app swaps the
   window icon when the theme changes.
 - egui 0.37 takes button text from `TextStyle::Body`, so `Body` is the sans interface style;
-  prose uses `TextStyle::Body` (Instrument Sans), applied around markdown in `ui/markdown.rs`.
+  prose uses `TextStyle::Body` (IBM Plex Sans), applied around markdown in `ui/markdown.rs`.
 - `ui/markdown.rs` splits replies into markdown segments (rendered by `egui_commonmark`) and
   drawings: closed top-level ```` ```mermaid ```` / ```` ```svg ```` blocks and inline
   `<svg>`, rendered to SVG and shown through egui's SVG loader. Web images become links
   unless "Load web images in replies" is on.
 - `egui_commonmark_backend` is vendored in `vendor/` (via `[patch.crates-io]`) for real bold
-  text (the `wght` font axis) and the code-block copy button; changes are marked
+  text (the `wght` font axis), the code-block copy button and code blocks on the palette's own
+  surface; changes are marked
   `CleanRSTAI:` and listed in `vendor/egui_commonmark_backend/VENDORED.md`. Re-apply them when
   upgrading `egui_commonmark`.
 - Artifacts (`artifacts.rs`) are closed top-level fenced blocks in replies: html, svg, mermaid,

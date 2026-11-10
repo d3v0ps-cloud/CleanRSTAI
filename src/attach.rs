@@ -94,7 +94,7 @@ pub(crate) fn image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 /// The note a scanned PDF attaches with when OCR is off.
 pub const NO_TEXT_LAYER_NOTE: &str =
-    "No text layer; turn on OCR in Settings → Context & files to read the scanned pages.";
+    "No text layer; turn on OCR in Settings → Artifacts & files to read the scanned pages.";
 
 /// A file read from disk or a drop: an attachment, or a scanned PDF that OCR still has to read.
 #[derive(Debug)]

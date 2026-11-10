@@ -80,14 +80,14 @@ too, as an installer and a portable `.exe`.
 
   Time, calculator and task list run locally without asking. Web fetch and web search reach the
   internet, so they ask for approval like MCP tools do ("Always allow this tool" skips that for
-  the rest of the chat). Switch each one in **Settings → Built-in Tools**.
+  the rest of the chat). Switch each one in **Settings → Tools**.
 - **Workspace**: give a chat a local working folder with **Project or folder** under the
   message box (or switch the title row to **Code**), and the model gets tools to work in it: `read_file`, `file_glob_search`,
   `grep_search`, `get_info`, `git_status` and `git_diff` run freely; `write_file`, `edit_file` and
   `exec_shell_command` ask for approval first. Every path is kept inside the folder (no `..`,
   outside absolute paths or symlinks out), searches skip files ignored by `.gitignore`, and
   commands run in the folder with `sh` (`cmd` on Windows). Switch the tools off in
-  **Settings → Built-in Tools** or per chat.
+  **Settings → Tools** or per chat.
   - **Commits**: with **Commit (git_commit)** on (off by default), the model can commit the
     folder's changes, or chosen files, to its git repository locally. Every commit asks for
     approval, nothing is pushed, and a **Commit…** dialog does the same by hand.
@@ -119,11 +119,11 @@ too, as an installer and a portable `.exe`.
   summarised (by the chat's model or one you choose) and only the summary and the latest
   messages are sent; a marker in the chat shows where. **Compact now** does it by hand, and
   older tool results can be shortened instead. Threshold, kept messages, context size and the
-  summary instructions are in **Settings → Context & files**; every one of these features can
-  be switched per chat under **Chat features** in the tools menu.
+  summary instructions are in **Settings → Context & memory**; every one of these features can
+  be switched per chat under **Chat options** in the tools menu.
 - **Code review**: **Review changes** sends the working folder's git diff (uncommitted changes,
   or a branch against its base) to a model with a review prompt, as a normal chat reply. The
-  review model, prompt and size limit are in **Settings → Context & files**.
+  review model, prompt and size limit are in **Settings → Workspace**.
 - **Docker sandbox** (off by default): run the workspace shell commands in a Docker container
   with only the chat's folder mounted, no network by default (or only the hosts, ports and
   protocols you allow), and CPU, memory and process limits. Use a published image or a custom
@@ -189,10 +189,11 @@ too, as an installer and a portable `.exe`.
   run without asking), Allow all, Read only or Plan. In Plan, the model reads and proposes a
   numbered plan, and **Approve plan** under the reply carries it out in the chat's chosen mode.
   It can switch the terminal sandbox off for the chat.
-- **Interface**: dark first, flat and quiet: near-black neutral greys (or near-white ones),
-  hairline borders and one warm orange accent for the brand mark; Instrument Sans for the
-  interface and replies, Newsreader (a serif) for the greeting. A fixed sidebar (New, Search,
-  Projects, Artifacts, Scheduled, Customize, Recents and your name) with a title row for
+- **Interface**: dark first, flat and precise: cool graphite greys (or near-white ones),
+  hairline borders and one signal green accent for what is live or primary (the send button,
+  switches that are on, the brand mark); IBM Plex Sans for the interface and replies, IBM Plex
+  Mono for code and for names such as models and tools. A fixed sidebar (New, Search,
+  Projects, Artifacts, Scheduled, Settings, Recents and your name) with a title row for
   back/forward (⌘[ and ⌘]) and a **Chat / Code** switch (Code lists the chats with a working
   folder); on macOS the window has no title bar and the traffic lights sit in the sidebar. A new
   chat opens on a greeting with the message box in the middle, a strip under it for the project
@@ -380,20 +381,26 @@ console window.
 Open **Settings** from the menu on your name in the sidebar (or press ⌘/Ctrl + ,); it opens over
 the window on **General**.
 
-| Tab | What you can set |
+| Page | What you can set |
 |---|---|
-| General | System prompt, send key, the live web page preview, auto-approve tools, max tool rounds, tool timeout, branches (keep the replaced version, versions kept per message), updates (and their source), remote access, Cloudflare Tunnel and Cloudflare Access, export |
-| Appearance | Theme, UI scale, your name, reduce motion, reasoning display, speed stats, web images, the artifact panel |
-| Providers | Name, base URL (with presets), API (Chat Completions, Responses, Anthropic Messages), prompt caching, API key, model, reasoning effort, thinking budget, temperature, top-p, max tokens and stop sequences (per provider and per model), server type (with detection), token usage, streaming, timeout, extra headers |
-| MCP Servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
-| Built-in Tools | Time & date, calculator, task list, web fetch, web search and workspace tools on or off by default |
-| Skills & hooks | Slash commands (saved prompts), skills: on or off, the workspace's `.cleanrstai/skills` folder, size limit, and the skills folder; hooks: the master switch, and each hook's switch, name, event, tool patterns, command and timeout |
-| Context & files | Context compaction, project instructions (AGENTS.md, CLAUDE.md), projects (on or off, file size limit, and the defaults for new projects), memory (on or off, asking before saving, size limit, scope, and the saved memories), diffs and undo for file edits |
-| Subagents | Enable delegation; provider and model; per-task provider choice; tools (including the workspace in sandbox containers of their own); parallelism, task, round and time limits; system prompt |
-| Background | Notifications (and only while the window is in the background); replies at once, with the rest queued; time limit per reply; keep running in the menu bar or system tray when the window is closed (macOS and Windows); scheduled tasks (prompt, repeat, target chat, approval mode, folder, provider, catch-up); command line (`cleanrstai exec`): on or off, approval mode, MCP servers and their wait, saving chats |
-| Docker sandbox | Run shell commands in a container; image or custom Dockerfile (small and full examples); network: none, normal, or allowed hosts, protocols and ports; CPU, memory and process limits; read-only folder; `docker` path |
+| General | System prompt, your name, send key, updates |
+| Appearance | Theme, UI scale, reduce motion, reasoning display, speed stats |
+| Voice | Voice input and reading replies aloud: providers, models, voices, limits |
+| Data & privacy | Keychain for secrets, web images in replies, export and import, file locations |
+| Permissions | The mode new chats start in, auto-approve, tool rounds, reply limits, tool timeout, plan mode |
+| Context & memory | Context compaction, memory, projects, branches (kept versions of replies) |
+| Workspace | Workspace tools, commits, project instructions (AGENTS.md, CLAUDE.md), diffs and undo for file edits, code review |
+| Artifacts & files | The artifact panel, live web page preview, Save as formats, OCR for scanned PDFs |
+| Providers | Name, base URL (with presets), API, API key, model, reasoning and sampling options, timeout, extra headers |
+| MCP servers | Add, import, enable or disable servers; stdio command/args/env/cwd or HTTP URL/headers; per-tool toggles |
+| Tools | Time & date, calculator, task list, web fetch and web search on or off by default |
+| Skills & hooks | Slash commands (saved prompts), skills, and hooks: commands that run around tool calls |
+| Subagents | Delegation on or off; provider and model; tools; parallelism and limits; system prompt |
+| Docker sandbox | Run shell commands in a container: image or Dockerfile, network, CPU and memory limits |
+| Background | Keep running in the tray, notifications, replies at once, time limit per reply, the command line |
+| Remote access | The browser client's server, password and HTTPS, Cloudflare Tunnel and Access |
 
-Changes take effect when you click **Apply** or **Save & Close**. Only MCP servers whose
+Changes take effect when you click **Apply** or **Save**. Only MCP servers whose
 connection settings changed are reconnected.
 
 Files are stored at:

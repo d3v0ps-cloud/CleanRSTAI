@@ -481,7 +481,9 @@ async fn favicon() -> Response {
 /// The fonts style.css refers to, from `assets/fonts`. Other names are 404.
 async fn font(Path(file): Path<String>) -> Response {
     let bytes: Option<&'static [u8]> = match file.as_str() {
-        "InstrumentSans.ttf" => Some(&include_bytes!("../../assets/fonts/InstrumentSans.ttf")[..]),
+        "IBMPlexSans-Variable.ttf" => {
+            Some(&include_bytes!("../../assets/fonts/IBMPlexSans-Variable.ttf")[..])
+        }
         "IBMPlexMono-Regular.ttf" => {
             Some(&include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf")[..])
         }

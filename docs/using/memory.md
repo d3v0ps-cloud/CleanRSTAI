@@ -11,7 +11,7 @@ like answers written. A fact is saved when you ask the model to remember somethi
 state it about yourself and the model decides it is worth keeping. The saved facts are added to
 the system prompt of the chats that have memory on, so a new chat already knows them.
 
-Memory is off by default. Turn it on under **Settings → Context & files → Memory**.
+Memory is off by default. Turn it on under **Settings → Context & memory → Memory**.
 
 ## What the model can do
 
@@ -49,7 +49,7 @@ Switching the scope doesn't delete anything. Under Global, the project memories 
 
 ## Incognito chats
 
-A chat can switch memory off for itself: the **Memory** switch under **Chat features** in the
+A chat can switch memory off for itself: the **Memory** switch under **Chat options** in the
 tools menu. Such a chat is incognito:
 
 - its system prompt has no memories, and the model is not told about memory at all;
@@ -61,7 +61,7 @@ the Settings default is. Subagents never get memories or the memory tool.
 
 ## Managing memories in Settings
 
-**Settings → Context & files → Memory** lists every saved memory, newest first, with its scope,
+**Settings → Context & memory → Memory** lists every saved memory, newest first, with its scope,
 the date it was saved and its text. You can:
 
 - edit a memory's text: the change is saved when you leave the field. An empty text deletes it;
@@ -92,5 +92,5 @@ chat itself. See [Data and privacy](../reference/data-and-privacy.html).
 | **Size limit** | 8 KB | The text of the memories sent with each request (1 to 64 KB). |
 | **Scope** | Global | Global, or per project (see above). |
 
-The same switch for one chat is **Memory** under **Chat features** in the tools menu.
+The same switch for one chat is **Memory** under **Chat options** in the tools menu.
 `cleanrstai exec` follows the setting; `--no-memory` makes one run incognito.

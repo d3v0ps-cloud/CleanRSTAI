@@ -23,14 +23,14 @@ Remote access is off by default.
 ## Turning it on
 
 1. Open **Settings → General** and go to the **Remote access** section
-   ([details](../settings/general.html#remote-access)).
+   ([details](../settings/remote-access.html#remote-access)).
 2. Tick **Serve the chat interface to browsers on other devices**.
 3. Under **Listen on**, choose **This computer only** (the default) or **Local network**.
 4. Check the **Port**. It is 8484 unless you change it.
 5. Enter a **Password**. The server does not start until there is one.
 6. Under **HTTPS**, keep **Self-signed certificate** (the default), choose **Certificate files**
    and enter your own PEM certificate and key, or choose **Off (plain HTTP)**.
-7. Click **Apply** or **Save & Close**.
+7. Click **Apply** or **Save**.
 
 When the server is running, **Status** shows the address, for example
 `https://192.168.1.20:8484/` on the local network.
@@ -78,7 +78,7 @@ its attachments, but you can't add files from the browser.
 ## Security
 
 - **Password.** The server refuses to start without one. The password is kept in the system
-  keychain with your API keys ([Secrets](../settings/general.html#secrets)).
+  keychain with your API keys ([Secrets](../settings/privacy.html#secrets)).
 - **HTTPS.** The default is a self-signed certificate. The app keeps it in a `remote` folder in
   its configuration folder and makes a new one when this computer's network address changes.
   Use HTTPS unless the network is one you trust completely. With **Off (plain HTTP)** the

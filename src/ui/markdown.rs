@@ -232,7 +232,7 @@ pub fn show(
     {
         match segment {
             Segment::Markdown(md) => {
-                // Prose in the reading serif; code and headings keep their own styles.
+                // Prose at the reading size; code and headings keep their own styles.
                 let ui = &mut *ui;
                 let previous = ui.style().override_text_style.clone();
                 let body = ui.style().text_styles.get(&theme::reading()).cloned();
@@ -243,8 +243,9 @@ pub fn show(
                 );
                 CommonMarkViewer::new()
                     .max_image_width(Some(ui.available_width() as usize))
-                    // Neutral themes to sit with the charcoal and paper backgrounds.
-                    .syntax_theme_dark("base16-eighties.dark")
+                    // Token colours only: the block's background is the palette's raised
+                    // surface (see the vendored backend).
+                    .syntax_theme_dark("base16-ocean.dark")
                     .syntax_theme_light("InspiredGitHub")
                     .show_with_id(id.with(i), ui, md_cache, &md);
                 ui.style_mut().override_text_style = previous;
@@ -296,7 +297,7 @@ pub fn drawing_preview(
             let d = d.clone();
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(252, 251, 247))
-                .corner_radius(10)
+                .corner_radius(theme::radius::LG)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -331,7 +332,7 @@ pub fn code_view(
     let newline = if source.ends_with('\n') { "" } else { "\n" };
     let text = format!("{fence}{lang}\n{source}{newline}{fence}\n");
     CommonMarkViewer::new()
-        .syntax_theme_dark("base16-eighties.dark")
+        .syntax_theme_dark("base16-ocean.dark")
         .syntax_theme_light("InspiredGitHub")
         .show_with_id(id, ui, md_cache, &text);
 }
@@ -355,7 +356,7 @@ fn drawing(
             // Drawings assume a light page, so they sit on near-white in both themes.
             let clicked = egui::Frame::new()
                 .fill(egui::Color32::from_rgb(252, 251, 247))
-                .corner_radius(10)
+                .corner_radius(theme::radius::LG)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(

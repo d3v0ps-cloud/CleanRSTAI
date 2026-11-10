@@ -426,7 +426,7 @@ async fn transcribe_with_tesseract(job: &Job, image: &PageImage) -> Result<Strin
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow!(
                     "Tesseract isn't installed or isn't at \"{}\"; install it or set its path \
-                     in Settings → Context & files",
+                     in Settings → Artifacts & files",
                     job.settings.tesseract_path
                 )
             } else {
@@ -676,7 +676,7 @@ mod tests {
             attached
                 .text
                 .unwrap()
-                .contains("turn on OCR in Settings → Context & files")
+                .contains("turn on OCR in Settings → Artifacts & files")
         );
 
         let mut settings = enabled_settings("http://127.0.0.1:9");

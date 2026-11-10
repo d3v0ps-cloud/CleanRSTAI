@@ -20,7 +20,7 @@ service you want to use before sending a message.
 3. Paste your **API key**. Leave it empty for local servers such as Ollama or LM Studio.
 4. Click **Fetch models** to load the server's model list, then pick one, or type the model
    name.
-5. Click **Save & Close**.
+5. Click **Save**.
 
 The key goes to the system keychain, not to `settings.json`. See
 [Providers](../settings/providers.html) for every field.

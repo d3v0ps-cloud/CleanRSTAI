@@ -1,7 +1,7 @@
 ---
 title: MCP Servers
 parent: Settings
-nav_order: 3
+nav_order: 10
 ---
 
 # MCP Servers
@@ -63,7 +63,7 @@ Untick to disconnect the server and hide its tools without deleting it.
 | **Command** | The program to start: `npx`, `uvx`, `docker` or a path to a server binary. |
 | **Arguments** | One argument per row. |
 | **Environment** | Variables set for the process, such as API tokens. Values are stored in the keychain. |
-| **Working dir** | Optional folder to start the process in. |
+| **Working folder** | Optional folder to start the process in. |
 
 ### Streamable HTTP fields
 

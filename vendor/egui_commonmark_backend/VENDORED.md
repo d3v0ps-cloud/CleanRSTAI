@@ -6,6 +6,9 @@ A copy of [egui_commonmark_backend](https://crates.io/crates/egui_commonmark_bac
 
 - `src/misc.rs`, `Style::to_richtext`: bold text and heading levels 1–4 also set the `wght`
   variation axis to 600, because egui's `RichText::strong()` only changes the colour.
+- `src/misc.rs`, `CodeBlock::pre_syntax_highlighting`: the block keeps the app's
+  `extreme_bg_color` instead of the syntax theme's background, so code sits on the palette's
+  raised surface.
 - `src/elements.rs`, `code_block`: the copy button is placed inside the block's top-right
   corner, the text gets a right margin so it never runs under the button, and the button uses
   the app's Phosphor copy/check glyphs.

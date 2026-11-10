@@ -140,7 +140,7 @@ pub fn diff_block(ui: &mut egui::Ui, diff: &str) {
     job.wrap.max_width = f32::INFINITY;
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
-        .corner_radius(8)
+        .corner_radius(super::theme::radius::MD)
         .inner_margin(8)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -180,7 +180,10 @@ pub fn diff_stat(diff: &str) -> (usize, usize) {
 /// A frameless icon button with a tooltip and an accessible name.
 pub fn icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
     let resp = ui
-        .add(egui::Button::new(egui::RichText::new(icon).size(16.0)).frame(false))
+        .add(
+            egui::Button::new(egui::RichText::new(icon).size(super::theme::size::ICON))
+                .frame(false),
+        )
         .on_hover_text(label);
     let label = label.to_owned();
     resp.widget_info(move || egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
@@ -197,8 +200,12 @@ pub fn quiet_icons(ui: &mut egui::Ui, items: &[(&str, &str)]) -> Option<usize> {
         for (i, (glyph, label)) in items.iter().enumerate() {
             let resp = ui
                 .add(
-                    egui::Button::new(egui::RichText::new(*glyph).size(15.0).color(pencil))
-                        .frame_when_inactive(false),
+                    egui::Button::new(
+                        egui::RichText::new(*glyph)
+                            .size(super::theme::size::ICON)
+                            .color(pencil),
+                    )
+                    .frame_when_inactive(false),
                 )
                 .on_hover_text(*label);
             let label = (*label).to_owned();

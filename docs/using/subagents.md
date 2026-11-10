@@ -25,7 +25,7 @@ then uses their results.
 ## What subagents can use
 
 - **Provider and model**: the chat's, unless you choose another in
-  [Settings → Subagents](../settings/subagents.html). With **Per-task choice** on, the model can
+  [Settings → Subagents](../settings/subagents.html). With **Let the model choose per task** on, the model can
   pick one of your provider profiles per task, for example a fast local model for simple
   tasks.
 - **Tools**: time, calculator and web fetch when they are on in the chat, and optionally the

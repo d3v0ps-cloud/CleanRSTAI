@@ -750,7 +750,7 @@ impl ChatApp {
             format!("·  {summary}")
         };
         // Dimmer than the model name; the accent when this chat has its own options.
-        let label = RichText::new(text).size(13.0);
+        let label = RichText::new(text).size(theme::size::SMALL);
         let label = if options.is_empty() {
             label.color(theme::palette(dark).pencil)
         } else {
@@ -944,6 +944,96 @@ impl ChatApp {
                 ui.separator();
                 crate::ui::widgets::permissions_picker(ui, &mut permissions, sandbox_on, plan_on);
                 ui.separator();
+                // What isn't a tool: compaction, memory, branches and the like, with the
+                // chat's one-off actions.
+                ui.menu_button(format!("{}  Chat options", icon::SLIDERS_H), |ui| {
+                    ui.set_min_width(260.0);
+                    for (key, name, desc) in crate::tools::FEATURES {
+                        // The project switch only means something in a project's chat.
+                        if key == crate::tools::PROJECT && !in_project {
+                            continue;
+                        }
+                        let mut on = sel.feature_on(key);
+                        let ic = match key {
+                            crate::tools::COMPACTION => icon::STACK,
+                            crate::tools::INSTRUCTIONS => icon::FILE,
+                            crate::tools::HOOKS => icon::TERMINAL,
+                            crate::tools::PROJECT => icon::FOLDER,
+                            crate::tools::MEMORY => icon::EDIT,
+                            _ => icon::UNDO,
+                        };
+                        let mut hover = desc.to_owned();
+                        if key == crate::tools::INSTRUCTIONS && !loaded.is_empty() {
+                            hover.push_str(&format!(". Last read: {}", loaded.join(", ")));
+                        }
+                        if ui
+                            .checkbox(&mut on, format!("{ic}  {name}"))
+                            .on_hover_text(hover)
+                            .changed()
+                        {
+                            changes.push((
+                                ToolOverrides::feature_key(key),
+                                on,
+                                sel.feature_default(key),
+                            ));
+                        }
+                        if key == crate::tools::INSTRUCTIONS && on && !loaded.is_empty() {
+                            ui.indent("instructions-loaded", |ui| {
+                                ui.label(
+                                    RichText::new(format!("Read: {}", loaded.join(", ")))
+                                        .small()
+                                        .weak(),
+                                );
+                            });
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            self.current.is_some_and(|id| !self.busy(id)),
+                            egui::Button::new(format!("{}  Compact now", icon::STACK)).small(),
+                        )
+                        .on_hover_text(
+                            "Summarise this chat's older messages now; the latest ones \
+                                     are kept word for word",
+                        )
+                        .clicked()
+                    {
+                        compact = true;
+                    }
+                    if self.settings.general.review.enabled {
+                        let idle = self.current.is_some_and(|id| !self.busy(id));
+                        if ui
+                            .add_enabled(
+                                idle && has_workspace,
+                                egui::Button::new(format!("{}  Review changes", icon::CODE))
+                                    .small(),
+                            )
+                            .on_hover_text(
+                                "Send the working folder's git diff to the model with the \
+                                         review instructions in Settings → Workspace",
+                            )
+                            .clicked()
+                        {
+                            review = true;
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            has_edits,
+                            egui::Button::new(format!("{}  Changed files", icon::FILE)).small(),
+                        )
+                        .on_hover_text("Every file this chat's edits changed, with their diffs")
+                        .clicked()
+                    {
+                        show_changed = true;
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Compaction, project instructions, undo, notifications, hooks, branches \
+                     and memory for this chat, and Compact now, Review changes and Changed files",
+                );
+                ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(420.0)
                     .show(ui, |ui| {
@@ -1001,88 +1091,6 @@ impl ChatApp {
                                     ));
                                 }
                             }
-                        }
-                        ui.add_space(4.0);
-                        ui.separator();
-                        ui.label(RichText::new("Chat features").small().weak());
-                        for (key, name, desc) in crate::tools::FEATURES {
-                            // The project switch only means something in a project's chat.
-                            if key == crate::tools::PROJECT && !in_project {
-                                continue;
-                            }
-                            let mut on = sel.feature_on(key);
-                            let ic = match key {
-                                crate::tools::COMPACTION => icon::STACK,
-                                crate::tools::INSTRUCTIONS => icon::FILE,
-                                crate::tools::HOOKS => icon::TERMINAL,
-                                crate::tools::PROJECT => icon::FOLDER,
-                                crate::tools::MEMORY => icon::EDIT,
-                                _ => icon::UNDO,
-                            };
-                            let mut hover = desc.to_owned();
-                            if key == crate::tools::INSTRUCTIONS && !loaded.is_empty() {
-                                hover.push_str(&format!(". Last read: {}", loaded.join(", ")));
-                            }
-                            if ui
-                                .checkbox(&mut on, format!("{ic}  {name}"))
-                                .on_hover_text(hover)
-                                .changed()
-                            {
-                                changes.push((
-                                    ToolOverrides::feature_key(key),
-                                    on,
-                                    sel.feature_default(key),
-                                ));
-                            }
-                            if key == crate::tools::INSTRUCTIONS && on && !loaded.is_empty() {
-                                ui.indent("instructions-loaded", |ui| {
-                                    ui.label(
-                                        RichText::new(format!("Read: {}", loaded.join(", ")))
-                                            .small()
-                                            .weak(),
-                                    );
-                                });
-                            }
-                        }
-                        if ui
-                            .add_enabled(
-                                self.current.is_some_and(|id| !self.busy(id)),
-                                egui::Button::new(format!("{}  Compact now", icon::STACK)).small(),
-                            )
-                            .on_hover_text(
-                                "Summarise this chat's older messages now; the latest ones \
-                                     are kept word for word",
-                            )
-                            .clicked()
-                        {
-                            compact = true;
-                        }
-                        if self.settings.general.review.enabled {
-                            let idle = self.current.is_some_and(|id| !self.busy(id));
-                            if ui
-                                .add_enabled(
-                                    idle && has_workspace,
-                                    egui::Button::new(format!("{}  Review changes", icon::CODE))
-                                        .small(),
-                                )
-                                .on_hover_text(
-                                    "Send the working folder's git diff to the model with the \
-                                         review instructions in Settings → Context & files",
-                                )
-                                .clicked()
-                            {
-                                review = true;
-                            }
-                        }
-                        if ui
-                            .add_enabled(
-                                has_edits,
-                                egui::Button::new(format!("{}  Changed files", icon::FILE)).small(),
-                            )
-                            .on_hover_text("Every file this chat's edits changed, with their diffs")
-                            .clicked()
-                        {
-                            show_changed = true;
                         }
                         for (id, name) in &servers {
                             ui.add_space(4.0);
@@ -1317,7 +1325,7 @@ impl ChatApp {
     /// Reads the working folder's diff in the background; `ReviewReady` then sends it.
     fn start_review(&mut self, id: Uuid, ctx: &egui::Context) -> Result<(), String> {
         if !self.settings.general.review.enabled {
-            return Err("Code review is off (Settings → Context & files)".into());
+            return Err("Code review is off (Settings → Workspace)".into());
         }
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
@@ -1490,7 +1498,7 @@ impl ChatApp {
         if n <= self.settings.general.compaction.keep_recent as usize {
             return Err(format!(
                 "Nothing to compact yet: the chat has {n} message(s) since the last summary, \
-                 and the latest {} are always kept (Settings → Context).",
+                 and the latest {} are always kept (Settings → Context & memory).",
                 self.settings.general.compaction.keep_recent
             ));
         }
@@ -2687,7 +2695,7 @@ impl ChatApp {
             ui.spinner().on_hover_text("Transcribing…");
         } else if ui
             .add(egui::Button::new(
-                RichText::new(icon::MICROPHONE).size(17.0),
+                RichText::new(icon::MICROPHONE).size(theme::size::ICON),
             ))
             .on_hover_text("Dictate into the message box (⌘/Ctrl+Shift+M)")
             .clicked()
@@ -2815,13 +2823,13 @@ impl ChatApp {
             ),
             Entry::new(
                 icon::TOOLBOX,
-                "Built-in tools",
+                "Tools",
                 "Settings",
                 Command::OpenSettings(Tab::Tools),
             ),
             Entry::new(
                 icon::STACK,
-                "Context & files",
+                "Context & memory",
                 "Settings",
                 Command::OpenSettings(Tab::Context),
             ),
@@ -3069,9 +3077,9 @@ impl ChatApp {
             | Command::ExportConversations
             | Command::ImportSettings
             | Command::ImportConversations => {
-                // These live on the General settings page, which shows their result and
-                // (for settings imports) the merge/replace choice.
-                self.open_settings(Tab::General);
+                // These live on the Data & privacy settings page, which shows their result
+                // and (for settings imports) the merge/replace choice.
+                self.open_settings(Tab::Privacy);
                 if let Some(sui) = &mut self.settings_ui {
                     sui.queue(match cmd {
                         Command::ExportSettings => SettingsAction::ExportSettings {
@@ -3272,9 +3280,7 @@ impl ChatApp {
         } else {
             provider.model.clone()
         };
-        let label = RichText::new(shell::short_model(&model))
-            .size(13.0)
-            .color(p.ink2);
+        let label = theme::mono(shell::short_model(&model), theme::size::SMALL).color(p.ink2);
         // A llama.cpp router's models and their load state, for this provider.
         let router: Option<Vec<crate::llm::RouterModel>> = self
             .server_info
@@ -3431,7 +3437,7 @@ impl ChatApp {
         let models = provider.models.clone();
         let default_model = provider.model.clone();
         let label = RichText::new(shell::short_model(&shown_model))
-            .size(13.0)
+            .size(theme::size::SMALL)
             .color(p.ink2);
         let mut changed = false;
         MenuButton::from_button(egui::Button::new(label).frame_when_inactive(false))
@@ -4115,7 +4121,7 @@ impl ChatApp {
                 egui::Frame::new()
                     .fill(p.raised)
                     .stroke(egui::Stroke::new(1.0, p.hairline))
-                    .corner_radius(12)
+                    .corner_radius(theme::radius::LG)
                     .inner_margin(6)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -4124,7 +4130,7 @@ impl ChatApp {
                             if last != Some(*skill) {
                                 ui.label(
                                     RichText::new(if *skill { "Skills" } else { "Commands" })
-                                        .size(12.0)
+                                        .size(theme::size::SMALL)
                                         .color(p.pencil),
                                 );
                                 last = Some(*skill);
@@ -4134,14 +4140,17 @@ impl ChatApp {
                             job.append(
                                 &format!("{glyph}  /{name}"),
                                 0.0,
-                                egui::TextFormat::simple(egui::FontId::proportional(14.0), p.ink),
+                                egui::TextFormat::simple(
+                                    egui::FontId::proportional(theme::size::UI),
+                                    p.ink,
+                                ),
                             );
                             if !description.is_empty() {
                                 job.append(
                                     description,
                                     12.0,
                                     egui::TextFormat::simple(
-                                        egui::FontId::proportional(13.0),
+                                        egui::FontId::proportional(theme::size::SMALL),
                                         p.pencil,
                                     ),
                                 );
@@ -4203,7 +4212,7 @@ impl ChatApp {
                     1.0,
                     if has_focus { p.outline } else { p.hairline },
                 ))
-                .corner_radius(14)
+                .corner_radius(theme::radius::LG)
                 .inner_margin(egui::Margin {
                     left: 16,
                     right: 8,
@@ -4247,8 +4256,12 @@ impl ChatApp {
                             ui.add(
                                 egui::TextEdit::multiline(&mut self.input)
                                     .id(id)
-                                    .font(egui::FontId::proportional(15.5))
-                                    .hint_text(RichText::new(hint).size(15.5).color(p.pencil))
+                                    .font(egui::FontId::proportional(theme::size::READING))
+                                    .hint_text(
+                                        RichText::new(hint)
+                                            .size(theme::size::READING)
+                                            .color(p.pencil),
+                                    )
                                     .frame(egui::Frame::NONE)
                                     .desired_rows(2)
                                     // Tab moves on to the buttons below, so keyboard users
@@ -4272,10 +4285,12 @@ impl ChatApp {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            RichText::new(icon::STOP).size(15.0).color(p.paper),
+                                            RichText::new(icon::STOP)
+                                                .size(theme::size::ICON)
+                                                .color(p.paper),
                                         )
                                         .fill(p.ink)
-                                        .corner_radius(8)
+                                        .corner_radius(theme::radius::MD)
                                         .min_size(egui::vec2(32.0, 32.0)),
                                     )
                                     .on_hover_text("Stop")
@@ -4289,11 +4304,11 @@ impl ChatApp {
                                     .add(
                                         egui::Button::new(
                                             RichText::new(icon::ARROW_UP)
-                                                .size(16.0)
-                                                .color(egui::Color32::WHITE),
+                                                .size(theme::size::ICON)
+                                                .color(p.on_signal),
                                         )
                                         .fill(p.signal)
-                                        .corner_radius(8)
+                                        .corner_radius(theme::radius::MD)
                                         .min_size(egui::vec2(32.0, 32.0)),
                                     )
                                     .on_hover_text(if self.settings.general.send_with_enter {
@@ -4345,27 +4360,31 @@ impl ChatApp {
         let p = theme::palette(ui.visuals().dark_mode);
         let mut attach = false;
         let mut slash = false;
-        let (resp, _) = MenuButton::new(RichText::new(icon::PLUS).size(18.0).color(p.ink2))
-            .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
-            .ui(ui, |ui| {
-                ui.set_min_width(230.0);
-                if ui
-                    .button(theme::labelled(icon::PAPERCLIP, "Attach files…"))
-                    .clicked()
-                {
-                    attach = true;
-                    ui.close();
-                }
-                self.tools_menu(ui);
-                self.mcp_menu(ui);
-                if ui
-                    .button(theme::labelled(icon::COMMAND, "Commands and skills  /"))
-                    .clicked()
-                {
-                    slash = true;
-                    ui.close();
-                }
-            });
+        let (resp, _) = MenuButton::new(
+            RichText::new(icon::PLUS)
+                .size(theme::size::ICON_LG)
+                .color(p.ink2),
+        )
+        .config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+        .ui(ui, |ui| {
+            ui.set_min_width(230.0);
+            if ui
+                .button(theme::labelled(icon::PAPERCLIP, "Attach files…"))
+                .clicked()
+            {
+                attach = true;
+                ui.close();
+            }
+            self.tools_menu(ui);
+            self.mcp_menu(ui);
+            if ui
+                .button(theme::labelled(icon::COMMAND, "Commands and skills  /"))
+                .clicked()
+            {
+                slash = true;
+                ui.close();
+            }
+        });
         resp.on_hover_text("Attach files, tools, resources and prompts (or drop files here)");
         if attach
             && let Some(paths) = rfd::FileDialog::new()
@@ -4758,7 +4777,9 @@ impl eframe::App for ChatApp {
             #[cfg(not(target_os = "linux"))]
             let own_window = None;
             let live_html = if !preview.enabled {
-                Err("Live preview is off (Settings → General); web pages open in your browser.")
+                Err(
+                    "Live preview is off (Settings → Artifacts & files); web pages open in your browser.",
+                )
             } else if crate::ui::webview::OWN_WINDOW {
                 Err(
                     "Web pages open in their own window (needs WebKitGTK); otherwise in your browser.",
@@ -4856,7 +4877,7 @@ impl eframe::App for ChatApp {
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
                 "Drop to attach",
-                egui::FontId::proportional(28.0),
+                egui::FontId::proportional(theme::size::DISPLAY),
                 egui::Color32::WHITE,
             );
         }
@@ -4874,9 +4895,6 @@ impl eframe::App for ChatApp {
                         sui.draft.active_provider = self.settings.active_provider;
                     }
                     SettingsAction::Close => keep = false,
-                    SettingsAction::RunScheduledTask(task) => {
-                        self.run_now(*task, &ctx, Some(&mut sui.draft.general.schedules));
-                    }
                     SettingsAction::Memory(change) => self.apply_memory_change(change),
                     SettingsAction::CheckForUpdates(url) => self.spawn_update_check(true, url),
                     SettingsAction::InstallUpdate => install_update = true,

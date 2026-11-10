@@ -3,7 +3,7 @@
 use super::*;
 
 impl SettingsUi {
-    /// Theme, UI scale, motion, the name used in the greeting, and how replies look; each as
+    /// Theme, UI scale, motion and how replies look; each as
     /// one row with the control on the right.
     pub(super) fn appearance_tab(&mut self, ui: &mut egui::Ui) {
         use crate::ui::chrome::{segmented, setting_row};
@@ -43,18 +43,6 @@ impl SettingsUi {
                 );
                 setting_row(
                     ui,
-                    "Your name",
-                    "For the greeting and the sidebar; empty uses your account name",
-                    |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut g.display_name)
-                                .hint_text("Account name")
-                                .desired_width(180.0),
-                        );
-                    },
-                );
-                setting_row(
-                    ui,
                     "Reduce motion",
                     "No fades, sliding sidebar or zooming dialogs",
                     |ui| {
@@ -85,22 +73,6 @@ impl SettingsUi {
                     "Prefill/decode speed and token counts under responses",
                     |ui| {
                         crate::ui::chrome::toggle(ui, &mut g.show_stats);
-                    },
-                );
-                setting_row(
-                    ui,
-                    "Load web images in replies",
-                    "Off: they show as links. Loading one tells its server the chat was opened.",
-                    |ui| {
-                        crate::ui::chrome::toggle(ui, &mut g.load_remote_images);
-                    },
-                );
-                setting_row(
-                    ui,
-                    "Artifacts in a side panel",
-                    "Open web pages, drawings and long code beside the chat as they arrive",
-                    |ui| {
-                        crate::ui::chrome::toggle(ui, &mut g.open_artifacts);
                     },
                 );
             });
