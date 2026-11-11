@@ -41,8 +41,11 @@ the background with their images kept beside them, and unreadable chat files set
 of skipped in **v0.9.3-dev.1**, all of which reached the stable release in **v0.9.3**. Cloning MCP servers, a ready `Authorization: Bearer ` header for new
 Streamable HTTP servers, recommended MCP servers (Hugging Face, Context7, Exa) added in one
 click, and installing a particular release (dev builds included) from a list shipped in
-**v0.9.4-dev.1**, all of which reached the stable release in **v0.9.4**. Signed builds are
-not planned.
+**v0.9.4-dev.1**, all of which reached the stable release in **v0.9.4**. The "Instrument"
+look (graphite greys with a signal green accent, IBM Plex Sans, shared radius and size tokens,
+one action row per reply) and Settings reorganised into sixteen pages in four groups shipped in
+**v0.9.5-dev.1**, with every Settings page in the row layout in **v0.9.5-dev.2**, all of which
+reached the stable release in **v0.9.5**. Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
