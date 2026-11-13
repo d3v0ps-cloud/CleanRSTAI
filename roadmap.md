@@ -45,7 +45,12 @@ click, and installing a particular release (dev builds included) from a list shi
 look (graphite greys with a signal green accent, IBM Plex Sans, shared radius and size tokens,
 one action row per reply) and Settings reorganised into sixteen pages in four groups shipped in
 **v0.9.5-dev.1**, with every Settings page in the row layout in **v0.9.5-dev.2**, all of which
-reached the stable release in **v0.9.5**. Signed builds are not planned.
+reached the stable release in **v0.9.5**. A code audit's fixes shipped in **v0.9.6-dev.1**:
+images from tools reaching the model, the workspace's boundaries (dangling links, a repository
+that points git elsewhere, linked instruction files and skills), secrets kept when the keychain
+is locked at startup, edits, plan approvals and stopped replies that could land in the wrong
+turn, remote access and MCP sign-in checks, and document and export limits. Signed builds are
+not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
