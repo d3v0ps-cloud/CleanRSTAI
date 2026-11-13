@@ -1310,6 +1310,26 @@ impl ChatApp {
         }
     }
 
+    /// Deletes every chat but those the flags keep, each as `delete_chat` does (its reply
+    /// stopped, its sandbox containers removed). Returns how many went.
+    fn delete_all_chats(&mut self, keep_pinned: bool, keep_projects: bool) -> usize {
+        let ids: Vec<Uuid> = self
+            .conversations
+            .iter()
+            .filter(|c| crate::ui::settings::deletes(c, keep_pinned, keep_projects))
+            .map(|c| c.id)
+            .collect();
+        for &id in &ids {
+            self.delete_chat(id);
+        }
+        // Back to a fresh start rather than whichever chat happened to be left first.
+        if !ids.is_empty() {
+            self.current = None;
+            self.page = Page::Chat;
+        }
+        ids.len()
+    }
+
     fn send(&mut self, ctx: &egui::Context) {
         let text = self.input.trim().to_owned();
         if text.is_empty() && self.pending_attachments.is_empty() {
@@ -5156,6 +5176,16 @@ impl eframe::App for ChatApp {
                     SettingsAction::ExportConversations => {
                         let doc = export::conversations_document(&self.conversations);
                         sui.export_status = run_export("conversations", &doc);
+                    }
+                    SettingsAction::DeleteAllChats {
+                        keep_pinned,
+                        keep_projects,
+                    } => {
+                        let n = self.delete_all_chats(keep_pinned, keep_projects);
+                        sui.export_status = Some(Ok(format!(
+                            "Deleted {n} chat{}.",
+                            if n == 1 { "" } else { "s" }
+                        )));
                     }
                     SettingsAction::Reconnect(id) => self.mcp.connect(&id),
                     SettingsAction::RefreshTools(id) => self.mcp.refresh_tools(&id),

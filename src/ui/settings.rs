@@ -378,6 +378,11 @@ pub enum SettingsAction {
         include_secrets: bool,
     },
     ExportConversations,
+    /// Delete every chat, but those the flags keep (Settings → Data & privacy).
+    DeleteAllChats {
+        keep_pinned: bool,
+        keep_projects: bool,
+    },
     ImportSettings,
     ImportConversations,
     /// Check the given "Update from" setting (the draft's, so it works before saving).
@@ -391,6 +396,52 @@ pub enum SettingsAction {
     CheckSandbox(SandboxSettings),
     /// Pull the image, or build the Dockerfile again (Settings → Docker "Pull now" / "Build now").
     PrepareSandbox(SandboxSettings),
+}
+
+/// How many chats there are, and how many of them are pinned, in a project, or both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatCounts {
+    pub all: usize,
+    pub pinned: usize,
+    pub in_project: usize,
+    pub pinned_in_project: usize,
+}
+
+impl ChatCounts {
+    pub fn of<'a>(chats: impl IntoIterator<Item = &'a crate::types::Conversation>) -> Self {
+        let mut n = Self::default();
+        for c in chats {
+            let (pinned, project) = (c.pinned, c.project.is_some());
+            n.all += 1;
+            n.pinned += usize::from(pinned);
+            n.in_project += usize::from(project);
+            n.pinned_in_project += usize::from(pinned && project);
+        }
+        n
+    }
+
+    /// How many "Delete all chats" removes with these choices.
+    pub fn deleted(&self, keep_pinned: bool, keep_projects: bool) -> usize {
+        let kept = match (keep_pinned, keep_projects) {
+            (false, false) => 0,
+            (true, false) => self.pinned,
+            (false, true) => self.in_project,
+            (true, true) => self.pinned + self.in_project - self.pinned_in_project,
+        };
+        self.all - kept
+    }
+}
+
+/// Whether a chat is deleted by "Delete all chats" with these choices.
+pub fn deletes(c: &crate::types::Conversation, keep_pinned: bool, keep_projects: bool) -> bool {
+    !(keep_pinned && c.pinned) && !(keep_projects && c.project.is_some())
+}
+
+/// The choices of a "Delete all chats" waiting for confirmation.
+#[derive(Clone, Copy, Debug)]
+struct DeleteChats {
+    keep_pinned: bool,
+    keep_projects: bool,
 }
 
 pub struct SettingsUi {
@@ -432,6 +483,10 @@ pub struct SettingsUi {
     pub sandbox_busy: bool,
     /// Outcome of the Docker test, pull or build: Ok(message) or Err(error).
     pub sandbox_status: Option<Result<String, String>>,
+    /// How many chats there are, for "Delete all chats" (the app sets it before showing).
+    pub chat_counts: ChatCounts,
+    /// "Delete all chats" is asking for confirmation, with these choices.
+    delete_chats: Option<DeleteChats>,
     /// Skills in the app's skills folder, read when the Skills & hooks tab is first shown
     /// (and again after "Refresh").
     user_skills: Option<Vec<crate::skills::Skill>>,
@@ -1024,6 +1079,8 @@ impl SettingsUi {
             chosen_release: None,
             sandbox_busy: false,
             sandbox_status: None,
+            chat_counts: ChatCounts::default(),
+            delete_chats: None,
             user_skills: None,
             skills_folder_error: None,
             memory_ui: MemoryEditor::default(),
@@ -1820,6 +1877,7 @@ const SEARCH_INDEX: &[(Tab, &str, &str)] = &[
     (Tab::Privacy, "Data & privacy", "Export conversations"),
     (Tab::Privacy, "Data & privacy", "Import settings"),
     (Tab::Privacy, "Data & privacy", "Import conversations"),
+    (Tab::Privacy, "Data & privacy", "Delete all chats"),
     (Tab::General, "General", "Check for updates"),
     (Tab::General, "General", "Update from (release source)"),
     (Tab::Providers, "Providers", "Base URL / endpoint"),
@@ -2141,6 +2199,40 @@ fn search_settings(query: &str) -> Vec<(Tab, &'static str, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_all_chats_counts_what_it_keeps() {
+        use crate::types::Conversation;
+        let chat = |pinned: bool, project: bool| {
+            let mut c = Conversation::new();
+            c.pinned = pinned;
+            c.project = project.then(uuid::Uuid::new_v4);
+            c
+        };
+        let chats = [
+            chat(false, false),
+            chat(false, false),
+            chat(true, false),
+            chat(false, true),
+            chat(true, true),
+        ];
+        let n = ChatCounts::of(&chats);
+        assert_eq!(
+            (n.all, n.pinned, n.in_project, n.pinned_in_project),
+            (5, 2, 2, 1)
+        );
+        for keep_pinned in [false, true] {
+            for keep_projects in [false, true] {
+                let deleted = chats
+                    .iter()
+                    .filter(|c| deletes(c, keep_pinned, keep_projects))
+                    .count();
+                assert_eq!(n.deleted(keep_pinned, keep_projects), deleted);
+            }
+        }
+        assert_eq!(n.deleted(true, true), 2);
+        assert_eq!(n.deleted(false, false), 5);
+    }
 
     #[test]
     fn finds_settings() {

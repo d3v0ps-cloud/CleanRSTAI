@@ -7,7 +7,7 @@ nav_order: 4
 # Data & privacy
 {: .no_toc }
 
-Where secrets are kept, what replies may load from the web, export and import, and where the app keeps its files. See also [Data and privacy](../reference/data-and-privacy.html) for everything that leaves the computer.
+Where secrets are kept, what replies may load from the web, export and import, deleting every chat, and where the app keeps its files. See also [Data and privacy](../reference/data-and-privacy.html) for everything that leaves the computer.
 
 1. TOC
 {:toc}
@@ -51,6 +51,15 @@ server that the chat was opened, and a reply could put chat contents in the imag
 
 Both files record the app version and export time, and are created readable only by you on
 macOS and Linux.
+
+## Delete all chats
+
+**Delete all chats…** removes chats and their files from this computer, after asking. Two
+choices, both ticked to start with, keep **pinned chats** and **chats in projects**; the button
+says how many chats will go. A reply still running in a deleted chat is stopped and its Docker
+sandbox containers are removed, as when you delete one chat from the sidebar. This can't be
+undone, so use **Export conversations…** first to keep a copy. Images no chat uses any more are
+removed from the `attachments` folder at a later start, once they haven't been used for a day.
 
 ## File locations
 

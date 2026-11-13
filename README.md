@@ -414,13 +414,16 @@ Files are stored at:
 
 ### Export and import
 
-**Settings → General → Export & import** saves a JSON file through the system save dialog:
+**Settings → Data & privacy → Export & import** saves a JSON file through the system save dialog:
 
 - **Export settings…** writes providers, MCP servers and preferences as last saved. By default,
   API keys, HTTP header values and MCP environment variable values are left blank, while
   their names are kept. Tick *Include API keys and secrets* for a complete backup.
 - **Export conversations…** writes every chat, including tool calls and their results, to a
   single file.
+
+**Delete all chats…** on the same page removes every chat from this computer after asking, and
+can keep pinned chats and chats in projects.
 
 **Import settings…** loads a settings export into the Settings window for review:
 
