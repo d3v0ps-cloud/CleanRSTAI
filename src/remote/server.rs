@@ -214,7 +214,12 @@ async fn host_guard(State(state): State<Arc<AppState>>, req: Request, next: Next
 /// needs a valid Access token, whoever sent it, so a request that skipped Access is refused
 /// even when it comes from the local network. With `skip_password` the token also signs the
 /// browser in. Requests for other hosts are not affected.
-async fn access_guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+async fn access_guard(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(Peer(addr)): ConnectInfo<Peer>,
+    req: Request,
+    next: Next,
+) -> Response {
     let policy = state.access.policy();
     if policy == Policy::Off || !for_tunnel_host(&state, req.headers()) {
         return next.run(req).await;
@@ -233,7 +238,10 @@ async fn access_guard(State(state): State<Arc<AppState>>, req: Request, next: Ne
         }
     };
     match policy {
-        Policy::SignIn => sign_in_with_access(&state, req, next, claims).await,
+        Policy::SignIn => {
+            let secure = client(&state, addr, req.headers()).tunnel;
+            sign_in_with_access(&state, req, next, claims, secure).await
+        }
         _ => next.run(req).await,
     }
 }
@@ -256,6 +264,7 @@ async fn sign_in_with_access(
     mut req: Request,
     next: Next,
     claims: Claims,
+    secure: bool,
 ) -> Response {
     if session_valid(state, req.headers()) {
         return next.run(req).await;
@@ -276,8 +285,9 @@ async fn sign_in_with_access(
         req.headers_mut().insert(header::COOKIE, value);
     }
     let mut res = next.run(req).await;
-    // Only requests for the tunnel's hostname get here, and those reach the browser over HTTPS.
-    if let Ok(value) = HeaderValue::from_str(&state.auth.session_cookie(&token, true)) {
+    // `Secure` only when cloudflared really sent the request; a browser on the LAN that uses
+    // the tunnel's name over plain HTTP would drop the cookie.
+    if let Ok(value) = HeaderValue::from_str(&state.auth.session_cookie(&token, secure)) {
         res.headers_mut().append(header::SET_COOKIE, value);
     }
     res
@@ -293,8 +303,8 @@ fn tunnel_host(state: &AppState, host: &str) -> bool {
 }
 
 /// True when the request's `Host` is one of the running tunnel's public hostnames. Only for
-/// choices that are safe whoever sent it, such as asking for Access or marking a cookie
-/// `Secure`; the login throttle uses `client`, which also needs a loopback connection.
+/// choices that are safe whoever sent it, such as asking for Access. The login throttle and
+/// the `Secure` cookie use `client`, which also needs a loopback connection.
 fn for_tunnel_host(state: &AppState, headers: &HeaderMap) -> bool {
     headers
         .get(header::HOST)
@@ -314,8 +324,13 @@ struct Client {
 /// on a loopback connection addressed to the tunnel's hostname, where only cloudflared (or
 /// another program on this computer) can have set it.
 fn client(state: &AppState, peer: SocketAddr, headers: &HeaderMap) -> Client {
-    let via_tunnel = peer.ip().is_loopback() && for_tunnel_host(state, headers);
-    if !via_tunnel {
+    client_for(peer, for_tunnel_host(state, headers), headers)
+}
+
+/// `client` once it is known whether the `Host` is a tunnel hostname. A LAN browser that
+/// uses the tunnel's name directly (split-horizon DNS) is not on the tunnel.
+fn client_for(peer: SocketAddr, tunnel_host: bool, headers: &HeaderMap) -> Client {
+    if !(peer.ip().is_loopback() && tunnel_host) {
         return Client {
             ip: peer.ip(),
             tunnel: false,
@@ -578,7 +593,7 @@ async fn login(
     }
     state.auth.clear_failures(who.ip);
     let token = state.auth.create_session();
-    let tunnel = for_tunnel_host(&state, &headers);
+    let tunnel = who.tunnel;
     Ok((
         [(
             header::SET_COOKIE,
@@ -590,11 +605,15 @@ async fn login(
 }
 
 /// Ends the session the cookie names, if any, and clears the cookie. Always 200.
-async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn logout(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(Peer(addr)): ConnectInfo<Peer>,
+    headers: HeaderMap,
+) -> Response {
     if let Some(token) = cookie_token(&headers) {
         state.auth.remove_session(token);
     }
-    let tunnel = for_tunnel_host(&state, &headers);
+    let tunnel = client(&state, addr, &headers).tunnel;
     (
         [(header::SET_COOKIE, state.auth.clear_cookie(tunnel))],
         Json(json!({})),
@@ -2270,6 +2289,17 @@ mod tests {
             .unwrap();
         let clear = logout.headers()[header::SET_COOKIE].to_str().unwrap();
         assert!(clear.contains("; Secure"), "{clear}");
+    }
+
+    /// Only a loopback connection (cloudflared) counts as the tunnel, whatever its Host says.
+    #[test]
+    fn a_lan_peer_using_the_tunnel_host_is_not_on_the_tunnel() {
+        let headers = HeaderMap::new();
+        let lan: SocketAddr = "192.168.1.20:5000".parse().unwrap();
+        let local: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert!(!client_for(lan, true, &headers).tunnel);
+        assert!(!client_for(local, false, &headers).tunnel);
+        assert!(client_for(local, true, &headers).tunnel);
     }
 
     /// Stopping the server ends open event streams, so their connections don't outlive it.

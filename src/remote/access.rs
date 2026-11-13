@@ -21,6 +21,8 @@ const COOKIE_PREFIX: &str = "CF_Authorization=";
 const SKEW_SECS: u64 = 60;
 /// Keys are fetched again for an unknown key id at most this often.
 const REFETCH_EVERY: Duration = Duration::from_secs(60);
+/// A key set older than this is fetched again, so a key Cloudflare retired stops being trusted.
+const KEYS_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the server does with requests for the tunnel's hostname.
@@ -310,10 +312,20 @@ struct State {
     keys: HashMap<String, RsaKey>,
     /// When the keys were last fetched, successfully or not.
     fetched: Option<Instant>,
+    /// When the keys were last fetched successfully.
+    keys_at: Option<Instant>,
     /// Why the last fetch failed, until one succeeds.
     fetch_failed: Option<String>,
     /// The last error a token was refused for, until one is accepted.
     error: Option<String>,
+}
+
+impl State {
+    /// The key with this id, if the key set is young enough to trust without a refresh.
+    fn fresh_key(&self, kid: &str) -> Option<RsaKey> {
+        let young = self.keys_at.is_some_and(|at| at.elapsed() < KEYS_MAX_AGE);
+        self.keys.get(kid).filter(|_| young).cloned()
+    }
 }
 
 impl Gate {
@@ -367,6 +379,7 @@ impl Gate {
         if s.team != team {
             s.keys.clear();
             s.fetched = None;
+            s.keys_at = None;
             s.fetch_failed = None;
         }
         if policy == Policy::Off {
@@ -413,30 +426,37 @@ impl Gate {
     }
 
     /// The key with this id. Unknown ids fetch the team's keys again, at most once a minute.
+    /// A key set older than `KEYS_MAX_AGE` is fetched again first; if that fails the old keys
+    /// stay in use, so an outage at Cloudflare doesn't lock the user out.
     async fn key(&self, team: &str, kid: &str) -> Result<RsaKey, AccessError> {
-        if let Some(key) = lock(&self.state).keys.get(kid) {
-            return Ok(key.clone());
+        if let Some(key) = lock(&self.state).fresh_key(kid) {
+            return Ok(key);
         }
         // One fetch at a time. A request that waited here looks at the keys again, since the
         // fetch it waited for may have brought this one.
         let _fetching = self.fetching.lock().await;
-        {
+        let old = {
             let mut s = lock(&self.state);
             if s.team != team {
                 return Err(AccessError::NotConfigured);
             }
-            if let Some(key) = s.keys.get(kid) {
-                return Ok(key.clone());
+            if let Some(key) = s.fresh_key(kid) {
+                return Ok(key);
             }
+            let old = s.keys.get(kid).cloned();
             let due = s.fetched.is_none_or(|at| at.elapsed() >= REFETCH_EVERY);
             if !due {
+                if let Some(key) = old {
+                    return Ok(key);
+                }
                 return Err(match &s.fetch_failed {
                     Some(e) => AccessError::Keys(e.clone()),
                     None => AccessError::UnknownKey,
                 });
             }
             s.fetched = Some(Instant::now());
-        }
+            old
+        };
         let fetched = self.fetch(team).await;
         let mut s = lock(&self.state);
         if s.team != team {
@@ -446,12 +466,14 @@ impl Gate {
         match fetched {
             Ok(keys) => {
                 s.keys = keys;
+                s.keys_at = Some(Instant::now());
                 s.fetch_failed = None;
                 s.keys.get(kid).cloned().ok_or(AccessError::UnknownKey)
             }
             Err(e) => {
                 s.fetch_failed = Some(e.clone());
-                Err(AccessError::Keys(e))
+                // Keep trusting the old keys through a failed refresh.
+                old.ok_or(AccessError::Keys(e))
             }
         }
     }
@@ -957,5 +979,56 @@ mod tests {
         let signed = token(&claims());
         let err = gate.verify(Some(signed.as_str())).await.err().unwrap();
         assert!(matches!(err, AccessError::Keys(_)), "{err:?}");
+    }
+
+    /// Makes the key set look `age` old without waiting.
+    fn age_keys(gate: &Gate, age: Duration) {
+        let then = Instant::now().checked_sub(age).unwrap();
+        let mut s = lock(&gate.state);
+        s.fetched = Some(then);
+        s.keys_at = Some(then);
+    }
+
+    #[tokio::test]
+    async fn an_old_key_set_is_fetched_again_before_use() {
+        let (gate, fetches) = gate_with_keys(jwks(), false).await;
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*fetches.lock().unwrap(), 1);
+        // Young keys are not fetched again.
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*fetches.lock().unwrap(), 1);
+        age_keys(&gate, KEYS_MAX_AGE + Duration::from_secs(1));
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*fetches.lock().unwrap(), 2);
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*fetches.lock().unwrap(), 2);
+    }
+
+    /// A refresh that fails keeps the old keys and records why.
+    #[tokio::test]
+    async fn a_failed_refresh_keeps_the_old_keys() {
+        // The first fetch works, later ones fail.
+        let calls = std::sync::Arc::new(Mutex::new(0));
+        let seen = calls.clone();
+        let (base, _) = testutil::serve(move |_| {
+            let mut n = seen.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                testutil::Response::with_type(200, "application/json", jwks())
+            } else {
+                testutil::Response::status(503)
+            }
+        })
+        .await;
+        let gate = Gate::for_tests(&format!("{base}/certs"));
+        gate.configure(&tunnel(true, TunnelMode::Named, false));
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        age_keys(&gate, KEYS_MAX_AGE + Duration::from_secs(1));
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert!(lock(&gate.state).fetch_failed.is_some());
+        // The failed try is not repeated within the minute.
+        assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*calls.lock().unwrap(), 2);
     }
 }
