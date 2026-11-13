@@ -43,6 +43,19 @@ pub fn command(dir: &Path) -> Command {
     cmd
 }
 
+/// `path` without Windows' `\\?\` prefix (a workspace's folder has it, being canonical), in
+/// the form git reads: `\\?\C:\x` as `C:\x`, `\\?\UNC\host\share` as `\\host\share`.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => match rest.strip_prefix(r"UNC\") {
+            Some(share) => PathBuf::from(format!(r"\\{share}")),
+            None => PathBuf::from(rest),
+        },
+        None => path.to_path_buf(),
+    }
+}
+
 /// The repository a folder is in: the nearest folder at or above it that has a `.git`.
 struct Repository {
     top: PathBuf,
@@ -52,8 +65,8 @@ struct Repository {
 
 impl Repository {
     fn around(dir: &Path) -> Option<Self> {
-        // Not `canonicalize`: on Windows that gives a `\\?\` path git can't take.
-        let dir = std::path::absolute(dir).ok()?;
+        // Not `canonicalize`: on Windows that gives a `\\?\` path, which git can't take.
+        let dir = plain_path(&std::path::absolute(dir).ok()?);
         dir.ancestors().find_map(|top| {
             let git = top.join(".git");
             git.symlink_metadata().is_ok().then(|| Repository {
@@ -347,6 +360,16 @@ mod tests {
         assert!(pair("core.fsmonitor", "false"), "{args:?}");
     }
 
+    #[test]
+    fn a_windows_long_path_prefix_is_taken_off_for_git() {
+        assert_eq!(plain_path(Path::new(r"\\?\C:\a\b")), Path::new(r"C:\a\b"));
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\host\share\a")),
+            Path::new(r"\\host\share\a")
+        );
+        assert_eq!(plain_path(Path::new("/home/a")), Path::new("/home/a"));
+    }
+
     #[tokio::test]
     async fn the_repository_cannot_point_the_tools_somewhere_else() {
         if std::process::Command::new("git")
@@ -363,6 +386,8 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             test_support::plain_git(dir, &["init", "-q"]);
         }
+        // Canonical, as a workspace's folder is (on Windows that is a `\\?\` path).
+        let repo = repo.canonicalize().unwrap();
         std::fs::write(other.join("secret.txt"), "secret").unwrap();
         std::fs::write(repo.join("mine.txt"), "mine").unwrap();
         // `core.worktree` would have status list the other folder's files.
