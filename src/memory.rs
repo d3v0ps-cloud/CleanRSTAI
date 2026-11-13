@@ -244,6 +244,9 @@ impl MemoryStore {
         change: impl FnOnce(&mut Vec<Memory>) -> Result<T, String>,
     ) -> Result<T, String> {
         let _turn = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Another process (the app, `cleanrstai exec`) may write too: hold the file lock from
+        // the read to the write. The read comes after the lock, so it sees their change.
+        let _file = FileLock::take(&self.path);
         let mut items = self.read()?;
         let out = change(&mut items)?;
         save_to(&self.path, &items).map_err(|e| format!("Could not save memory: {e:#}"))?;
@@ -326,6 +329,33 @@ impl MemoryStore {
             items.retain(|m| !matches(m));
             Ok(before - items.len())
         })
+    }
+}
+
+/// An exclusive advisory lock on a sibling `<file>.lock`, released on drop.
+struct FileLock(Option<std::fs::File>);
+
+impl FileLock {
+    /// Waits for the lock. Without one (no lock file, or a filesystem that can't lock) the
+    /// change goes ahead unlocked rather than failing.
+    fn take(path: &Path) -> Self {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(PathBuf::from(name))
+            .ok();
+        Self(file.filter(|f| f.lock().is_ok()))
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        if let Some(file) = &self.0 {
+            let _ = file.unlock();
+        }
     }
 }
 
@@ -530,9 +560,13 @@ mod tests {
         assert_eq!(MemoryStore::at(&path).all().len(), 1);
         assert_eq!(MemoryStore::at(&path).remove_all(|_| true).unwrap(), 1);
         assert!(MemoryStore::at(&path).all().is_empty());
-        // No temporary file is left behind.
+        // No temporary file is left behind (the lock file stays, empty).
         let left = std::fs::read_dir(path.parent().unwrap()).unwrap();
-        assert_eq!(left.count(), 1);
+        let names: Vec<String> = left
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.contains(&"memory.json.lock".to_owned()));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -565,6 +599,31 @@ mod tests {
             .map(|m| m.text)
             .collect();
         assert_eq!(texts, ["Likes tea", "Owns a bike", "Speaks French"]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn stores_changing_at_once_lose_nothing() {
+        // Each store has its own in-process lock, as two processes would; only the file
+        // lock keeps their read-modify-write turns apart.
+        let path = temp_path("race");
+        let handles: Vec<_> = (0..2)
+            .map(|k| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let store = MemoryStore::at(&path);
+                    for i in 0..15 {
+                        store
+                            .add(&format!("fact {k}-{i}"), Scope::Global, None)
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(MemoryStore::at(&path).all().len(), 30);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

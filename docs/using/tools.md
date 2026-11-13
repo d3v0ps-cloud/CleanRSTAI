@@ -97,7 +97,8 @@ When the folder has an `AGENTS.md` or `CLAUDE.md` (the names and order are set i
 [Workspace](../settings/workspace.html#project-instructions)), it is added to the system
 prompt of every request, so the model follows the project's conventions. Under **Chat options**
 in the tools menu, **Project instructions** shows which files the latest request read and
-switches them off for the chat.
+switches them off for the chat. A file that is a link to somewhere outside the folder is not
+read; it is listed there as skipped (when another instruction file was read).
 
 ### Diffs and undo
 

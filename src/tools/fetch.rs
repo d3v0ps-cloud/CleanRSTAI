@@ -206,6 +206,51 @@ fn proxied() -> bool {
         .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
 }
 
+/// Whether `host` is covered by a `NO_PROXY` value: comma-separated entries, `*` for every
+/// host, otherwise the host itself or a domain it is under (a leading dot is optional).
+/// Ports are ignored; IP entries match exactly (no CIDR).
+fn no_proxy_matches(list: &str, host: &str) -> bool {
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_lowercase();
+    list.split(',').any(|entry| {
+        let entry = entry.trim().to_lowercase();
+        if entry == "*" {
+            return true;
+        }
+        // Drop a port, but leave an IPv6 address alone.
+        let entry = match entry.rsplit_once(':') {
+            Some((name, port))
+                if !name.contains(':') && port.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                name.to_owned()
+            }
+            _ => entry,
+        };
+        let entry = entry.trim_matches(['[', ']']).trim_end_matches('.');
+        let domain = entry.trim_start_matches('.');
+        !domain.is_empty()
+            && (host == domain
+                || (host.parse::<IpAddr>().is_err() && host.ends_with(&format!(".{domain}"))))
+    })
+}
+
+/// Whether the environment's `NO_PROXY` sends `host` around the proxy.
+fn bypasses_proxy(host: &str) -> bool {
+    ["NO_PROXY", "no_proxy"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .any(|list| no_proxy_matches(&list, host))
+}
+
+/// Whether a host is worth resolving here: a name that goes through the proxy. IP literals
+/// (bracketed or not) are checked by [`check_ip_literal`], and `NO_PROXY` hosts connect
+/// directly, through [`PublicResolver`].
+fn needs_resolving(host: &str) -> bool {
+    host.trim_matches(['[', ']']).parse::<IpAddr>().is_err() && !bypasses_proxy(host)
+}
+
 /// Behind a proxy: refuse a host that this computer resolves to a private address. A name
 /// it can't resolve is left to the proxy, as on a network where only the proxy looks up
 /// outside names.
@@ -225,7 +270,7 @@ fn check_resolved(
 /// which can't wait).
 fn check_host_blocking(url: &reqwest::Url) -> std::result::Result<(), String> {
     use std::net::ToSocketAddrs as _;
-    let Some(host) = url.host_str() else {
+    let Some(host) = url.host_str().filter(|h| needs_resolving(h)) else {
         return Ok(());
     };
     let addrs = (host, 0)
@@ -292,7 +337,7 @@ pub async fn run(
     } else {
         check_ip_literal(&args.url).map_err(anyhow::Error::msg)?;
         if proxied()
-            && let Some(host) = args.url.host_str()
+            && let Some(host) = args.url.host_str().filter(|h| needs_resolving(h))
         {
             let addrs = tokio::net::lookup_host((host, 0))
                 .await
@@ -582,6 +627,21 @@ mod tests {
     fn behind_a_proxy_a_host_must_resolve_to_public_addresses() {
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
         assert!(check_resolved("a", Ok(vec![ip("93.184.216.34")])).is_ok());
+        assert!(no_proxy_matches("*", "anything.test"));
+        assert!(no_proxy_matches(" internal.test , other ", "internal.test"));
+        assert!(no_proxy_matches(
+            ".corp.test",
+            "wiki.corp.test:8080".split(':').next().unwrap()
+        ));
+        assert!(no_proxy_matches("corp.test", "wiki.corp.test"));
+        assert!(no_proxy_matches("corp.test:8080", "corp.test"));
+        assert!(!no_proxy_matches("corp.test", "notcorp.test"));
+        assert!(!no_proxy_matches("", "corp.test"));
+        assert!(no_proxy_matches("10.0.0.1", "10.0.0.1"));
+        assert!(!no_proxy_matches("0.0.1", "10.0.0.1"));
+        assert!(no_proxy_matches("::1", "[::1]"));
+        assert!(!needs_resolving("[2606:4700::1]"));
+        assert!(!needs_resolving("93.184.216.34"));
         assert!(check_resolved("a", Ok(vec![ip("93.184.216.34"), ip("10.0.0.1")])).is_err());
         assert!(check_resolved("a", Ok(vec![ip("::ffff:127.0.0.1")])).is_err());
         // A name only the proxy can look up is the proxy's to answer.
