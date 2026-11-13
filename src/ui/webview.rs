@@ -7,6 +7,8 @@
 //! The view is a native child window drawn above egui, so the app hides it whenever something
 //! else (settings, the palette, a menu) could sit on top of it.
 
+use std::time::{Duration, Instant};
+
 use eframe::egui;
 
 use crate::config::HtmlPreviewSettings;
@@ -102,6 +104,39 @@ fn data_url_body(url: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Browser opens a page may cause per load, and the least time between two of them. A page with
+/// scripts can navigate by itself, so without this it could launch the browser at will.
+pub const MAX_OPENS_PER_PAGE: u32 = 5;
+const OPEN_GAP: Duration = Duration::from_secs(1);
+
+/// Rate limit for opening links in the browser from a previewed page.
+#[derive(Default)]
+pub struct OpenLimit {
+    last: Option<Instant>,
+    count: u32,
+}
+
+impl OpenLimit {
+    /// Whether a browser open may happen at `now` (and if so, it counts).
+    pub fn allow(&mut self, now: Instant) -> bool {
+        if self.count >= MAX_OPENS_PER_PAGE
+            || self
+                .last
+                .is_some_and(|t| now.saturating_duration_since(t) < OPEN_GAP)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        self.count += 1;
+        true
+    }
+
+    /// A new page was loaded: start counting again.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// The web view, while one exists.
 #[derive(Default)]
 pub struct HtmlPreview {
@@ -172,6 +207,8 @@ mod native {
         current: Arc<Mutex<String>>,
         /// Set when a page is given to the view, until its own navigation is seen.
         loading: Arc<AtomicBool>,
+        /// Browser opens allowed for the page.
+        opens: Arc<Mutex<super::OpenLimit>>,
         bounds: [i32; 4],
         visible: bool,
     }
@@ -184,7 +221,12 @@ mod native {
     }
 
     /// Only the page itself (and in-page anchors) loads in the view; links open in the browser.
-    fn navigate(url: String, current: &Mutex<String>, loading: &AtomicBool) -> bool {
+    fn navigate(
+        url: String,
+        current: &Mutex<String>,
+        loading: &AtomicBool,
+        opens: &Mutex<super::OpenLimit>,
+    ) -> bool {
         if super::loads_in_view(&url, Some(&current.locked())) {
             loading.store(false, Ordering::SeqCst);
             return true;
@@ -196,7 +238,9 @@ mod native {
             return true;
         }
         if url.starts_with("http://") || url.starts_with("https://") {
-            let _ = open::that_detached(&url);
+            if opens.locked().allow(std::time::Instant::now()) {
+                let _ = open::that_detached(&url);
+            }
         }
         false
     }
@@ -225,6 +269,7 @@ mod native {
                     // The handler must know the new page before its navigation starts.
                     *v.current.locked() = page.clone();
                     v.loading.store(true, Ordering::SeqCst);
+                    v.opens.locked().reset();
                     v.webview.load_html(&page).map_err(|e| e.to_string())?;
                     v.page = hash;
                 }
@@ -244,13 +289,17 @@ mod native {
                 let loading = Arc::new(AtomicBool::new(true));
                 let (on_nav, on_window) = (current.clone(), current.clone());
                 let (nav_loading, window_loading) = (loading.clone(), loading.clone());
+                let opens = Arc::new(Mutex::new(super::OpenLimit::default()));
+                let (nav_opens, window_opens) = (opens.clone(), opens.clone());
                 let webview = wry::WebViewBuilder::new()
                     .with_html(page)
                     .with_bounds(rect(bounds))
                     .with_devtools(false)
-                    .with_navigation_handler(move |url| navigate(url, &on_nav, &nav_loading))
+                    .with_navigation_handler(move |url| {
+                        navigate(url, &on_nav, &nav_loading, &nav_opens)
+                    })
                     .with_new_window_req_handler(move |url, _| {
-                        navigate(url, &on_window, &window_loading);
+                        navigate(url, &on_window, &window_loading, &window_opens);
                         wry::NewWindowResponse::Deny
                     })
                     .build_as_child(frame)
@@ -260,6 +309,7 @@ mod native {
                     page: hash,
                     current,
                     loading,
+                    opens,
                     bounds,
                     visible: true,
                 });
@@ -326,6 +376,24 @@ mod tests {
         ));
         assert!(!loads_in_view("about:config", Some(page)));
         assert!(!loads_in_view("https://example.com/", Some(page)));
+    }
+
+    #[test]
+    fn browser_opens_are_rate_limited() {
+        let t0 = Instant::now();
+        let sec = Duration::from_secs(1);
+        let mut l = OpenLimit::default();
+        assert!(l.allow(t0));
+        assert!(!l.allow(t0 + Duration::from_millis(500)));
+        // Refused tries don't push the next allowed time back.
+        assert!(l.allow(t0 + sec));
+        for n in 2..MAX_OPENS_PER_PAGE {
+            assert!(l.allow(t0 + sec * n));
+        }
+        // The per-page budget is spent.
+        assert!(!l.allow(t0 + sec * 100));
+        l.reset();
+        assert!(l.allow(t0 + sec * 100));
     }
 
     #[test]
