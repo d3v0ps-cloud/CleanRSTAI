@@ -112,7 +112,7 @@ run in the chat's container instead (see [Running](#where-hooks-run)).
 | **Hook checkbox** | on | Turns one hook on or off without deleting it. |
 | **Name** | | Shown in a blocked result (`Blocked by hook "name"`), in the notice a reply-done hook gives and in the `[hook name]` line of an after-tool result. Blank becomes `hook N`. |
 | **Event** | Before a tool runs | **Before a tool runs**, **After a tool runs** or **When a reply is done** (see below). |
-| **Tools** | empty | Comma-separated patterns matched against the tool's name as the model calls it, with `*` for any text: `write_file, edit_file, github__*`. Empty matches every tool. Not shown for **When a reply is done**. |
+| **Tools** | empty | Comma-separated patterns matched against the tool's name as the model calls it, with `*` for any text: `write_file, edit_file, github__*`. Braces list alternatives: `{write,edit}_file`. Empty matches every tool. Not shown for **When a reply is done**. |
 | **Command** | | The command, several lines allowed. Run by the platform shell: `sh -c` on macOS and Linux, `cmd /C` on Windows. |
 | **Timeout** | 30 s (1–600) | The command is stopped when it runs longer. |
 

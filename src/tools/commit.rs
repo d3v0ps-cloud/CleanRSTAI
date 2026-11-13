@@ -210,6 +210,37 @@ impl Workspace {
             .map_err(|e| format!("Couldn't run git: {e}"))
     }
 
+    /// Signing runs a program, and the repository's own config could name any: only one from
+    /// the user's own git settings is run.
+    async fn refuse_local_signing_program(&self) -> Result<(), String> {
+        let out = self
+            .git_output(
+                &[],
+                &[
+                    "config",
+                    "--local",
+                    "--includes",
+                    "--name-only",
+                    "--get-regexp",
+                    r"^gpg\.",
+                ],
+                None,
+            )
+            .await?;
+        let names = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        match names
+            .lines()
+            .map(str::trim)
+            .find(|k| k.ends_with(".program") || k.ends_with(".defaultkeycommand"))
+        {
+            Some(key) => Err(format!(
+                "The repository's own settings name a signing program ({key}), which the app \
+                 won't run. Remove it from .git/config, or set it in your global git settings."
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// The workspace's place in its repository: `sub/` in a subfolder, empty at the top.
     async fn repo_prefix(&self) -> Result<String, String> {
         let out = self
@@ -314,6 +345,10 @@ impl Workspace {
         let scope = self.commit_scope(paths)?;
         if self.status_of(&scope).await?.is_empty() {
             return Err("Nothing to commit: the workspace has no changes in those paths".into());
+        }
+        // Before anything is staged, so a refusal leaves the index as it was.
+        if self.signs_commits() {
+            self.refuse_local_signing_program().await?;
         }
         // Only paths that exist are staged. A deleted path needs no staging: `git commit -- <path>`
         // records its removal, from the index or from HEAD (a rename's old name is already gone

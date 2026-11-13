@@ -61,7 +61,7 @@ scanned pages."
 |---|---|---|
 | **Read scanned PDFs (OCR)** | off | Reads the page images of PDFs that have no text layer. |
 | **Read with** | A vision model | **A vision model** sends each page image to a provider, one request per page. **Tesseract** runs the `tesseract` program on this computer. |
-| **Vision model by** | The chat's provider | The provider profile for the vision model. The model must accept images. |
+| **Vision model by** | The active provider | The provider profile for the vision model. The model must accept images. |
 | **Tesseract program** | `tesseract` | A name on PATH, or the full path of the program. |
 | **Languages** | `eng` | Tesseract language codes joined with `+`, such as `eng+deu`. Each must be installed with Tesseract. |
 | **Pages per PDF** | 20 (1–200) | Pages past this are not read, and the text says how many were left out. |

@@ -32,7 +32,7 @@ prompt, after the words.
 | Flag | What it does |
 |---|---|
 | `--provider NAME` | The provider profile to use, by name (without regard to case) or by id. Default: the active provider. |
-| `--model MODEL` | The model to use instead of the provider's. |
+| `--model MODEL` | The model to use instead of the provider's, also when `--project` names a provider. |
 | `--workspace DIR` | The working folder for the file, search, git and shell tools, as a chat's folder. Without it, no workspace tools are offered. |
 | `--mode MODE` | The approval mode: `read-only`, `plan`, `default`, `auto` or `allow-all`. Default: the mode set in Settings. |
 | `--project NAME` | Start the run in a [project](projects.html) (by name, or its id): its folder, provider, model, tool switches, permission mode and instructions. The flags above replace the project's. |

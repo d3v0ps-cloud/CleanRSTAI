@@ -10,7 +10,7 @@ What the model may do in a chat's working folder: the file and shell tools, comm
 
 ## Workspace tools
 
-**Workspace tools** switches the file, search and shell tools on for chats that have a working folder (see [Tools and approvals](../using/tools.html)). **Commit (git_commit)** lets the model make one local commit of the workspace's changes; every commit asks for approval, nothing is pushed and git hooks don't run. It is off by default. **Allow signed commits** lets a repository that signs its commits sign them.
+**Workspace tools** switches the file, search and shell tools on for chats that have a working folder (see [Tools and approvals](../using/tools.html)). **Commit (git_commit)** lets the model make one local commit of the workspace's changes; every commit asks for approval, nothing is pushed and git hooks don't run. It is off by default. **Allow signed commits** lets a repository that signs its commits sign them, with the signing program from your own git settings: a commit is refused when the repository's `.git/config` names a signing program itself.
 
 ## Project instructions
 

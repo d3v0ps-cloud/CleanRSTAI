@@ -49,12 +49,16 @@ these tools for that chat:
 | `exec_shell_command` | Run a command in the folder (`sh`, or `cmd` on Windows); 120 s by default, at most 600 s | Yes |
 
 Every path stays inside the folder: `..`, absolute paths outside it and symlinks that lead out
-are refused. Searches skip files ignored by `.gitignore`.
+are refused, as is a link whose target doesn't exist yet. Searches skip files ignored by
+`.gitignore`. An instruction file or a workspace skill that is a link to a file outside its
+folder isn't read.
 
 `git_status` and `git_diff` only read, so they run on this computer even when the Docker sandbox
 is on. A repository's own config can't make them run programs: its fsmonitor hook, external diff
 drivers, textconv filters and clean, smudge and process filters are switched off, submodules are
-left out, and repository hooks never run.
+left out, and repository hooks never run. Nor can it point them elsewhere: they read the
+repository the folder is in and its own files whatever `core.worktree` says, and a `.git` file
+that names another repository (other than a linked worktree's or a submodule's) is refused.
 
 ### Commits
 

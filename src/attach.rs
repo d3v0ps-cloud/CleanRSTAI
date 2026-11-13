@@ -232,11 +232,19 @@ impl Attachment {
         match (&self.data, &self.blob) {
             (_, Some(k)) => k.clone(),
             (Some(d), None) => {
-                let edge = |s: &str| -> String {
-                    s.chars()
-                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                // By bytes: data from an MCP server needn't be base64, or even ASCII.
+                let edge = |s: &[u8]| -> String {
+                    s.iter()
+                        .map(|&b| {
+                            if b.is_ascii_alphanumeric() {
+                                b as char
+                            } else {
+                                '_'
+                            }
+                        })
                         .collect()
                 };
+                let d = d.as_bytes();
                 let head = edge(&d[..d.len().min(16)]);
                 let tail = edge(&d[d.len().saturating_sub(16)..]);
                 format!("{}-{head}{tail}", d.len())

@@ -425,7 +425,7 @@ open. **Run scheduled tasks** is the master switch; each task has its own **On**
 | **Runs in** | A new chat each time | **A new chat each time**, or a chat you picked from the list. A new chat takes the task's folder and provider; a picked chat keeps its own folder and provider, and its approval mode is set to the task's on each run. |
 | **Approvals** | Read only | The approval mode of the run's chat: read only, plan, default, auto in workspace, or allow all. Read only is the default so a task cannot change files or run commands unless you choose it. Other tools still ask, so a run can wait for your answer; the notification says so. |
 | **Folder** | None | The working folder of a new chat (see [Built-in tools and workspace](../using/tools.html#workspace)). |
-| **Provider** | The active provider | The provider the run uses, for example a local model for a frequent task. |
+| **Provider** | The active provider | The provider the run uses, for example a local model for a frequent task. In a picked chat with a model of its own, that model is used only when the task runs on the chat's provider; on another provider the run uses that provider's model. |
 | **Catch up after the app was closed** | off | A run that was due while the app was closed runs once when the app starts. When off, it is skipped to the next time. |
 
 **Run now** starts the task at once, using what the form shows (unsaved edits included), and counts

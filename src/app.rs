@@ -50,6 +50,8 @@ const INPUT_ID: &str = "chat-input";
 
 pub(crate) struct Run {
     task: JoinHandle<()>,
+    /// Which run this is (`AgentRequest::run`); its events carry the number.
+    pub(crate) number: u64,
     pub(crate) approvals: Vec<PendingApproval>,
     pub(crate) running_tool: Option<String>,
     /// Stats of the request currently streaming in, for the readout above the input box.
@@ -135,6 +137,8 @@ pub struct ChatApp {
     errors: HashMap<Uuid, String>,
     /// Replaced tails waiting for the reply that replaces them (see `branches`), by chat.
     holds: HashMap<Uuid, Hold>,
+    /// The number given to the last run started (see `Run::number`).
+    run_counter: u64,
     /// A message being edited: its chat and position. The turn it starts is replaced when the
     /// edit is sent.
     editing: Option<(Uuid, usize)>,
@@ -265,18 +269,23 @@ pub struct ChatApp {
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
 /// it is the active one.
 /// The open chat's artifacts, found again when its messages change: the key is the chat, its
-/// message count and the length of their text, which a streaming reply or an edit changes.
+/// message count and each message's length and version, which a streaming reply, an edit or
+/// another version of a turn changes.
 #[derive(Default)]
 struct ArtifactList {
-    key: Option<(Uuid, usize, usize)>,
+    key: Option<(Uuid, usize, u64)>,
     list: Vec<crate::artifacts::Artifact>,
 }
 
 impl ArtifactList {
     fn refresh(&mut self, conv: Option<&Conversation>) {
         let key = conv.map(|c| {
-            let text = c.messages.iter().map(|m| m.content.len()).sum();
-            (c.id, c.messages.len(), text)
+            use std::hash::{Hash, Hasher};
+            let mut shape = std::collections::hash_map::DefaultHasher::new();
+            for m in &c.messages {
+                (m.content.len(), m.alt_index).hash(&mut shape);
+            }
+            (c.id, c.messages.len(), shape.finish())
         });
         if key != self.key {
             self.key = key;
@@ -498,6 +507,7 @@ impl ChatApp {
             tray_notified: false,
             errors: HashMap::new(),
             holds: HashMap::new(),
+            run_counter: 0,
             editing: None,
             user_name: user_first_name(),
             always_allow: HashMap::new(),
@@ -1230,7 +1240,10 @@ impl ChatApp {
             text
         };
         let attachments = std::mem::take(&mut self.pending_attachments);
-        match self.send_message(id, text, attachments, ctx) {
+        // Only a message from the message box replaces the prompt being edited: approving
+        // a plan or a review meanwhile adds its own message at the end.
+        let edit_at = self.editing.take_if(|(c, _)| *c == id).map(|(_, at)| at);
+        match self.send_message_with(id, text, attachments, ctx, false, edit_at) {
             Ok(()) => self.input.clear(),
             Err(e) => self.notice = Some(e),
         }
@@ -1268,11 +1281,11 @@ impl ChatApp {
         attachments: Vec<Attachment>,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        self.send_message_with(id, text, attachments, ctx, false)
+        self.send_message_with(id, text, attachments, ctx, false, None)
     }
 
     /// `send_message`; with `review` the reply comes from the review provider (Settings →
-    /// Context & files) instead of the chat's.
+    /// Context & files) instead of the chat's. `edit_at` is the prompt this message replaces.
     fn send_message_with(
         &mut self,
         id: Uuid,
@@ -1280,11 +1293,11 @@ impl ChatApp {
         attachments: Vec<Attachment>,
         ctx: &egui::Context,
         review: bool,
+        edit_at: Option<usize>,
     ) -> Result<(), String> {
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
-        let edit_at = self.editing.take_if(|(c, _)| *c == id).map(|(_, at)| at);
         let settings = self.branch_settings(id);
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
         // An edited prompt replaces the turn from it on: that turn stays as a version.
@@ -1362,7 +1375,14 @@ impl ChatApp {
         let review = &self.settings.general.review;
         let text = crate::review::message_text(&review.prompt, review.strictness, &diff);
         let ctx = self.repaint_ctx.clone();
-        self.send_message_with(id, text, vec![crate::review::attachment(&diff)], &ctx, true)
+        self.send_message_with(
+            id,
+            text,
+            vec![crate::review::attachment(&diff)],
+            &ctx,
+            true,
+            None,
+        )
     }
 
     /// Whether a chat has a reply running, or waiting for a free slot.
@@ -1430,6 +1450,9 @@ impl ChatApp {
             compact_only,
             provider_id.as_deref(),
         );
+        self.run_counter += 1;
+        let number = self.run_counter;
+        req.run = number;
         req.memory = crate::memory::for_request(
             &self.memory,
             &req.selection,
@@ -1468,6 +1491,7 @@ impl ChatApp {
             id,
             Run {
                 task,
+                number,
                 approvals: Vec::new(),
                 running_tool: None,
                 live_stats: None,

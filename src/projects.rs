@@ -370,16 +370,27 @@ pub fn unbundle(bundle: ProjectBundle) -> (Project, Vec<Conversation>) {
         .map(|mut c| {
             c.id = Uuid::new_v4();
             c.project = Some(project.id);
-            for m in &mut c.messages {
-                if let Some(edit) = &mut m.edit {
-                    edit.checkpoint = false;
-                    edit.before = None;
-                }
-            }
+            forget_checkpoints(&mut c.messages);
+            // The task it ran for is on the computer it came from.
+            c.scheduled_task = None;
             c
         })
         .collect();
     (project, chats)
+}
+
+/// Undo can't apply on this computer: the paths are the exporting one's. The other
+/// versions of a turn hold checkpoints too.
+fn forget_checkpoints(messages: &mut [crate::types::ChatMessage]) {
+    for m in messages {
+        if let Some(edit) = &mut m.edit {
+            edit.checkpoint = false;
+            edit.before = None;
+        }
+        for version in &mut m.alternatives {
+            forget_checkpoints(version);
+        }
+    }
 }
 
 /// Read an export file, checking what it is.

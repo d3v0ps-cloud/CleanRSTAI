@@ -197,6 +197,40 @@ fn check_ip_literal(url: &reqwest::Url) -> std::result::Result<(), String> {
     }
 }
 
+/// Whether requests go through a proxy named in the environment. The proxy then looks the
+/// host up, not [`PublicResolver`], so the name is checked here before it is asked.
+fn proxied() -> bool {
+    ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"]
+        .iter()
+        .flat_map(|name| [name.to_string(), name.to_lowercase()])
+        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+}
+
+/// Behind a proxy: refuse a host that this computer resolves to a private address, or
+/// can't resolve at all (a name only the proxy knows is inside its network).
+fn check_resolved(
+    host: &str,
+    addrs: std::io::Result<Vec<IpAddr>>,
+) -> std::result::Result<(), String> {
+    match addrs {
+        Ok(addrs) if !addrs.is_empty() && addrs.iter().all(|ip| is_public(*ip)) => Ok(()),
+        _ => Err(format!("{host}: {PRIVATE_REFUSED}")),
+    }
+}
+
+/// [`check_resolved`] for a URL's host, looked up on this thread (for the redirect policy,
+/// which can't wait).
+fn check_host_blocking(url: &reqwest::Url) -> std::result::Result<(), String> {
+    use std::net::ToSocketAddrs as _;
+    let Some(host) = url.host_str() else {
+        return Ok(());
+    };
+    let addrs = (host, 0)
+        .to_socket_addrs()
+        .map(|found| found.map(|a| a.ip()).collect());
+    check_resolved(host, addrs)
+}
+
 /// Resolves host names to their public addresses only, so neither a name nor a redirect
 /// to one can lead to a private address.
 struct PublicResolver;
@@ -227,6 +261,11 @@ static PUBLIC_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
                 attempt.error("too many redirects")
             } else if let Err(e) = check_ip_literal(attempt.url()) {
                 attempt.error(e)
+            } else if let Some(e) = proxied()
+                .then(|| check_host_blocking(attempt.url()).err())
+                .flatten()
+            {
+                attempt.error(e)
             } else {
                 attempt.follow()
             }
@@ -249,6 +288,14 @@ pub async fn run(
         http
     } else {
         check_ip_literal(&args.url).map_err(anyhow::Error::msg)?;
+        if proxied()
+            && let Some(host) = args.url.host_str()
+        {
+            let addrs = tokio::net::lookup_host((host, 0))
+                .await
+                .map(|found| found.map(|a| a.ip()).collect());
+            check_resolved(host, addrs).map_err(anyhow::Error::msg)?;
+        }
         &*PUBLIC_CLIENT
     };
     let resp = http
@@ -526,5 +573,16 @@ mod tests {
         );
         assert_eq!(kind_of("application/ld+json", b"{}"), Kind::Text);
         assert_eq!(kind_of("", &[0u8, 1, 2, 3]), Kind::Other("unknown".into()));
+    }
+
+    #[test]
+    fn behind_a_proxy_a_host_must_resolve_to_public_addresses() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(check_resolved("a", Ok(vec![ip("93.184.216.34")])).is_ok());
+        assert!(check_resolved("a", Ok(vec![ip("93.184.216.34"), ip("10.0.0.1")])).is_err());
+        assert!(check_resolved("a", Ok(vec![ip("::ffff:127.0.0.1")])).is_err());
+        assert!(check_resolved("a", Ok(Vec::new())).is_err());
+        let unknown = std::io::Error::other("no such host");
+        assert!(check_resolved("intranet.corp", Err(unknown)).is_err());
     }
 }

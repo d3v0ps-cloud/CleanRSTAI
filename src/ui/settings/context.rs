@@ -525,14 +525,14 @@ impl SettingsUi {
                                 .provider
                                 .as_ref()
                                 .and_then(|id| providers.iter().find(|(pid, ..)| pid == id))
-                                .map_or("The chat's provider".to_owned(), |(_, n, _)| n.clone());
+                                .map_or("The active provider".to_owned(), |(_, n, _)| n.clone());
                             egui::ComboBox::from_id_salt("ocr-provider")
                                 .selected_text(current)
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(
                                         &mut o.provider,
                                         None,
-                                        "The chat's provider",
+                                        "The active provider",
                                     );
                                     for (id, name, _) in &providers {
                                         ui.selectable_value(
