@@ -237,10 +237,10 @@ mod native {
         if cfg!(windows) && url.starts_with("data:") && loading.swap(false, Ordering::SeqCst) {
             return true;
         }
-        if url.starts_with("http://") || url.starts_with("https://") {
-            if opens.locked().allow(std::time::Instant::now()) {
-                let _ = open::that_detached(&url);
-            }
+        if (url.starts_with("http://") || url.starts_with("https://"))
+            && opens.locked().allow(std::time::Instant::now())
+        {
+            let _ = open::that_detached(&url);
         }
         false
     }
