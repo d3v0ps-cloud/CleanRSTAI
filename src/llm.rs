@@ -837,6 +837,19 @@ impl ToolCallBuilder {
             if idx > self.calls.len() + MAX_TOOL_CALL_GAP {
                 continue;
             }
+            // Some servers give every call of a reply index 0. A chunk that names a
+            // function under another id than the call at its index is a call of its own.
+            let named = tc["function"]["name"]
+                .as_str()
+                .is_some_and(|n| !n.is_empty());
+            let idx = match (id, self.calls.get(idx)) {
+                (Some(id), Some(at)) if named && !at.id.is_empty() && at.id != id => self
+                    .calls
+                    .iter()
+                    .position(|c| c.id == id)
+                    .unwrap_or(self.calls.len()),
+                _ => idx,
+            };
             while self.calls.len() <= idx {
                 self.calls.push(ToolCall {
                     id: String::new(),
@@ -1204,6 +1217,26 @@ mod tests {
         assert_eq!(msgs[3]["content"][0]["text"], TOOL_IMAGES_NOTE);
         let url = msgs[3]["content"][1]["image_url"]["url"].as_str().unwrap();
         assert!(url.starts_with("data:image/png;base64,"), "{url}");
+    }
+
+    #[test]
+    fn calls_that_share_an_index_but_not_an_id_stay_apart() {
+        let mut b = ToolCallBuilder::default();
+        b.apply(&json!({"tool_calls": [
+            {"index": 0, "id": "a", "function": {"name": "f", "arguments": "{\"x\":1}"}},
+        ]}));
+        b.apply(&json!({"tool_calls": [
+            {"index": 0, "id": "b", "function": {"name": "g", "arguments": "{}"}},
+        ]}));
+        // A later chunk of the first call still reaches it.
+        b.apply(&json!({"tool_calls": [{"index": 0, "function": {"arguments": ""}}]}));
+        let calls = b.finish();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            (calls[0].name.as_str(), calls[0].arguments.as_str()),
+            ("f", "{\"x\":1}")
+        );
+        assert_eq!((calls[1].id.as_str(), calls[1].name.as_str()), ("b", "g"));
     }
 
     #[test]
