@@ -10,6 +10,9 @@ pub struct SseEvent {
 #[derive(Default)]
 pub struct SseParser {
     buf: Vec<u8>,
+    /// How much of `buf` is known to hold no line end, so a long line that arrives in
+    /// many chunks is searched once, not once per chunk.
+    scanned: usize,
     event: Option<String>,
     data: Vec<String>,
 }
@@ -19,20 +22,27 @@ impl SseParser {
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
-        while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
-            let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
-            line.pop();
+        let mut start = 0;
+        while let Some(found) = self.buf[self.scanned..].iter().position(|&b| b == b'\n') {
+            let end = self.scanned + found;
+            let mut line = &self.buf[start..end];
             if line.last() == Some(&b'\r') {
-                line.pop();
+                line = &line[..line.len() - 1];
             }
-            let line = String::from_utf8_lossy(&line);
+            let line = String::from_utf8_lossy(line).into_owned();
             self.process_line(&line, &mut out);
+            start = end + 1;
+            self.scanned = start;
         }
+        // The lines read are dropped in one move.
+        self.buf.drain(..start);
+        self.scanned = self.buf.len();
         out
     }
 
     /// Flush a trailing event that wasn't terminated by a blank line.
     pub fn finish(&mut self) -> Option<SseEvent> {
+        self.scanned = 0;
         if !self.buf.is_empty() {
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.buf)).into_owned();
             let mut out = Vec::new();
@@ -141,5 +151,22 @@ mod tests {
         let mut p = SseParser::default();
         assert!(p.feed(b"data: [DONE]").is_empty());
         assert_eq!(p.finish().unwrap().data, "[DONE]");
+    }
+
+    #[test]
+    fn a_long_line_in_small_chunks_is_read_once() {
+        let mut p = SseParser::default();
+        let line = format!("data: {}\n\ndata: next\r\n\r\n", "x".repeat(4 << 20));
+        let started = std::time::Instant::now();
+        let events: Vec<SseEvent> = line
+            .as_bytes()
+            .chunks(512)
+            .flat_map(|c| p.feed(c))
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].data.len(), 4 << 20);
+        assert_eq!(events[1].data, "next");
+        assert!(p.finish().is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

@@ -701,6 +701,13 @@ pub async fn list_models(http: &reqwest::Client, p: &ProviderConfig) -> Result<V
     Ok(ids)
 }
 
+/// The text that introduces images returned by tool calls (see `to_api_messages`).
+pub const TOOL_IMAGES_NOTE: &str = "Images returned by the tool calls above:";
+
+/// Tool call indexes from the stream are the server's; one far past the calls seen so
+/// far is ignored rather than filled in with empty calls.
+const MAX_TOOL_CALL_GAP: usize = 64;
+
 /// Convert stored history into the wire format, repairing any tool calls that never
 /// received a result (e.g. the user hit Stop mid-call) so the API doesn't reject it.
 pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Value> {
@@ -770,6 +777,20 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
                                         "content": "Tool call was cancelled."}));
                     }
                 }
+                // A tool message carries text only, so images a tool returned (a picture
+                // read from the workspace or fetched) follow in a user message.
+                let images: Vec<Value> = history[i + 1..j]
+                    .iter()
+                    .flat_map(|t| &t.attachments)
+                    .filter(|a| a.is_image())
+                    .filter_map(|a| a.data_url())
+                    .map(|url| json!({"type": "image_url", "image_url": {"url": url}}))
+                    .collect();
+                if !images.is_empty() {
+                    let mut parts = vec![json!({"type": "text", "text": TOOL_IMAGES_NOTE})];
+                    parts.extend(images);
+                    out.push(json!({"role": "user", "content": parts}));
+                }
                 i = j;
                 continue;
             }
@@ -813,6 +834,9 @@ impl ToolCallBuilder {
                     .and_then(|id| self.calls.iter().position(|c| c.id == id))
                     .unwrap_or(self.calls.len().max(pos)),
             };
+            if idx > self.calls.len() + MAX_TOOL_CALL_GAP {
+                continue;
+            }
             while self.calls.len() <= idx {
                 self.calls.push(ToolCall {
                     id: String::new(),
@@ -1158,6 +1182,39 @@ mod tests {
         );
         assert_eq!(msgs[4]["tool_call_id"], "2");
         assert!(msgs[2]["content"].is_null());
+    }
+
+    #[test]
+    fn images_from_tools_follow_the_results_in_a_user_message() {
+        let mut a = ChatMessage::new(Role::Assistant, "");
+        a.tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }];
+        let mut t = ChatMessage::tool_result(&a.tool_calls[0], "a.png is attached.", false);
+        t.attachments = vec![crate::attach::Attachment::image(
+            "a.png".into(),
+            "image/png".into(),
+            b"png",
+        )];
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "hi"), a, t]);
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "user"]);
+        assert_eq!(msgs[3]["content"][0]["text"], TOOL_IMAGES_NOTE);
+        let url = msgs[3]["content"][1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+    }
+
+    #[test]
+    fn a_tool_call_index_far_past_the_calls_is_ignored() {
+        let mut b = ToolCallBuilder::default();
+        b.apply(&json!({"tool_calls": [
+            {"index": 0, "id": "a", "function": {"name": "f", "arguments": "{}"}},
+            {"index": 4_000_000_000u64, "id": "b", "function": {"name": "g", "arguments": "{}"}},
+        ]}));
+        assert_eq!(b.calls.len(), 1);
+        assert_eq!(b.calls[0].name, "f");
     }
 }
 

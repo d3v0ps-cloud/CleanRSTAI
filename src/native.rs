@@ -417,6 +417,15 @@ pub(crate) fn anthropic_body(
     }
     if !tool_list.is_empty() {
         body["tools"] = json!(tool_list);
+    } else if has_tool_blocks(&body["messages"]) {
+        // The API refuses tool blocks in the messages without `tools` (the last round, or
+        // a chat whose tools were switched off), so it gets one it may not call.
+        body["tools"] = json!([{
+            "name": "unavailable",
+            "description": "No tools are available for this reply.",
+            "input_schema": {"type": "object", "properties": {}},
+        }]);
+        body["tool_choice"] = json!({"type": "none"});
     }
     match budget {
         // Extended thinking doesn't allow changing the temperature or top-p.
@@ -459,6 +468,17 @@ enum Block {
     Other,
 }
 
+/// Whether any message holds a `tool_use` or `tool_result` block.
+fn has_tool_blocks(msgs: &Value) -> bool {
+    msgs.as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|m| m["content"].as_array().into_iter().flatten())
+        .any(|b| matches!(b["type"].as_str(), Some("tool_use" | "tool_result")))
+}
+
+const MAX_BLOCK_GAP: usize = 64;
+
 #[derive(Default)]
 struct AnthropicReader {
     blocks: Vec<Block>,
@@ -473,6 +493,12 @@ impl AnthropicReader {
         let s = |k: &str| b[k].as_str().unwrap_or_default().to_owned();
         let block = match b["type"].as_str() {
             Some("text") => {
+                // Text that resumes after a search or a tool block is a new paragraph;
+                // neighbouring text blocks (cited and uncited runs) are one sentence.
+                let resumes = !matches!(self.blocks.last(), None | Some(Block::Text));
+                if resumes && !sink.turn.content.is_empty() && !sink.turn.content.ends_with('\n') {
+                    sink.content("\n\n");
+                }
                 sink.content(b["text"].as_str().unwrap_or_default());
                 for c in b["citations"].as_array().into_iter().flatten() {
                     add_citation(&mut sink.turn.sources, c);
@@ -507,6 +533,8 @@ impl AnthropicReader {
             }
             _ => Block::Other,
         };
+        // The index is the server's: one far past the blocks so far is put at the end.
+        let index = index.min(self.blocks.len() + MAX_BLOCK_GAP);
         while self.blocks.len() < index {
             self.blocks.push(Block::Other);
         }
@@ -1098,6 +1126,9 @@ mod tests {
         let body = anthropic_body(&p, &msgs, &[], &ModelOptions::default());
         assert_eq!(body["messages"][1]["content"][0]["type"], "text");
         assert!(body.get("system").is_none());
+        // Tool blocks without tools would be refused, so a tool that can't be called goes.
+        assert_eq!(body["tools"][0]["name"], "unavailable");
+        assert_eq!(body["tool_choice"]["type"], "none");
     }
 
     #[test]

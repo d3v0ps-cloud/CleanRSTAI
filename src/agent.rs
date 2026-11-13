@@ -619,6 +619,10 @@ pub async fn run(
             // Anthropic pauses a long turn of its own web search: the reply goes back as it
             // is, and the next request continues it (the rounds still bound this).
             if turn.finish_reason.as_deref() == Some("pause_turn") && round + 1 < max_rounds {
+                if let Some(why) = used.over(&req.general) {
+                    emit(ChatEvent::Error(why));
+                    break;
+                }
                 continue;
             }
             if turn.finish_reason.as_deref() == Some("length") {
@@ -706,6 +710,10 @@ pub async fn run(
                             let (out, reports) = delegation
                                 .run(&http, &mcp, &call.arguments, &progress)
                                 .await;
+                            // Subagents spend on this reply's limits too.
+                            for stats in reports.iter().flat_map(|r| &r.stats) {
+                                used.add(stats);
+                            }
                             let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
                             msg.subagents = reports;
                             msg
