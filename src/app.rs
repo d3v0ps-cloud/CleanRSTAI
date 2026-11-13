@@ -511,6 +511,7 @@ impl ChatApp {
             let cfg = settings.sandbox.clone();
             rt.spawn_blocking(move || crate::sandbox::reap_orphans(&cfg));
         }
+        let kept_tools = settings.general.new_chat_tools.clone();
         let mut app = Self {
             rt,
             http,
@@ -575,7 +576,9 @@ impl ChatApp {
             mic_devices: None,
             settings_opened: None,
             schedule_edit: None,
-            draft_tool_overrides: ToolOverrides::default(),
+            // With no chat open (the home screen at launch), the menu shows the switches
+            // kept for new chats.
+            draft_tool_overrides: kept_tools,
             draft_model_options: Default::default(),
             draft_permissions: None,
             update: None,
@@ -696,7 +699,9 @@ impl ChatApp {
                 id
             }
         };
-        let draft = std::mem::take(&mut self.draft_tool_overrides);
+        // The next draft starts again from the switches kept for new chats.
+        let kept = self.settings.general.new_chat_tools.clone();
+        let draft = std::mem::replace(&mut self.draft_tool_overrides, kept);
         if !draft.is_empty()
             && let Some(c) = self.conv_mut(id)
         {
