@@ -701,6 +701,13 @@ pub async fn list_models(http: &reqwest::Client, p: &ProviderConfig) -> Result<V
     Ok(ids)
 }
 
+/// The text that introduces images returned by tool calls (see `to_api_messages`).
+pub const TOOL_IMAGES_NOTE: &str = "Images returned by the tool calls above:";
+
+/// Tool call indexes from the stream are the server's; one far past the calls seen so
+/// far is ignored rather than filled in with empty calls.
+const MAX_TOOL_CALL_GAP: usize = 64;
+
 /// Convert stored history into the wire format, repairing any tool calls that never
 /// received a result (e.g. the user hit Stop mid-call) so the API doesn't reject it.
 pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Value> {
@@ -708,6 +715,11 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
     if !system_prompt.trim().is_empty() {
         out.push(json!({"role": "system", "content": system_prompt}));
     }
+    // Where the turn in progress starts.
+    let last_user = history
+        .iter()
+        .rposition(|m| m.role == Role::User)
+        .unwrap_or(0);
     let mut i = 0;
     while i < history.len() {
         let m = &history[i];
@@ -770,6 +782,23 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
                                         "content": "Tool call was cancelled."}));
                     }
                 }
+                // A tool message carries text only, so images a tool returned (a picture
+                // read from the workspace or fetched) follow in a user message. Only while
+                // the turn that asked for them runs: they aren't sent again with every later
+                // message, and a model that can't take images fails that turn alone.
+                let images: Vec<Value> = history[i + 1..j]
+                    .iter()
+                    .filter(|_| i > last_user)
+                    .flat_map(|t| &t.attachments)
+                    .filter(|a| a.is_image())
+                    .filter_map(|a| a.data_url())
+                    .map(|url| json!({"type": "image_url", "image_url": {"url": url}}))
+                    .collect();
+                if !images.is_empty() {
+                    let mut parts = vec![json!({"type": "text", "text": TOOL_IMAGES_NOTE})];
+                    parts.extend(images);
+                    out.push(json!({"role": "user", "content": parts}));
+                }
                 i = j;
                 continue;
             }
@@ -812,6 +841,22 @@ impl ToolCallBuilder {
                 None => id
                     .and_then(|id| self.calls.iter().position(|c| c.id == id))
                     .unwrap_or(self.calls.len().max(pos)),
+            };
+            if idx > self.calls.len() + MAX_TOOL_CALL_GAP {
+                continue;
+            }
+            // Some servers give every call of a reply index 0. A chunk that names a
+            // function under another id than the call at its index is a call of its own.
+            let named = tc["function"]["name"]
+                .as_str()
+                .is_some_and(|n| !n.is_empty());
+            let idx = match (id, self.calls.get(idx)) {
+                (Some(id), Some(at)) if named && !at.id.is_empty() && at.id != id => self
+                    .calls
+                    .iter()
+                    .position(|c| c.id == id)
+                    .unwrap_or(self.calls.len()),
+                _ => idx,
             };
             while self.calls.len() <= idx {
                 self.calls.push(ToolCall {
@@ -1158,6 +1203,79 @@ mod tests {
         );
         assert_eq!(msgs[4]["tool_call_id"], "2");
         assert!(msgs[2]["content"].is_null());
+    }
+
+    #[test]
+    fn images_from_tools_follow_the_results_in_a_user_message() {
+        let mut a = ChatMessage::new(Role::Assistant, "");
+        a.tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }];
+        let mut t = ChatMessage::tool_result(&a.tool_calls[0], "a.png is attached.", false);
+        t.attachments = vec![crate::attach::Attachment::image(
+            "a.png".into(),
+            "image/png".into(),
+            b"png",
+        )];
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "hi"), a, t]);
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "user"]);
+        assert_eq!(msgs[3]["content"][0]["text"], TOOL_IMAGES_NOTE);
+        let url = msgs[3]["content"][1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+
+        // Once the user has written again, the image isn't sent any more.
+        let mut later = vec![ChatMessage::new(Role::User, "hi")];
+        let mut a = ChatMessage::new(Role::Assistant, "");
+        a.tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }];
+        let mut t = ChatMessage::tool_result(&a.tool_calls[0], "a.png is attached.", false);
+        t.attachments = vec![crate::attach::Attachment::image(
+            "a.png".into(),
+            "image/png".into(),
+            b"png",
+        )];
+        later.extend([a, t, ChatMessage::new(Role::User, "and now?")]);
+        let msgs = to_api_messages("", &later);
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "user"]);
+        assert_eq!(msgs[3]["content"], "and now?");
+    }
+
+    #[test]
+    fn calls_that_share_an_index_but_not_an_id_stay_apart() {
+        let mut b = ToolCallBuilder::default();
+        b.apply(&json!({"tool_calls": [
+            {"index": 0, "id": "a", "function": {"name": "f", "arguments": "{\"x\":1}"}},
+        ]}));
+        b.apply(&json!({"tool_calls": [
+            {"index": 0, "id": "b", "function": {"name": "g", "arguments": "{}"}},
+        ]}));
+        // A later chunk of the first call still reaches it.
+        b.apply(&json!({"tool_calls": [{"index": 0, "function": {"arguments": ""}}]}));
+        let calls = b.finish();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            (calls[0].name.as_str(), calls[0].arguments.as_str()),
+            ("f", "{\"x\":1}")
+        );
+        assert_eq!((calls[1].id.as_str(), calls[1].name.as_str()), ("b", "g"));
+    }
+
+    #[test]
+    fn a_tool_call_index_far_past_the_calls_is_ignored() {
+        let mut b = ToolCallBuilder::default();
+        b.apply(&json!({"tool_calls": [
+            {"index": 0, "id": "a", "function": {"name": "f", "arguments": "{}"}},
+            {"index": 4_000_000_000u64, "id": "b", "function": {"name": "g", "arguments": "{}"}},
+        ]}));
+        assert_eq!(b.calls.len(), 1);
+        assert_eq!(b.calls[0].name, "f");
     }
 }
 

@@ -1,7 +1,7 @@
 //! Docker sandbox for the workspace shell tool. Commands run in a container through the
 //! `docker` command line.
 
-mod docker;
+pub(crate) mod docker;
 mod network;
 #[cfg(test)]
 mod real_tests;

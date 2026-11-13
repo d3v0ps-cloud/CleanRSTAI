@@ -331,7 +331,10 @@ pub(crate) async fn docker_capped(
 
 /// Reads a pipe to its end, keeping the first and last `half` bytes. Returns the kept bytes
 /// and how many were dropped.
-async fn capture_stream<R: AsyncRead + Unpin>(pipe: Option<R>, half: usize) -> (Vec<u8>, usize) {
+pub(crate) async fn capture_stream<R: AsyncRead + Unpin>(
+    pipe: Option<R>,
+    half: usize,
+) -> (Vec<u8>, usize) {
     let mut kept = Keep::new(half);
     if let Some(mut pipe) = pipe {
         let mut buf = [0u8; 8192];

@@ -49,12 +49,16 @@ these tools for that chat:
 | `exec_shell_command` | Run a command in the folder (`sh`, or `cmd` on Windows); 120 s by default, at most 600 s | Yes |
 
 Every path stays inside the folder: `..`, absolute paths outside it and symlinks that lead out
-are refused. Searches skip files ignored by `.gitignore`.
+are refused, as is a link whose target doesn't exist yet. Searches skip files ignored by
+`.gitignore`. An instruction file or a workspace skill that is a link to a file outside its
+folder isn't read.
 
 `git_status` and `git_diff` only read, so they run on this computer even when the Docker sandbox
 is on. A repository's own config can't make them run programs: its fsmonitor hook, external diff
 drivers, textconv filters and clean, smudge and process filters are switched off, submodules are
-left out, and repository hooks never run.
+left out, and repository hooks never run. Nor can it point them elsewhere: they read the
+repository the folder is in and its own files whatever `core.worktree` says, and a `.git` file
+that names another repository (other than a linked worktree's or a submodule's) is refused.
 
 ### Commits
 
@@ -93,7 +97,8 @@ When the folder has an `AGENTS.md` or `CLAUDE.md` (the names and order are set i
 [Workspace](../settings/workspace.html#project-instructions)), it is added to the system
 prompt of every request, so the model follows the project's conventions. Under **Chat options**
 in the tools menu, **Project instructions** shows which files the latest request read and
-switches them off for the chat.
+switches them off for the chat. A file that is a link to somewhere outside the folder is not
+read; it is listed there as skipped (when another instruction file was read).
 
 ### Diffs and undo
 
@@ -137,10 +142,15 @@ your computer.
 ## Per-chat tool switches
 
 The tools menu (**Tools** in the message box's **+** menu) lists the built-in tools, the workspace
-tools when the chat has a folder, and every MCP server and its tools, each with a switch. The
-switches apply to the current chat from the next message. Defaults for new chats are in
+tools when the chat has a folder, and every MCP server, each with a switch. A server's own
+tools are folded under it, with how many of them are on beside its name; the arrow before the
+name opens the list. The switches apply to the current chat from the next message.
+
+A tool switch you flip there is also kept for new chats: the next chat starts with the same
+tools on and off. **Reset to defaults** at the bottom of the menu goes back to the defaults in
 [Settings → Tools](../settings/built-in-tools.html) and
-[MCP Servers](../settings/mcp-servers.html).
+[MCP Servers](../settings/mcp-servers.html), for this chat and for new ones. Chat options (below)
+and a project's own switches don't carry over.
 
 Under **Chat options**, the same menu switches **Context compaction**, **Project
 instructions**, **Undo for file edits**, **Hooks**, **Branches** and **Memory** for the chat (defaults in

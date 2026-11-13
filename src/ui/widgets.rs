@@ -118,17 +118,13 @@ pub fn diff_block(ui: &mut egui::Ui, diff: &str) {
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let mut job = egui::text::LayoutJob::default();
     let lines: Vec<&str> = diff.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        let color = if line.starts_with("+++") || line.starts_with("---") {
-            p.pencil
-        } else if line.starts_with('+') {
-            p.ok
-        } else if line.starts_with('-') {
-            p.error
-        } else if line.starts_with("@@") {
-            p.signal
-        } else {
-            p.ink2
+    for (i, (line, kind)) in lines.iter().zip(diff_kinds(diff)).enumerate() {
+        let color = match kind {
+            DiffLine::FileHeader => p.pencil,
+            DiffLine::Added => p.ok,
+            DiffLine::Removed => p.error,
+            DiffLine::Hunk => p.signal,
+            DiffLine::Other => p.ink2,
         };
         let text = if i + 1 < lines.len() {
             format!("{line}\n")
@@ -164,17 +160,84 @@ pub fn diff_block(ui: &mut egui::Ui, diff: &str) {
 
 /// "+3 −1" for a unified diff.
 pub fn diff_stat(diff: &str) -> (usize, usize) {
-    diff.lines().fold((0, 0), |(add, del), l| {
-        if l.starts_with("+++") || l.starts_with("---") {
-            (add, del)
-        } else if l.starts_with('+') {
-            (add + 1, del)
-        } else if l.starts_with('-') {
-            (add, del + 1)
+    diff_kinds(diff).fold((0, 0), |(add, del), kind| match kind {
+        DiffLine::Added => (add + 1, del),
+        DiffLine::Removed => (add, del + 1),
+        _ => (add, del),
+    })
+}
+
+/// What a line of a unified diff is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffLine {
+    /// `--- a/file` or `+++ b/file`, before a file's first hunk.
+    FileHeader,
+    /// `@@ -1,3 +1,4 @@`.
+    Hunk,
+    Added,
+    Removed,
+    /// Context, `diff --git`, `index`, `\ No newline at end of file` and the like.
+    Other,
+}
+
+/// The kind of each line of `diff`. `---` and `+++` are file headers only outside a hunk:
+/// each hunk's line counts say where it ends, so a removed `-- comment` (`--- comment`) or
+/// an added `++i` inside one are changes.
+fn diff_kinds(diff: &str) -> impl Iterator<Item = DiffLine> + '_ {
+    // Old and new lines still to come in the current hunk.
+    let (mut old, mut new) = (0usize, 0usize);
+    diff.lines().map(move |line| {
+        if line.starts_with("@@") {
+            // A hunk header without counts runs until the next file.
+            (old, new) = hunk_counts(line).unwrap_or((usize::MAX, usize::MAX));
+            return DiffLine::Hunk;
+        }
+        if line.starts_with("diff ") {
+            (old, new) = (0, 0);
+            return DiffLine::Other;
+        }
+        if old > 0 || new > 0 {
+            return match line.as_bytes().first() {
+                Some(b'+') => {
+                    new = new.saturating_sub(1);
+                    DiffLine::Added
+                }
+                Some(b'-') => {
+                    old = old.saturating_sub(1);
+                    DiffLine::Removed
+                }
+                Some(b'\\') => DiffLine::Other,
+                _ => {
+                    old = old.saturating_sub(1);
+                    new = new.saturating_sub(1);
+                    DiffLine::Other
+                }
+            };
+        }
+        if line.starts_with("+++") || line.starts_with("---") {
+            DiffLine::FileHeader
+        } else if line.starts_with('+') {
+            DiffLine::Added
+        } else if line.starts_with('-') {
+            DiffLine::Removed
         } else {
-            (add, del)
+            DiffLine::Other
         }
     })
+}
+
+/// The old and new line counts of a hunk header, `@@ -1,3 +1,4 @@` (a missing count is 1).
+fn hunk_counts(line: &str) -> Option<(usize, usize)> {
+    let mut parts = line.strip_prefix("@@ ")?.split(' ');
+    let count = |range: &str| -> Option<usize> {
+        match range.split_once(',') {
+            Some((_, n)) => n.parse().ok(),
+            None => range.parse::<usize>().ok().map(|_| 1),
+        }
+    };
+    let old = count(parts.next()?.strip_prefix('-')?)?;
+    let new = count(parts.next()?.strip_prefix('+')?)?;
+    Some((old, new))
 }
 
 /// A frameless icon button with a tooltip and an accessible name.
@@ -495,6 +558,28 @@ mod tests {
         w.iter()
             .find(|(l, _)| l.starts_with(label))
             .map(|(_, p)| *p)
+    }
+
+    #[test]
+    fn dashes_inside_a_hunk_are_changes_not_headers() {
+        let diff = "--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,3 @@\n select 1;\n\
+                    --- old comment\n+++i;\n keep\n\
+                    --- a/r.sql\n+++ b/r.sql\n@@ -1 +1 @@\n-x\n+y\n\\ No newline at end of file\n";
+        let kinds: Vec<DiffLine> = diff_kinds(diff).collect();
+        use DiffLine::*;
+        assert_eq!(
+            kinds,
+            vec![
+                FileHeader, FileHeader, Hunk, Other, Removed, Added, Other, FileHeader, FileHeader,
+                Hunk, Removed, Added, Other,
+            ]
+        );
+        assert_eq!(diff_stat(diff), (2, 2));
+        assert_eq!(hunk_counts("@@ -3,0 +4,2 @@ fn x"), Some((0, 2)));
+        // git's multi-file output resets at each `diff --git`.
+        let git = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ @@\n-a\n\
+                   diff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-b\n+c\n";
+        assert_eq!(diff_stat(git), (1, 2));
     }
 
     #[test]

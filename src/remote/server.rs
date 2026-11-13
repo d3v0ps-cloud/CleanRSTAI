@@ -23,7 +23,7 @@ use futures_util::Stream;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
@@ -72,6 +72,8 @@ pub(crate) struct AppState {
     tunnel_hosts: TunnelHosts,
     /// Cloudflare Access checks for requests for the tunnel's hostnames.
     access: Arc<Gate>,
+    /// Turns true, or loses its sender, when the server is stopped.
+    shutdown: watch::Receiver<bool>,
 }
 
 /// Whether responses carry `Strict-Transport-Security`. Only for certificate files the user
@@ -81,8 +83,8 @@ pub(crate) fn hsts_enabled(cfg: &RemoteSettings) -> bool {
     cfg.tls == RemoteTls::Files
 }
 
-/// Serves the browser client and API on `listener` until the task is aborted. With `tls`,
-/// every connection is wrapped in TLS first.
+/// Serves the browser client and API on `listener` until `shutdown` turns true (or its sender
+/// is dropped) or the task is aborted. With `tls`, every connection is wrapped in TLS first.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     listener: TcpListener,
@@ -94,7 +96,9 @@ pub(crate) async fn serve(
     hsts: bool,
     tunnel_hosts: TunnelHosts,
     access: Arc<Gate>,
+    shutdown: watch::Receiver<bool>,
 ) {
+    let mut stopped = shutdown.clone();
     let state = Arc::new(AppState {
         auth,
         tx,
@@ -105,11 +109,25 @@ pub(crate) async fn serve(
         machine_host: machine_host(),
         tunnel_hosts,
         access,
+        shutdown,
     });
     let app = router(state).into_make_service_with_connect_info::<Peer>();
+    // Open connections are closed once their requests end; event streams end on the same
+    // signal, so none of them keeps the old server (and its sessions) alive.
+    let signal = async move {
+        let _ = stopped.wait_for(|stop| *stop).await;
+    };
     let result = match tls {
-        Some(config) => axum::serve(TlsListener::new(listener, config), app).await,
-        None => axum::serve(listener, app).await,
+        Some(config) => {
+            axum::serve(TlsListener::new(listener, config), app)
+                .with_graceful_shutdown(signal)
+                .await
+        }
+        None => {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(signal)
+                .await
+        }
     };
     if let Err(e) = result {
         log::error!("The remote access server stopped: {e}");
@@ -174,6 +192,10 @@ async fn csrf_guard(req: Request, next: Next) -> Response {
 /// stops DNS rebinding: a page on another site that resolves to 127.0.0.1 still sends its own
 /// host name.
 async fn host_guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    if state.stopped() {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "the server is stopping")
+            .into_response();
+    }
     let allowed = req
         .headers()
         .get(header::HOST)
@@ -192,14 +214,14 @@ async fn host_guard(State(state): State<Arc<AppState>>, req: Request, next: Next
 /// needs a valid Access token, whoever sent it, so a request that skipped Access is refused
 /// even when it comes from the local network. With `skip_password` the token also signs the
 /// browser in. Requests for other hosts are not affected.
-async fn access_guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+async fn access_guard(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(Peer(addr)): ConnectInfo<Peer>,
+    req: Request,
+    next: Next,
+) -> Response {
     let policy = state.access.policy();
-    let through_tunnel = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|host| tunnel_host(&state, host));
-    if policy == Policy::Off || !through_tunnel {
+    if policy == Policy::Off || !for_tunnel_host(&state, req.headers()) {
         return next.run(req).await;
     }
     let claims = match state
@@ -216,7 +238,10 @@ async fn access_guard(State(state): State<Arc<AppState>>, req: Request, next: Ne
         }
     };
     match policy {
-        Policy::SignIn => sign_in_with_access(&state, req, next, claims).await,
+        Policy::SignIn => {
+            let secure = client(&state, addr, req.headers()).tunnel;
+            sign_in_with_access(&state, req, next, claims, secure).await
+        }
         _ => next.run(req).await,
     }
 }
@@ -231,13 +256,15 @@ fn access_required() -> Response {
 }
 
 /// Starts a login session for a browser that passed Access, unless it has one. The session is
-/// added to this request's cookies, so the handler already sees a logged-in browser, and to
-/// the response's `Set-Cookie`. The email is only logged.
+/// put first in this request's cookies, ahead of any stale session the browser still sends, so
+/// the handler already sees a logged-in browser, and goes in the response's `Set-Cookie`. The
+/// email is only logged.
 async fn sign_in_with_access(
     state: &AppState,
     mut req: Request,
     next: Next,
     claims: Claims,
+    secure: bool,
 ) -> Response {
     if session_valid(state, req.headers()) {
         return next.run(req).await;
@@ -247,11 +274,20 @@ async fn sign_in_with_access(
         "Remote access: signed in {} through Cloudflare Access",
         claims.email.as_deref().unwrap_or("a service token")
     );
-    if let Ok(value) = HeaderValue::from_str(&Auth::cookie_pair(&token)) {
-        req.headers_mut().append(header::COOKIE, value);
+    let mut cookies = Auth::cookie_pair(&token);
+    for value in req.headers().get_all(header::COOKIE) {
+        if let Ok(value) = value.to_str() {
+            cookies.push_str("; ");
+            cookies.push_str(value);
+        }
+    }
+    if let Ok(value) = HeaderValue::from_str(&cookies) {
+        req.headers_mut().insert(header::COOKIE, value);
     }
     let mut res = next.run(req).await;
-    if let Ok(value) = HeaderValue::from_str(&state.auth.session_cookie(&token)) {
+    // `Secure` only when cloudflared really sent the request; a browser on the LAN that uses
+    // the tunnel's name over plain HTTP would drop the cookie.
+    if let Ok(value) = HeaderValue::from_str(&state.auth.session_cookie(&token, secure)) {
         res.headers_mut().append(header::SET_COOKIE, value);
     }
     res
@@ -266,6 +302,16 @@ fn tunnel_host(state: &AppState, host: &str) -> bool {
     state.tunnel_hosts.read_ok().contains(&name)
 }
 
+/// True when the request's `Host` is one of the running tunnel's public hostnames. Only for
+/// choices that are safe whoever sent it, such as asking for Access. The login throttle and
+/// the `Secure` cookie use `client`, which also needs a loopback connection.
+fn for_tunnel_host(state: &AppState, headers: &HeaderMap) -> bool {
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|host| tunnel_host(state, host))
+}
+
 /// Who is asking, for the login throttle.
 struct Client {
     ip: IpAddr,
@@ -278,12 +324,13 @@ struct Client {
 /// on a loopback connection addressed to the tunnel's hostname, where only cloudflared (or
 /// another program on this computer) can have set it.
 fn client(state: &AppState, peer: SocketAddr, headers: &HeaderMap) -> Client {
-    let via_tunnel = peer.ip().is_loopback()
-        && headers
-            .get(header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|host| tunnel_host(state, host));
-    if !via_tunnel {
+    client_for(peer, for_tunnel_host(state, headers), headers)
+}
+
+/// `client` once it is known whether the `Host` is a tunnel hostname. A LAN browser that
+/// uses the tunnel's name directly (split-horizon DNS) is not on the tunnel.
+fn client_for(peer: SocketAddr, tunnel_host: bool, headers: &HeaderMap) -> Client {
+    if !(peer.ip().is_loopback() && tunnel_host) {
         return Client {
             ip: peer.ip(),
             tunnel: false,
@@ -300,6 +347,11 @@ fn client(state: &AppState, peer: SocketAddr, headers: &HeaderMap) -> Client {
 }
 
 impl AppState {
+    /// True once the server has been told to stop.
+    fn stopped(&self) -> bool {
+        *self.shutdown.borrow() || self.shutdown.has_changed().is_err()
+    }
+
     fn throttled(&self, client: &Client) -> bool {
         self.auth.throttled(client.ip) || (client.tunnel && self.auth.tunnel_throttled())
     }
@@ -541,20 +593,29 @@ async fn login(
     }
     state.auth.clear_failures(who.ip);
     let token = state.auth.create_session();
+    let tunnel = who.tunnel;
     Ok((
-        [(header::SET_COOKIE, state.auth.session_cookie(&token))],
+        [(
+            header::SET_COOKIE,
+            state.auth.session_cookie(&token, tunnel),
+        )],
         Json(json!({})),
     )
         .into_response())
 }
 
 /// Ends the session the cookie names, if any, and clears the cookie. Always 200.
-async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn logout(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(Peer(addr)): ConnectInfo<Peer>,
+    headers: HeaderMap,
+) -> Response {
     if let Some(token) = cookie_token(&headers) {
         state.auth.remove_session(token);
     }
+    let tunnel = client(&state, addr, &headers).tunnel;
     (
-        [(header::SET_COOKIE, state.auth.clear_cookie())],
+        [(header::SET_COOKIE, state.auth.clear_cookie(tunnel))],
         Json(json!({})),
     )
         .into_response()
@@ -738,11 +799,14 @@ struct Watch {
     /// The session cookie the stream was opened with. None when the request used the bearer
     /// password, which cannot change without a restart, so the stream keeps going.
     token: Option<String>,
+    /// Ends the stream when the server stops.
+    shutdown: watch::Receiver<bool>,
 }
 
 /// Server-sent events: one `data:` line per `RemoteEvent`. A client that fell behind gets a
 /// `list` event so it refetches everything. The stream ends when its session is logged out or
-/// expires, so the browser stops receiving chats it can no longer see.
+/// expires, so the browser stops receiving chats it can no longer see, and when the server
+/// stops, so the connection can close.
 async fn events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -756,6 +820,7 @@ async fn events(
         ticker: tokio::time::interval(SESSION_CHECK),
         state: state.clone(),
         token,
+        shutdown: state.shutdown.clone(),
     };
     let stream = futures_util::stream::unfold(watch, |mut w| async move {
         if std::mem::take(&mut w.hello) {
@@ -766,6 +831,7 @@ async fn events(
         }
         loop {
             let received = tokio::select! {
+                _ = w.shutdown.wait_for(|stop| *stop) => return None,
                 received = w.rx.recv() => Some(received),
                 _ = w.ticker.tick() => None,
             };
@@ -2156,5 +2222,109 @@ mod tests {
             .unwrap();
         assert_eq!(forged.status(), 403);
         assert!(forged.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    /// A browser that still sends the session cookie of an earlier server run is signed in by
+    /// Access at once: the new session counts, not the stale one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn access_sign_in_wins_over_a_stale_session_cookie() {
+        let gate = access_gate(true).await;
+        let handle =
+            start_test_with_access(&settings(RemoteTls::Off), tunnel_hosts(), gate).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let token = token_now();
+        let stale = "a=1; cleanrstai_session=from-before-the-restart";
+
+        for path in ["api/session", "api/state"] {
+            let resp = client
+                .get(format!("{base}{path}"))
+                .header(header::HOST, "chat.example.com")
+                .header(header::COOKIE, stale)
+                .header("Cf-Access-Jwt-Assertion", token.as_str())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{path}");
+            let set_cookie = resp.headers()[header::SET_COOKIE].to_str().unwrap();
+            assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+            if path == "api/session" {
+                let body: Value = resp.json().await.unwrap();
+                assert_eq!(body["logged_in"], json!(true));
+            }
+        }
+    }
+
+    /// Visitors through the tunnel are on HTTPS at Cloudflare, so their cookies are `Secure`
+    /// even when this server speaks plain HTTP. Local visitors' cookies are not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tunnel_logins_get_a_secure_cookie_on_plain_http() {
+        let handle = start_test_with_tunnel(&settings(RemoteTls::Off), tunnel_hosts()).unwrap();
+        let base = handle.urls()[0].clone();
+        let login_via = |host: Option<&'static str>| {
+            let mut req = client()
+                .post(format!("{base}api/login"))
+                .header("X-CleanRSTAI", "1")
+                .json(&json!({ "password": PASSWORD }));
+            if let Some(host) = host {
+                req = req.header(header::HOST, host);
+            }
+            req.send()
+        };
+        let tunnel = login_via(Some("chat.example.com")).await.unwrap();
+        assert_eq!(tunnel.status(), 200);
+        let cookie = tunnel.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cookie.contains("; Secure"), "{cookie}");
+
+        let local = login_via(None).await.unwrap();
+        let cookie = local.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(!cookie.contains("Secure"), "{cookie}");
+
+        let logout = client()
+            .post(format!("{base}api/logout"))
+            .header(header::HOST, "chat.example.com")
+            .header("X-CleanRSTAI", "1")
+            .send()
+            .await
+            .unwrap();
+        let clear = logout.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(clear.contains("; Secure"), "{clear}");
+    }
+
+    /// Only a loopback connection (cloudflared) counts as the tunnel, whatever its Host says.
+    #[test]
+    fn a_lan_peer_using_the_tunnel_host_is_not_on_the_tunnel() {
+        let headers = HeaderMap::new();
+        let lan: SocketAddr = "192.168.1.20:5000".parse().unwrap();
+        let local: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert!(!client_for(lan, true, &headers).tunnel);
+        assert!(!client_for(local, false, &headers).tunnel);
+        assert!(client_for(local, true, &headers).tunnel);
+    }
+
+    /// Stopping the server ends open event streams, so their connections don't outlive it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_the_server_ends_open_event_streams() {
+        let mut handle = start_test(&settings(RemoteTls::Off)).unwrap();
+        let base = handle.urls()[0].clone();
+        let client = client();
+        let cookie = login(&client, &base).await;
+
+        let mut resp = client
+            .get(format!("{base}api/events"))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        // The `hello` event arrives first, so the stream is open before the server stops.
+        assert!(resp.chunk().await.unwrap().is_some());
+        handle.stop();
+
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(Some(_)) = resp.chunk().await {}
+        })
+        .await;
+        assert!(ended.is_ok(), "the event stream is still open after stop");
     }
 }

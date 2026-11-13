@@ -219,8 +219,9 @@ too, as an installer and a portable `.exe`.
 - **Save as files**: a reply or a Markdown, code or CSV artifact can be saved as a Word document,
   a PDF or an Excel workbook (one sheet per table, numbers as numbers), each format switched on
   or off in Settings → General.
-- **Attachments**: attach files with the **+** button under the message box or by dropping
-  them on the window.
+- **Attachments**: attach files with the **+** button under the message box, by dropping
+  them on the window, or, for an image on the clipboard, with ⌘/Ctrl + V or **Paste** in the
+  message box's right-click menu.
   - **Images** (PNG, JPEG, GIF, WebP) go to vision models as `image_url` parts; click one to
     enlarge it. Images returned by MCP tools appear in the chat too.
   - **Documents** are sent as their text: PDF (`.pdf`), Word (`.docx`, `.doc`), Excel

@@ -58,6 +58,9 @@ pub enum ChatEvent {
         reports: Vec<SubagentReport>,
     },
     ToolResult(Box<ChatMessage>),
+    /// Something went wrong beside the reply, which carries on (the chat couldn't be
+    /// compacted before it, say). Shown, but the reply hasn't failed.
+    Warning(String),
     Error(String),
     Done,
 }
@@ -135,10 +138,7 @@ pub enum AppEvent {
         explicit: bool,
     },
     /// Bytes of the update downloaded so far, and the total when known.
-    UpdateProgress {
-        done: u64,
-        total: Option<u64>,
-    },
+    UpdateProgress { done: u64, total: Option<u64> },
     /// The update was put in place (the path to relaunch), or why it wasn't.
     UpdateInstalled(Result<std::path::PathBuf, String>),
     /// Every release at the "Update from" source, for the version picker in Settings.
@@ -147,6 +147,8 @@ pub enum AppEvent {
     SandboxChecked(Result<String, String>),
     Chat {
         conv_id: Uuid,
+        /// `AgentRequest::run` of the run that sent it.
+        run: u64,
         event: ChatEvent,
     },
     ModelsFetched {
@@ -188,6 +190,8 @@ pub enum AppEvent {
     /// A reply read aloud has finished, was stopped, or failed.
     SpeechEnded {
         key: (uuid::Uuid, usize),
+        /// `Speaking::number` of the reading that ended.
+        number: u64,
         result: Result<(), String>,
     },
     /// A "Save as…" file was written (its message), or why it wasn't.
@@ -222,6 +226,9 @@ pub struct AgentRequest {
     /// The chat's memory (see `memory::for_request`): the memories in its system prompt and the
     /// memory tool. `None` for a chat with memory off (incognito), and for subagents.
     pub memory: Option<crate::memory::MemoryRun>,
+    /// The caller's number for this run, sent back with each of its events, so events of a
+    /// run that was stopped aren't taken for those of the chat's next one.
+    pub run: u64,
 }
 
 impl AgentRequest {
@@ -252,8 +259,16 @@ impl AgentRequest {
             .and_then(|pid| settings.providers.iter().find(|p| p.id == pid))
             .unwrap_or_else(|| settings.provider())
             .clone();
+        // The chat's model was picked for the chat's provider: a task that runs on another
+        // one uses that provider's own model.
+        let own_provider = provider_id.is_none_or(|pid| {
+            pid == conv
+                .provider
+                .as_deref()
+                .unwrap_or(settings.provider().id.as_str())
+        });
         let chat_provider = match conv.model.as_deref().map(str::trim) {
-            Some(model) if !model.is_empty() => ProviderConfig {
+            Some(model) if !model.is_empty() && own_provider => ProviderConfig {
                 model: model.to_owned(),
                 ..chat_provider
             },
@@ -296,6 +311,7 @@ impl AgentRequest {
             approval_mode: mode,
             project: None,
             memory: None,
+            run: 0,
         }
     }
 }
@@ -310,13 +326,18 @@ pub async fn run(
     repaint: impl Fn() + Send + Sync,
 ) {
     let conv_id = req.conv_id;
+    let run = req.run;
     // Set when the reply reports an error: reply-done hooks don't run then.
     let errored = AtomicBool::new(false);
     let emit = |event: ChatEvent| {
         if matches!(event, ChatEvent::Error(_)) {
             errored.store(true, Ordering::Relaxed);
         }
-        let _ = tx.send(AppEvent::Chat { conv_id, event });
+        let _ = tx.send(AppEvent::Chat {
+            conv_id,
+            run,
+            event,
+        });
         repaint();
     };
 
@@ -537,7 +558,7 @@ pub async fn run(
                     compact(c, &http, &mut history, &mut summary, tokens, false, &emit).await
             {
                 compaction_failed = true;
-                emit(ChatEvent::Error(e));
+                emit(ChatEvent::Warning(e));
             }
         }
         let mut sent = history.clone();
@@ -619,6 +640,10 @@ pub async fn run(
             // Anthropic pauses a long turn of its own web search: the reply goes back as it
             // is, and the next request continues it (the rounds still bound this).
             if turn.finish_reason.as_deref() == Some("pause_turn") && round + 1 < max_rounds {
+                if let Some(why) = used.over(&req.general) {
+                    emit(ChatEvent::Error(why));
+                    break;
+                }
                 continue;
             }
             if turn.finish_reason.as_deref() == Some("length") {
@@ -706,6 +731,10 @@ pub async fn run(
                             let (out, reports) = delegation
                                 .run(&http, &mcp, &call.arguments, &progress)
                                 .await;
+                            // Subagents spend on this reply's limits too.
+                            for stats in reports.iter().flat_map(|r| &r.stats) {
+                                used.add(stats);
+                            }
                             let mut msg = ChatMessage::tool_result(call, out.text, out.is_error);
                             msg.subagents = reports;
                             msg
@@ -892,6 +921,7 @@ mod tests {
             approval_mode: Default::default(),
             project: None,
             memory: None,
+            run: 0,
         };
         run(req, http, mcp, tx, || {}).await;
 
@@ -977,6 +1007,7 @@ mod tests {
             approval_mode: Default::default(),
             project: None,
             memory: None,
+            run: 0,
         }
     }
 
@@ -1817,7 +1848,8 @@ mod tests {
         assert_eq!(req.provider.base_url, "http://other.example/v1");
         assert_eq!(req.provider.model, "other-model");
 
-        // The chat's model replaces its provider's; a scheduled task's provider still wins.
+        // The chat's model replaces its provider's. A scheduled task's provider still wins,
+        // with its own model: the chat's was picked for the chat's provider.
         conv.model = Some(" chat-model ".into());
         let req = AgentRequest::for_chat(&settings, &conv, None, false, false, None);
         assert_eq!(req.provider.model, "chat-model");
@@ -1830,6 +1862,8 @@ mod tests {
             Some(&settings.providers[0].id),
         );
         assert_eq!(req.provider.base_url, settings.providers[0].base_url);
+        assert_eq!(req.provider.model, settings.providers[0].model);
+        let req = AgentRequest::for_chat(&settings, &conv, None, false, false, Some("other"));
         assert_eq!(req.provider.model, "chat-model");
     }
 

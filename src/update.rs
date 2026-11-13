@@ -267,7 +267,10 @@ fn dir_writable(dir: &Path) -> bool {
 /// Remove what an earlier update left behind: on Windows the replaced executable, which
 /// can only be deleted once it no longer runs. Call at startup.
 pub fn remove_leftovers() {
-    if let Ok(exe) = install_target() {
+    // Only a Windows update leaves one; elsewhere a file of that name is the user's.
+    if cfg!(windows)
+        && let Ok(exe) = install_target()
+    {
         let _ = std::fs::remove_file(old_exe_path(&exe));
     }
 }

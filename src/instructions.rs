@@ -30,18 +30,26 @@ pub fn load(root: &Path, s: &InstructionSettings) -> Option<Loaded> {
     let mut budget = s.max_kb as usize * 1024;
     let mut out = Loaded::default();
     let mut sections = String::new();
+    // Files left out because they link outside their folder; shown to the user, not read.
+    let mut skipped = Vec::new();
     for folder in folders {
         for name in &s.file_names {
             let path = folder.join(name);
             if !path.is_file() {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             let shown = match path.strip_prefix(root) {
                 Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
                 Err(_) => path.display().to_string(),
+            };
+            if !crate::tools::workspace::stays_inside(&path, &folder) {
+                skipped.push(format!(
+                    "{shown} (skipped: a link to a file outside the folder)"
+                ));
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
             };
             let text = text.trim();
             if text.is_empty() {
@@ -75,6 +83,8 @@ pub fn load(root: &Path, s: &InstructionSettings) -> Option<Loaded> {
     if out.files.is_empty() {
         return None;
     }
+    // The tools menu only prints these names, so the notes ride along with the files read.
+    out.files.extend(skipped);
     out.prompt = format!(
         "The workspace has project instructions. Follow them unless the user asks otherwise; \
          where they disagree, files listed later are more specific.{sections}{}",
@@ -131,6 +141,30 @@ mod tests {
         assert!(got.files[0].ends_with("AGENTS.md") && got.files[0] != "AGENTS.md");
         assert_eq!(got.files[1], "AGENTS.md");
         assert!(got.prompt.find("Be brief").unwrap() < got.prompt.find("Run the tests").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_folder_is_named_as_skipped() {
+        let dir = temp();
+        let ws = dir.join("ws");
+        std::fs::write(dir.join("outside.md"), "Secret.").unwrap();
+        std::os::unix::fs::symlink(dir.join("outside.md"), ws.join("AGENTS.md")).unwrap();
+        std::fs::write(ws.join("CLAUDE.md"), "Use tabs.").unwrap();
+        let all = InstructionSettings {
+            all_files: true,
+            ..Default::default()
+        };
+        let got = load(&ws, &all).unwrap();
+        assert_eq!(
+            got.files,
+            [
+                "CLAUDE.md",
+                "AGENTS.md (skipped: a link to a file outside the folder)"
+            ]
+        );
+        assert!(!got.prompt.contains("Secret"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

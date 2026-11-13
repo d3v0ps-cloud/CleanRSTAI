@@ -368,6 +368,7 @@ pub async fn drive(
                 conv.messages.push(*msg);
             }
             ChatEvent::Retrying(status) => sink.note(&status),
+            ChatEvent::Warning(text) => sink.note(&format!("warning: {text}")),
             ChatEvent::Error(error) => {
                 sink.note(&format!("error: {error}"));
                 report.error.get_or_insert(error);
@@ -514,8 +515,9 @@ pub fn run(args: &[String]) -> i32 {
     if parsed.provider.is_some() {
         conv.provider = None;
     }
-    if parsed.model.is_some() {
-        conv.model = None;
+    // `--model` wins over the project's model, on whichever provider the chat ends up with.
+    if let Some(model) = &parsed.model {
+        conv.model = Some(model.clone());
     }
     conv.messages.push(ChatMessage::new(Role::User, prompt));
     conv.auto_title();

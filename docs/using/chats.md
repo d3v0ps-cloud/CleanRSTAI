@@ -301,7 +301,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   on. Made-up names like "Flowchart" never make versions.
 - **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
   that runs the page's scripts but, by default, blocks everything from the network (set in
-  [General](../settings/artifacts.html#web-page-preview)); links open in your browser. On Linux,
+  [Artifacts & files](../settings/artifacts.html#web-page-preview)); links open in your browser. On Linux,
   **Open live preview** shows the page in a window of its own, with the same settings, when
   WebKitGTK is installed; the window follows the page as a reply streams. Without WebKitGTK it
   opens in your browser, with a notice. **Open in browser** writes the page to a temporary file
@@ -309,7 +309,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   load anything. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
-  panel** in [General](../settings/artifacts.html#artifacts); **Open in panel** and the top-bar
+  panel** in [Artifacts & files](../settings/artifacts.html#artifacts-in-a-side-panel); **Open in panel** and the top-bar
   button still open it.
 - **Save as…** in the panel's title row saves Markdown documents, code, and CSV or TSV
   artifacts as a Word document, a PDF or (for CSV and TSV) an Excel workbook.
@@ -317,7 +317,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
 ## Saving as files
 
 A reply or a Markdown, code or CSV artifact can be saved as a file from its **Save as…** menu.
-Each format is switched on or off in [General](../settings/artifacts.html#save-as-files); the menu
+Each format is switched on or off in [Artifacts & files](../settings/artifacts.html#save-as); the menu
 offers only the enabled ones that suit the content. The file dialog suggests the chat's name (or
 the artifact's title) with the new extension.
 
@@ -338,13 +338,16 @@ are written only where you choose; nothing is sent anywhere.
 
 ## Attachments
 
-Attach files with the **+** button or by dropping them on the window. Files up to 50 MB can be
-attached; text beyond a million characters is cut, with a note saying so.
+Attach files with the **+** button or by dropping them on the window. An image copied to the
+clipboard (a screenshot, or **Copy Image** in a browser) is attached with **⌘/Ctrl + V** in the
+message box, or **Paste** in its right-click menu, as `Pasted image <date and time>.png`; when
+the clipboard also holds text, the text is pasted instead. Files up to 50 MB can be attached;
+text beyond a million characters is cut, with a note saying so.
 
 | Kind | Sent as |
 |---|---|
 | Images (PNG, JPEG, GIF, WebP) | images for vision models; click one to enlarge it |
-| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Artifacts & files](../settings/artifacts.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
+| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Artifacts & files](../settings/artifacts.html#scanned-pdfs)), or attached with a note saying so |
 | Word (`.docx`, `.doc`) | its text |
 | Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`) | one CSV block per sheet |
 | PowerPoint (`.pptx`, `.ppt`) | numbered slides, with speaker notes |
@@ -425,7 +428,7 @@ open. **Run scheduled tasks** is the master switch; each task has its own **On**
 | **Runs in** | A new chat each time | **A new chat each time**, or a chat you picked from the list. A new chat takes the task's folder and provider; a picked chat keeps its own folder and provider, and its approval mode is set to the task's on each run. |
 | **Approvals** | Read only | The approval mode of the run's chat: read only, plan, default, auto in workspace, or allow all. Read only is the default so a task cannot change files or run commands unless you choose it. Other tools still ask, so a run can wait for your answer; the notification says so. |
 | **Folder** | None | The working folder of a new chat (see [Built-in tools and workspace](../using/tools.html#workspace)). |
-| **Provider** | The active provider | The provider the run uses, for example a local model for a frequent task. |
+| **Provider** | The active provider | The provider the run uses, for example a local model for a frequent task. In a picked chat with a model of its own, that model is used only when the task runs on the chat's provider; on another provider the run uses that provider's model. |
 | **Catch up after the app was closed** | off | A run that was due while the app was closed runs once when the app starts. When off, it is skipped to the next time. |
 
 **Run now** starts the task at once, using what the form shows (unsaved edits included), and counts

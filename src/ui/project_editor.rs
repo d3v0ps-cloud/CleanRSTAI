@@ -153,7 +153,7 @@ pub fn show(
                         )
                         .changed()
                     {
-                        draft.model = Some(model).filter(|m| !m.trim().is_empty());
+                        draft.model = Some(model.trim().to_owned()).filter(|m| !m.is_empty());
                     }
                     ui.end_row();
 

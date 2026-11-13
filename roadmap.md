@@ -45,7 +45,23 @@ click, and installing a particular release (dev builds included) from a list shi
 look (graphite greys with a signal green accent, IBM Plex Sans, shared radius and size tokens,
 one action row per reply) and Settings reorganised into sixteen pages in four groups shipped in
 **v0.9.5-dev.1**, with every Settings page in the row layout in **v0.9.5-dev.2**, all of which
-reached the stable release in **v0.9.5**. Signed builds are not planned.
+reached the stable release in **v0.9.5**. A code audit's fixes shipped in **v0.9.6-dev.1**:
+images from tools reaching the model, the workspace's boundaries (dangling links, a repository
+that points git elsewhere, linked instruction files and skills), secrets kept when the keychain
+is locked at startup, edits, plan approvals and stopped replies that could land in the wrong
+turn, remote access and MCP sign-in checks, and document and export limits; **v0.9.6-dev.2**
+followed with reviews limited to the working folder, an `.msi` that upgrades between builds of
+one version, and the git, proxy and tool-image checks of dev.1 made less strict; and
+**v0.9.6-dev.3** with Anthropic replies replayed in their order, Cloudflare Access keys refreshed
+every six hours, an image cache that evicts the oldest pictures, a limit on how often a preview
+opens the browser, a lock on the memory file across processes, and fixes to deleted chats,
+edits and replies that die; and **v0.9.6-dev.4** without the "Where is use_default?" window
+macOS showed at a reply's first desktop notification; and **v0.9.6-dev.5** with each MCP
+server's tools folded in the tools menu and tool switches carried over to new chats; and
+**v0.9.6-dev.6** with images pasted from the clipboard into the message box (⌘/Ctrl + V, or
+Paste in its new right-click menu); and **v0.9.6-dev.7** with the tool switches kept for new
+chats shown, and kept, after a restart, all of which reached the stable release in **v0.9.6**.
+Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request

@@ -109,7 +109,8 @@ if have x86_64-w64-mingw32-gcc; then
   (cd "$(dirname "$exe")" && zip -q -9 "$OLDPWD/$dist/CleanRSTAI-windows-x86_64.zip" cleanrstai.exe)
   built+=(windows-x86_64.zip)
   if have wixl; then
-    wixl -a x64 -D "Version=$version" -D "Exe=$exe" -D "Icon=assets/icon/icon.ico" \
+    # An .msi version is numbers only: 0.9.6-dev.1 is 0.9.6 there, as in the workflow.
+    wixl -a x64 -D "Version=${version%%[-+]*}" -D "Exe=$exe" -D "Icon=assets/icon/icon.ico" \
       -o "$dist/CleanRSTAI-windows-x86_64.msi" packaging/windows/wixl.wxs
     built+=(windows-x86_64.msi)
   else
@@ -145,7 +146,8 @@ else
 fi
 
 step "Checksums"
-(cd "$dist" && sha256sum -- * | tee SHA256SUMS.txt)
+# Listed before the file exists, so it never lists itself.
+(cd "$dist" && rm -f SHA256SUMS.txt && sums=$(sha256sum -- *) && printf '%s\n' "$sums" | tee SHA256SUMS.txt)
 for f in "$dist"/*; do
   case "$(basename "$f")" in
     *macos*) [[ " ${built[*]:-} " == *" macos-universal "* ]] || echo "note: $(basename "$f") was not built in this run" ;;

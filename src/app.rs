@@ -50,6 +50,8 @@ const INPUT_ID: &str = "chat-input";
 
 pub(crate) struct Run {
     task: JoinHandle<()>,
+    /// Which run this is (`AgentRequest::run`); its events carry the number.
+    pub(crate) number: u64,
     pub(crate) approvals: Vec<PendingApproval>,
     pub(crate) running_tool: Option<String>,
     /// Stats of the request currently streaming in, for the readout above the input box.
@@ -135,6 +137,8 @@ pub struct ChatApp {
     errors: HashMap<Uuid, String>,
     /// Replaced tails waiting for the reply that replaces them (see `branches`), by chat.
     holds: HashMap<Uuid, Hold>,
+    /// The number given to the last run started (see `Run::number`).
+    run_counter: u64,
     /// A message being edited: its chat and position. The turn it starts is replaced when the
     /// edit is sent.
     editing: Option<(Uuid, usize)>,
@@ -265,18 +269,23 @@ pub struct ChatApp {
 /// A llama.cpp server's report on one provider's model, refreshed in the background while
 /// it is the active one.
 /// The open chat's artifacts, found again when its messages change: the key is the chat, its
-/// message count and the length of their text, which a streaming reply or an edit changes.
+/// message count and each message's length and version, which a streaming reply, an edit or
+/// another version of a turn changes.
 #[derive(Default)]
 struct ArtifactList {
-    key: Option<(Uuid, usize, usize)>,
+    key: Option<(Uuid, usize, u64)>,
     list: Vec<crate::artifacts::Artifact>,
 }
 
 impl ArtifactList {
     fn refresh(&mut self, conv: Option<&Conversation>) {
         let key = conv.map(|c| {
-            let text = c.messages.iter().map(|m| m.content.len()).sum();
-            (c.id, c.messages.len(), text)
+            use std::hash::{Hash, Hasher};
+            let mut shape = std::collections::hash_map::DefaultHasher::new();
+            for m in &c.messages {
+                (m.content.len(), m.alt_index).hash(&mut shape);
+            }
+            (c.id, c.messages.len(), shape.finish())
         });
         if key != self.key {
             self.key = key;
@@ -350,6 +359,8 @@ struct PromptForm {
 enum FileSource {
     Path(std::path::PathBuf),
     Dropped(egui::DroppedFileHandle),
+    /// An image pasted from the clipboard, and the name it is attached under.
+    Pasted(Arc<egui::ColorImage>, String),
 }
 
 impl FileSource {
@@ -365,8 +376,31 @@ impl FileSource {
                 let bytes = f.bytes().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
                 Attachment::read_bytes(name, bytes)
             }
+            Self::Pasted(image, name) => {
+                let png = png_of(&image)?;
+                Ok(Reading::Done(Attachment::image(
+                    name,
+                    "image/png".into(),
+                    &png,
+                )))
+            }
         }
     }
+}
+
+/// A clipboard image as PNG bytes.
+fn png_of(image: &egui::ColorImage) -> anyhow::Result<Vec<u8>> {
+    let [w, h] = image.size;
+    let rgba: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|c| c.to_srgba_unmultiplied())
+        .collect();
+    let buffer = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
+        .ok_or_else(|| anyhow::anyhow!("the pasted image is {w}×{h} but its pixels don't fit"))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    buffer.write_to(&mut png, image::ImageFormat::Png)?;
+    Ok(png.into_inner())
 }
 
 /// Copies a task's run times and save time from the live settings to the Settings draft (the
@@ -477,6 +511,7 @@ impl ChatApp {
             let cfg = settings.sandbox.clone();
             rt.spawn_blocking(move || crate::sandbox::reap_orphans(&cfg));
         }
+        let kept_tools = settings.general.new_chat_tools.clone();
         let mut app = Self {
             rt,
             http,
@@ -498,6 +533,7 @@ impl ChatApp {
             tray_notified: false,
             errors: HashMap::new(),
             holds: HashMap::new(),
+            run_counter: 0,
             editing: None,
             user_name: user_first_name(),
             always_allow: HashMap::new(),
@@ -540,7 +576,9 @@ impl ChatApp {
             mic_devices: None,
             settings_opened: None,
             schedule_edit: None,
-            draft_tool_overrides: ToolOverrides::default(),
+            // With no chat open (the home screen at launch), the menu shows the switches
+            // kept for new chats.
+            draft_tool_overrides: kept_tools,
             draft_model_options: Default::default(),
             draft_permissions: None,
             update: None,
@@ -661,7 +699,9 @@ impl ChatApp {
                 id
             }
         };
-        let draft = std::mem::take(&mut self.draft_tool_overrides);
+        // The next draft starts again from the switches kept for new chats.
+        let kept = self.settings.general.new_chat_tools.clone();
+        let draft = std::mem::replace(&mut self.draft_tool_overrides, kept);
         if !draft.is_empty()
             && let Some(c) = self.conv_mut(id)
         {
@@ -677,6 +717,13 @@ impl ChatApp {
             && let Some(c) = self.conv_mut(id)
         {
             c.model_options = options;
+        }
+        // The tool switches flipped last carry over; any the chat has itself stay.
+        let carried = self.settings.general.new_chat_tools.clone();
+        if !carried.is_empty()
+            && let Some(c) = self.conv_mut(id)
+        {
+            c.tool_overrides = std::mem::take(&mut c.tool_overrides).with_carried(&carried);
         }
         id
     }
@@ -811,6 +858,14 @@ impl ChatApp {
     }
 
     fn set_tool_override(&mut self, key: String, on: bool, default: bool) {
+        // A tool switch is remembered for new chats too.
+        if ToolOverrides::is_tool_key(&key) {
+            self.settings
+                .general
+                .new_chat_tools
+                .set(key.clone(), on, default);
+            self.save_settings();
+        }
         match self.current.and_then(|id| self.conv_mut(id)) {
             Some(conv) => {
                 conv.tool_overrides.set(key, on, default);
@@ -823,6 +878,11 @@ impl ChatApp {
     }
 
     fn reset_tool_overrides(&mut self) {
+        // New chats go back to the defaults as well.
+        if !self.settings.general.new_chat_tools.is_empty() {
+            self.settings.general.new_chat_tools = ToolOverrides::default();
+            self.save_settings();
+        }
         match self.current.and_then(|id| self.conv_mut(id)) {
             Some(conv) => {
                 conv.tool_overrides = ToolOverrides::default();
@@ -1100,11 +1160,50 @@ impl ChatApp {
                                 v.status == crate::mcp::manager::ServerStatus::Connected
                             });
                             let mut on = sel.server_on(id);
-                            let resp = ui.checkbox(&mut on, RichText::new(name).strong());
-                            if resp.changed() {
-                                changes.push((ToolOverrides::server_key(id), on, true));
-                            }
+                            // A server's tools are folded under it until opened.
+                            let open_id = ui.make_persistent_id(("tools-open", id));
+                            let mut open =
+                                ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                            let tools = view
+                                .filter(|_| connected)
+                                .map_or(&[][..], |v| v.tools.as_slice());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if tools.is_empty() {
+                                    // Keeps the names lined up with the servers that fold.
+                                    ui.add_space(ui.spacing().interact_size.y);
+                                } else {
+                                    let arrow = if open {
+                                        icon::CARET_DOWN
+                                    } else {
+                                        icon::CARET_RIGHT
+                                    };
+                                    if ui
+                                        .add(egui::Button::new(arrow).frame(false))
+                                        .on_hover_text(if open {
+                                            "Hide this server's tools"
+                                        } else {
+                                            "Show this server's tools"
+                                        })
+                                        .clicked()
+                                    {
+                                        open = !open;
+                                        ui.data_mut(|d| d.insert_temp(open_id, open));
+                                    }
+                                }
+                                let resp = ui.checkbox(&mut on, RichText::new(name).strong());
+                                if resp.changed() {
+                                    changes.push((ToolOverrides::server_key(id), on, true));
+                                }
+                                if !tools.is_empty() {
+                                    let tools_on =
+                                        tools.iter().filter(|t| sel.tool_on(id, &t.name)).count();
+                                    ui.weak(format!("{tools_on}/{}", tools.len()));
+                                }
+                            });
                             match view {
+                                // Folded: the count beside the name says how many are on.
+                                Some(v) if connected && !v.tools.is_empty() && !open => {}
                                 Some(v) if connected && !v.tools.is_empty() => {
                                     ui.indent(("tools", id), |ui| {
                                         ui.add_enabled_ui(on, |ui| {
@@ -1196,6 +1295,16 @@ impl ChatApp {
         self.errors.remove(&id);
         self.unread.remove(&id);
         self.always_allow.remove(&id);
+        self.instructions.remove(&id);
+        self.holds.remove(&id);
+        self.remote_seen.remove(&id);
+        self.remote_sent.remove(&id);
+        if self.editing.is_some_and(|(c, _)| c == id) {
+            self.editing = None;
+        }
+        if self.artifact.as_ref().is_some_and(|v| v.conv == id) {
+            self.artifact = None;
+        }
         if self.current == Some(id) {
             self.current = self.conversations.first().map(|c| c.id);
         }
@@ -1217,9 +1326,11 @@ impl ChatApp {
         if self.busy(id) {
             return;
         }
+        let typed = text.clone();
         let text = self.expand_command(id, text);
-        // `/name` for a skill (not a command) asks the model to load it.
-        let text = if text.starts_with('/') {
+        // `/name` for a skill (not a command) asks the model to load it. Only text as typed
+        // counts: an expanded command's prompt is sent as it is.
+        let text = if text == typed && text.starts_with('/') {
             let workspace = self.current_workspace();
             let skills = self
                 .skill_cache
@@ -1230,7 +1341,10 @@ impl ChatApp {
             text
         };
         let attachments = std::mem::take(&mut self.pending_attachments);
-        match self.send_message(id, text, attachments, ctx) {
+        // Only a message from the message box replaces the prompt being edited: approving
+        // a plan or a review meanwhile adds its own message at the end.
+        let edit_at = self.editing.take_if(|(c, _)| *c == id).map(|(_, at)| at);
+        match self.send_message_with(id, text, attachments, ctx, false, edit_at) {
             Ok(()) => self.input.clear(),
             Err(e) => self.notice = Some(e),
         }
@@ -1268,11 +1382,11 @@ impl ChatApp {
         attachments: Vec<Attachment>,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        self.send_message_with(id, text, attachments, ctx, false)
+        self.send_message_with(id, text, attachments, ctx, false, None)
     }
 
     /// `send_message`; with `review` the reply comes from the review provider (Settings →
-    /// Context & files) instead of the chat's.
+    /// Context & files) instead of the chat's. `edit_at` is the prompt this message replaces.
     fn send_message_with(
         &mut self,
         id: Uuid,
@@ -1280,11 +1394,11 @@ impl ChatApp {
         attachments: Vec<Attachment>,
         ctx: &egui::Context,
         review: bool,
+        edit_at: Option<usize>,
     ) -> Result<(), String> {
         if self.busy(id) {
             return Err("A reply is still running in this chat".into());
         }
-        let edit_at = self.editing.take_if(|(c, _)| *c == id).map(|(_, at)| at);
         let settings = self.branch_settings(id);
         let conv = self.conv_mut(id).ok_or("Chat not found")?;
         // An edited prompt replaces the turn from it on: that turn stays as a version.
@@ -1362,7 +1476,14 @@ impl ChatApp {
         let review = &self.settings.general.review;
         let text = crate::review::message_text(&review.prompt, review.strictness, &diff);
         let ctx = self.repaint_ctx.clone();
-        self.send_message_with(id, text, vec![crate::review::attachment(&diff)], &ctx, true)
+        self.send_message_with(
+            id,
+            text,
+            vec![crate::review::attachment(&diff)],
+            &ctx,
+            true,
+            None,
+        )
     }
 
     /// Whether a chat has a reply running, or waiting for a free slot.
@@ -1430,6 +1551,9 @@ impl ChatApp {
             compact_only,
             provider_id.as_deref(),
         );
+        self.run_counter += 1;
+        let number = self.run_counter;
+        req.run = number;
         req.memory = crate::memory::for_request(
             &self.memory,
             &req.selection,
@@ -1468,6 +1592,7 @@ impl ChatApp {
             id,
             Run {
                 task,
+                number,
                 approvals: Vec::new(),
                 running_tool: None,
                 live_stats: None,
@@ -1717,16 +1842,33 @@ impl ChatApp {
             .map(|(id, _)| *id)
             .collect();
         for id in stuck {
-            self.runs.remove(&id);
-            if let Some(hold) = self.holds.remove(&id)
-                && let Some(conv) = self.conv_mut(id)
-            {
-                branches::settle(&mut conv.messages, hold);
+            let compact_only = self.runs.remove(&id).is_some_and(|r| r.compact_only);
+            let hold = self.holds.remove(&id);
+            if let Some(conv) = self.conv_mut(id) {
+                // The reply died, so what it made stays (as after `Done`) and a regeneration
+                // keeps its new tail; only an empty placeholder goes.
+                if let Some(hold) = hold {
+                    branches::settle(&mut conv.messages, hold);
+                }
+                // (One that holds a turn's other versions stays, or they would go with it.)
+                if conv.messages.last().is_some_and(|m| {
+                    m.role == Role::Assistant
+                        && m.content.is_empty()
+                        && m.tool_calls.is_empty()
+                        && m.alternatives.is_empty()
+                }) {
+                    conv.messages.pop();
+                    conv.updated_at = chrono::Utc::now();
+                    conv.save();
+                }
             }
             self.errors
                 .entry(id)
                 .or_insert_with(|| "The reply stopped unexpectedly.".into());
-            self.reply_ended(id, Outcome::Failed);
+            // A compaction isn't a reply, so it doesn't notify as a failed one.
+            if !compact_only {
+                self.reply_ended(id, Outcome::Failed);
+            }
         }
     }
 
@@ -1936,7 +2078,10 @@ impl ChatApp {
         if new.general.html_preview != self.settings.general.html_preview {
             self.html_preview.reset();
         }
+        // The switches carried to new chats are the tools menu's, not the Settings window's.
+        let carried = std::mem::take(&mut self.settings.general.new_chat_tools);
         self.settings = new;
+        self.settings.general.new_chat_tools = carried;
         self.settings.normalize();
         self.slash_cache.clear();
         self.skill_cache.clear();
@@ -4058,6 +4203,36 @@ impl ChatApp {
         }
         self.input_focused_once = true;
         let has_focus = ui.memory(|m| m.has_focus(id));
+        // An image pasted while the message box (or nothing else) has the keyboard is attached;
+        // egui only reports one when the clipboard holds no text.
+        if self.settings_ui.is_none() && (has_focus || ui.memory(|m| m.focused().is_none())) {
+            let images: Vec<Arc<egui::ColorImage>> = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::PasteImage(image) => Some(image.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            if !images.is_empty() {
+                let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M.%S");
+                let count = images.len();
+                let files = images
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, image)| {
+                        let name = if count == 1 {
+                            format!("Pasted image {stamp}.png")
+                        } else {
+                            format!("Pasted image {stamp} ({}).png", n + 1)
+                        };
+                        FileSource::Pasted(image, name)
+                    })
+                    .collect();
+                self.read_files(files);
+            }
+        }
         let mut send = false;
         if has_focus && !running {
             send = ui.input_mut(|i| {
@@ -4253,7 +4428,7 @@ impl ChatApp {
                         .id_salt("input-scroll")
                         .max_height(240.0)
                         .show(ui, |ui| {
-                            ui.add(
+                            let edit = ui.add(
                                 egui::TextEdit::multiline(&mut self.input)
                                     .id(id)
                                     .font(egui::FontId::proportional(theme::size::READING))
@@ -4269,6 +4444,22 @@ impl ChatApp {
                                     .lock_focus(false)
                                     .desired_width(f32::INFINITY),
                             );
+                            // Right-click: the clipboard commands, which go through the same
+                            // path as their shortcuts (so Paste attaches a copied image too).
+                            edit.context_menu(|ui| {
+                                let commands = [
+                                    ("Cut", egui::ViewportCommand::RequestCut),
+                                    ("Copy", egui::ViewportCommand::RequestCopy),
+                                    ("Paste", egui::ViewportCommand::RequestPaste),
+                                ];
+                                for (label, command) in commands {
+                                    if ui.button(label).clicked() {
+                                        ui.memory_mut(|m| m.request_focus(id));
+                                        ui.ctx().send_viewport_cmd(command);
+                                        ui.close();
+                                    }
+                                }
+                            });
                         });
                     ui.horizontal(|ui| {
                         // Icon buttons without outlines, like the rest of the box.
@@ -4578,9 +4769,25 @@ impl ChatApp {
                         // still shows it.
                         let text = c.messages[idx].content.clone();
                         let attachments = c.messages[idx].attachments.clone();
+                        // Don't throw away what is already in the message box.
+                        if !self.input.trim().is_empty() && self.editing.is_none() {
+                            self.notice =
+                                Some("Empty the message box before editing a message.".into());
+                            continue;
+                        }
                         self.editing = Some((conv, idx));
                         self.input = text;
-                        self.pending_attachments = attachments;
+                        // Files waiting in the box stay; the message's own follow them.
+                        for a in attachments {
+                            let tag = a.content_tag();
+                            if !self
+                                .pending_attachments
+                                .iter()
+                                .any(|p| p.name == a.name && p.content_tag() == tag)
+                            {
+                                self.pending_attachments.push(a);
+                            }
+                        }
                         self.errors.remove(&conv);
                         ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                     }
@@ -5098,5 +5305,25 @@ mod enter_key_tests {
     fn shift_enter_inserts_newline_and_enter_sends() {
         assert_eq!(run(true), (false, "hi\n".to_owned()));
         assert_eq!(run(false), (true, "hi".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    #[test]
+    fn a_pasted_image_becomes_a_png_with_its_colours() {
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([2, 1], &[255, 0, 0, 255, 0, 0, 255, 128]);
+        let png = png_of(&image).unwrap();
+        assert_eq!(crate::attach::image_mime(&png), Some("image/png"));
+        let back = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(back.dimensions(), (2, 1));
+        assert_eq!(back.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        // Half-transparent blue keeps its alpha (premultiplied rounding aside).
+        let [r, g, b, a] = back.get_pixel(1, 0).0;
+        assert_eq!((r, g, a), (0, 0, 128));
+        assert!(b >= 250, "{b}");
     }
 }

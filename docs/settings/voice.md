@@ -26,7 +26,7 @@ Dictating into the message box and reading replies aloud. How they work is on th
 | Setting | Default | What it does |
 |---|---|---|
 | **Read replies aloud** | Off | Shows the speaker button under replies and enables ⌘/Ctrl + Shift + S |
-| **Speech engine** | System voice | **System voice** uses the computer's own voice and sends nothing anywhere. **Speech endpoint** sends the text to a text-to-speech endpoint |
+| **Spoken by** | System voice | **System voice** uses the computer's own voice and sends nothing anywhere. **Speech endpoint** sends the text to a text-to-speech endpoint |
 | **Provider** | Active provider | Speech endpoint only: the provider whose base URL, API key and headers the call uses |
 | **Model** | `tts-1` | Speech endpoint only: the speech model |
 | **Voice** | `alloy` | Speech endpoint only: the voice the server speaks with |

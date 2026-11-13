@@ -193,9 +193,10 @@ pub fn take_fallback_notice() -> bool {
     NOTICE_DUE.swap(false, Ordering::Relaxed)
 }
 
-/// Whether a link may load in the preview itself: the page and its in-page anchors.
+/// Whether a link may load in the preview itself: the page (loaded as `about:blank`) and its
+/// in-page anchors. Not other `data:` documents, which would start without the page's policy.
 pub fn loads_in_view(url: &str) -> bool {
-    url.starts_with("about:") || url.starts_with("data:")
+    webview::loads_in_view(url, None)
 }
 
 /// Whether a link opens in the browser instead (web links only, as on the other platforms).
@@ -288,6 +289,8 @@ thread_local! {
     // The GTK objects. Only the preview thread touches them, and so do the callbacks.
     static WINDOW: Cell<*mut c_void> = const { Cell::new(null_mut()) };
     static VIEW: Cell<*mut c_void> = const { Cell::new(null_mut()) };
+    // Browser opens the current page may cause; read by the policy callback, reset per load.
+    static OPENS: RefCell<webview::OpenLimit> = RefCell::new(webview::OpenLimit::default());
     static EVENTS: RefCell<Option<Sender<Event>>> = const { RefCell::new(None) };
 }
 
@@ -517,6 +520,7 @@ fn load_page(api: &Api, html: &str, scripts: bool) {
     if view.is_null() {
         return;
     }
+    OPENS.with(|o| o.borrow_mut().reset());
     let html = CString::new(html.replace('\0', "")).unwrap_or_default();
     // SAFETY: `view` is the live web view from `create_window`. Its settings object belongs to
     // the view, and the page is a NUL-terminated copy that lives for the call.
@@ -560,7 +564,7 @@ unsafe extern "C" fn on_decide_policy(
                 (api.decision_use)(decision);
             } else {
                 (api.decision_ignore)(decision);
-                if opens_in_browser(&url) {
+                if opens_in_browser(&url) && OPENS.with(|o| o.borrow_mut().allow(Instant::now())) {
                     let _ = open::that_detached(&url);
                 }
             }
@@ -649,7 +653,9 @@ mod tests {
     fn links_load_in_the_view_or_open_in_the_browser() {
         assert!(loads_in_view("about:blank"));
         assert!(loads_in_view("about:blank#top"));
-        assert!(loads_in_view("data:text/plain,hi"));
+        assert!(!loads_in_view("data:text/plain,hi"));
+        assert!(!loads_in_view("data:text/html,<script>alert(1)</script>"));
+        assert!(!loads_in_view("about:config"));
         assert!(!loads_in_view("https://example.com/"));
         assert!(!loads_in_view("file:///etc/passwd"));
         assert!(opens_in_browser("https://example.com/"));

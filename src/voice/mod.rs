@@ -320,6 +320,8 @@ pub struct VoiceState {
     pub recording: Option<Recording>,
     pub transcribing: bool,
     pub speaking: Option<Speaking>,
+    /// How many readings were started (see `Speaking::number`).
+    readings: u64,
 }
 
 pub struct Recording {
@@ -329,6 +331,9 @@ pub struct Recording {
 
 pub struct Speaking {
     pub key: SpeechKey,
+    /// Which reading this is: a reading that was replaced reports its end with its own
+    /// number, which is then not this one's.
+    pub number: u64,
     stop: Arc<AtomicBool>,
 }
 
@@ -385,15 +390,22 @@ impl VoiceState {
     ) {
         self.stop_speaking();
         let stop = Arc::new(AtomicBool::new(false));
+        self.readings += 1;
+        let number = self.readings;
         self.speaking = Some(Speaking {
             key,
+            number,
             stop: stop.clone(),
         });
         let out = &settings.general.voice.output;
         let reporter = Reporter::new(
             "Reading aloud stopped unexpectedly",
             move |result: Result<(), String>| {
-                notify(AppEvent::SpeechEnded { key, result });
+                notify(AppEvent::SpeechEnded {
+                    key,
+                    number,
+                    result,
+                });
             },
         );
         match out.engine {

@@ -7,7 +7,7 @@ nav_order: 5
 # Updates
 
 CleanRSTAI checks GitHub for a newer release at startup (you can turn this off) and when you
-click **Check for updates now** in [Settings → General](../settings/general.html#updates) or
+click **Check now** in [Settings → General](../settings/general.html#updates) or
 choose **Check for updates** in the command palette.
 
 ## Installing an update

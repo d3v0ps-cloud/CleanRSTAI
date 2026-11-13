@@ -581,8 +581,7 @@ pub fn save_as_menu(
     settings: SaveAsSettings,
     actions: &mut Vec<Action>,
 ) {
-    let formats = content.formats(&settings);
-    if formats.is_empty() {
+    if !offers_formats(ui, &content, settings) {
         return;
     }
     let pencil = theme::palette(ui.visuals().dark_mode).pencil;
@@ -595,7 +594,8 @@ pub fn save_as_menu(
     .frame_when_inactive(false);
     egui::containers::menu::MenuButton::from_button(button)
         .ui(ui, |ui| {
-            for format in formats {
+            // Finding tables parses the Markdown, so it waits for the menu to open.
+            for format in content.formats(&settings) {
                 if ui.button(format.label()).clicked() {
                     actions.push(Action::SaveAs {
                         conv,
@@ -609,6 +609,28 @@ pub fn save_as_menu(
         })
         .0
         .on_hover_text("Save as…");
+}
+
+/// Whether `content` has any format to save as, without parsing the Markdown every frame:
+/// only when Excel is the one format on does it depend on a table, and then the answer is
+/// kept per text.
+fn offers_formats(ui: &egui::Ui, content: &Content, settings: SaveAsSettings) -> bool {
+    if settings.docx || settings.pdf {
+        return true;
+    }
+    if !settings.xlsx {
+        return false;
+    }
+    let Content::Markdown(md) = content else {
+        return !content.formats(&settings).is_empty();
+    };
+    let key = egui::Id::unique(("save-as-tables", md));
+    if let Some(tables) = ui.data(|d| d.get_temp::<bool>(key)) {
+        return tables;
+    }
+    let tables = crate::save_as::has_tables(md);
+    ui.data_mut(|d| d.insert_temp(key, tables));
+    tables
 }
 
 /// What the provider's own web search cited for a reply: a small expander with the links
@@ -725,10 +747,13 @@ fn tool_card(
     let pending_approval = pending.is_some();
     let running = result.is_none()
         && run.is_some_and(|r| r.running_tool.as_deref() == Some(call.id.as_str()));
-    let pretty_args = serde_json::from_str::<serde_json::Value>(&call.arguments)
-        .ok()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok())
-        .unwrap_or_else(|| call.arguments.clone());
+    // Only made when the arguments are shown, not every frame for every collapsed card.
+    let pretty_args = || {
+        serde_json::from_str::<serde_json::Value>(&call.arguments)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .unwrap_or_else(|| call.arguments.clone())
+    };
 
     let p = theme::palette(dark);
     let (status, color) = match result {
@@ -798,7 +823,7 @@ fn tool_card(
                         diff_block(ui, &e.diff);
                     }
                     ui.label(RichText::new("Arguments").small().color(p.pencil));
-                    code_block(ui, &pretty_args);
+                    code_block(ui, &pretty_args());
                     if let Some(r) = result {
                         ui.label(
                             RichText::new(if r.is_error { "Error" } else { "Result" })
@@ -856,7 +881,7 @@ fn tool_card(
                         );
                         diff_block(ui, diff);
                     }
-                    None if !state_is_open(ui, id) => code_block(ui, &pretty_args),
+                    None if !state_is_open(ui, id) => code_block(ui, &pretty_args()),
                     None => {}
                 }
                 approval_prompt(ui, conv, pending, actions);

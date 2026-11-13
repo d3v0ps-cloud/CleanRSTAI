@@ -49,7 +49,21 @@ impl ChatApp {
                         }
                     }
                 }
-                AppEvent::SpeechEnded { key, result } => {
+                AppEvent::SpeechEnded {
+                    key,
+                    number,
+                    result,
+                } => {
+                    // The end of a reading that another one has replaced says nothing
+                    // about the one playing now.
+                    if self
+                        .voice
+                        .speaking
+                        .as_ref()
+                        .is_some_and(|s| s.number != number)
+                    {
+                        continue;
+                    }
                     if self.voice.speaking_key() == Some(key) {
                         self.voice.speaking = None;
                     }
@@ -239,7 +253,11 @@ impl ChatApp {
                         }
                     }
                 }
-                AppEvent::Chat { conv_id, event } => self.handle_chat_event(conv_id, event),
+                AppEvent::Chat {
+                    conv_id,
+                    run,
+                    event,
+                } => self.handle_chat_event(conv_id, run, event),
                 AppEvent::SavedAs(result) => {
                     self.notice = Some(match result {
                         Ok(msg) | Err(msg) => msg,
@@ -249,9 +267,10 @@ impl ChatApp {
         }
     }
 
-    pub(super) fn handle_chat_event(&mut self, id: Uuid, event: ChatEvent) {
-        // Late events from a stopped run are ignored (except approvals, which get dropped → denied).
-        if !self.runs.contains_key(&id) {
+    pub(super) fn handle_chat_event(&mut self, id: Uuid, run: u64, event: ChatEvent) {
+        // Late events from a stopped run are ignored (except approvals, which get dropped →
+        // denied), also when the chat's next run has started meanwhile.
+        if self.runs.get(&id).is_none_or(|r| r.number != run) {
             return;
         }
         match event {
@@ -321,6 +340,13 @@ impl ChatApp {
                 self.notice = Some(text);
                 return;
             }
+            ChatEvent::Warning(text) => {
+                if let Some(run) = self.runs.get_mut(&id) {
+                    run.compacting = false;
+                }
+                self.notice = Some(text);
+                return;
+            }
             _ => {}
         }
         let done = matches!(event, ChatEvent::Done);
@@ -334,6 +360,7 @@ impl ChatApp {
         let keep_turns = self.settings.general.file_edits.keep_turns;
         // Disjoint fields, so the held tails can change while the chat is borrowed.
         let holds = &mut self.holds;
+        let editing = &mut self.editing;
         let Some(conv) = self.conversations.iter_mut().find(|c| c.id == id) else {
             return;
         };
@@ -393,6 +420,13 @@ impl ChatApp {
                 // A held tail moves up with the messages after the marker.
                 if let Some(hold) = holds.get_mut(&id) {
                     branches::marker_inserted(hold, at);
+                }
+                // So does a prompt that is being edited.
+                if let Some((chat, i)) = editing
+                    && *chat == id
+                    && at <= *i
+                {
+                    *i += 1;
                 }
                 conv.save();
             }

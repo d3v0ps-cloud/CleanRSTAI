@@ -66,6 +66,7 @@ fn main() -> eframe::Result {
         _ => {}
     }
     update::remove_leftovers();
+    config::sweep_temp_files(&config::private_dirs());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

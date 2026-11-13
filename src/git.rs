@@ -4,7 +4,7 @@
 //! are switched off here. The diff calls also pass `--no-ext-diff --no-textconv`, and the
 //! status and diff calls pass `--ignore-submodules=all` (see the call sites).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -32,7 +32,99 @@ pub fn command(dir: &Path) -> Command {
     .current_dir(dir)
     .stdin(Stdio::null())
     .kill_on_drop(true);
+    // The repository is the one around `dir` and its files are the ones there, whatever
+    // `core.worktree` in its config says.
+    if let Some(repo) = Repository::around(dir) {
+        cmd.env("GIT_WORK_TREE", &repo.top);
+        if repo.git.is_dir() {
+            cmd.env("GIT_DIR", &repo.git);
+        }
+    }
     cmd
+}
+
+/// `path` without Windows' `\\?\` prefix (a workspace's folder has it, being canonical), in
+/// the form git reads: `\\?\C:\x` as `C:\x`, `\\?\UNC\host\share` as `\\host\share`.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => match rest.strip_prefix(r"UNC\") {
+            Some(share) => PathBuf::from(format!(r"\\{share}")),
+            None => PathBuf::from(rest),
+        },
+        None => path.to_path_buf(),
+    }
+}
+
+/// The repository a folder is in: the nearest folder at or above it that has a `.git`.
+struct Repository {
+    top: PathBuf,
+    /// `top/.git`: a folder, or in a linked worktree or submodule a file that names one.
+    git: PathBuf,
+}
+
+impl Repository {
+    fn around(dir: &Path) -> Option<Self> {
+        // Not `canonicalize`: on Windows that gives a `\\?\` path, which git can't take.
+        let dir = plain_path(&std::path::absolute(dir).ok()?);
+        dir.ancestors().find_map(|top| {
+            let git = top.join(".git");
+            git.symlink_metadata().is_ok().then(|| Repository {
+                top: top.to_path_buf(),
+                git,
+            })
+        })
+    }
+
+    /// A `.git` file is how git links a worktree or a submodule to its repository, or a
+    /// repository to a git folder kept elsewhere. Its target then says so itself: a linked
+    /// worktree's has a `commondir` file, and the other two name this folder as their
+    /// `core.worktree`. Any other target would have the git tools read a repository the
+    /// workspace merely points at.
+    fn check(&self) -> Result<(), String> {
+        const REFUSED: &str = "The workspace's .git points at another repository, so the git \
+                               tools won't run";
+        let Ok(meta) = self.git.symlink_metadata() else {
+            return Ok(());
+        };
+        if meta.is_dir() {
+            return Ok(());
+        }
+        if meta.file_type().is_symlink() {
+            return Err(REFUSED.to_owned());
+        }
+        let text = std::fs::read_to_string(&self.git).map_err(|_| REFUSED.to_owned())?;
+        let target = text
+            .trim()
+            .strip_prefix("gitdir:")
+            .map(str::trim)
+            .ok_or_else(|| REFUSED.to_owned())?;
+        let target = self.top.join(target);
+        if target.join("commondir").is_file() || self.is_worktree_of(&target) {
+            Ok(())
+        } else {
+            Err(REFUSED.to_owned())
+        }
+    }
+
+    /// Whether the git folder `target` has this folder as its `core.worktree` (a submodule,
+    /// or `git init --separate-git-dir`).
+    fn is_worktree_of(&self, target: &Path) -> bool {
+        let Ok(config) = std::fs::read_to_string(target.join("config")) else {
+            return false;
+        };
+        let Ok(top) = self.top.canonicalize() else {
+            return false;
+        };
+        config
+            .lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .filter(|(key, _)| key.trim().eq_ignore_ascii_case("worktree"))
+            .any(|(_, value)| {
+                let value = value.trim().trim_matches('"');
+                target.join(value).canonicalize().is_ok_and(|w| w == top)
+            })
+    }
 }
 
 /// [`command`], plus the overrides that stop a repository's filter drivers from running.
@@ -46,6 +138,9 @@ pub fn command(dir: &Path) -> Command {
 /// Reading the config runs nothing. If the list can't be read, or a name can't be passed as
 /// `-c` safely, this returns an error rather than a command without the overrides.
 pub async fn safe_command(dir: &Path) -> Result<Command, String> {
+    if let Some(repo) = Repository::around(dir) {
+        repo.check()?;
+    }
     let keys = filter_keys(dir).await?;
     let mut cmd = command(dir);
     for key in keys {
@@ -277,5 +372,84 @@ mod tests {
         assert!(pair("core.attributesFile", "/dev/null"), "{args:?}");
         // The base overrides are still there.
         assert!(pair("core.fsmonitor", "false"), "{args:?}");
+    }
+
+    #[test]
+    fn a_windows_long_path_prefix_is_taken_off_for_git() {
+        assert_eq!(plain_path(Path::new(r"\\?\C:\a\b")), Path::new(r"C:\a\b"));
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\host\share\a")),
+            Path::new(r"\\host\share\a")
+        );
+        assert_eq!(plain_path(Path::new("/home/a")), Path::new("/home/a"));
+    }
+
+    #[tokio::test]
+    async fn the_repository_cannot_point_the_tools_somewhere_else() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("cleanrstai-git-{}", uuid::Uuid::new_v4()));
+        let (repo, other) = (base.join("repo"), base.join("other"));
+        for dir in [&repo, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+            test_support::plain_git(dir, &["init", "-q"]);
+        }
+        // Canonical, as a workspace's folder is (on Windows that is a `\\?\` path).
+        let repo = repo.canonicalize().unwrap();
+        std::fs::write(other.join("secret.txt"), "secret").unwrap();
+        std::fs::write(repo.join("mine.txt"), "mine").unwrap();
+        // `core.worktree` would have status list the other folder's files.
+        test_support::plain_git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
+        let out = safe_command(&repo)
+            .await
+            .unwrap()
+            .args(["status", "--short"])
+            .output()
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(text.contains("mine.txt"), "{text}");
+        assert!(!text.contains("secret.txt"), "{text}");
+
+        // A `.git` file that names another repository is refused; a linked worktree's isn't.
+        let pointer = base.join("pointer");
+        std::fs::create_dir_all(&pointer).unwrap();
+        std::fs::write(
+            pointer.join(".git"),
+            format!("gitdir: {}\n", other.join(".git").display()),
+        )
+        .unwrap();
+        assert!(safe_command(&pointer).await.is_err());
+        // A linked worktree's git folder has a `commondir`, also under a bare repository.
+        let linked = base.join("bare.git/worktrees/w");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(linked.join("commondir"), "../..\n").unwrap();
+        std::fs::write(
+            pointer.join(".git"),
+            format!("gitdir: {}\n", linked.display()),
+        )
+        .unwrap();
+        assert!(Repository::around(&pointer).unwrap().check().is_ok());
+        // A git folder kept elsewhere names the folder as its work tree.
+        let apart = base.join("apart.git");
+        std::fs::create_dir_all(&apart).unwrap();
+        std::fs::write(
+            apart.join("config"),
+            format!("[core]\n\tworktree = {}\n", pointer.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            pointer.join(".git"),
+            format!("gitdir: {}\n", apart.display()),
+        )
+        .unwrap();
+        assert!(Repository::around(&pointer).unwrap().check().is_ok());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

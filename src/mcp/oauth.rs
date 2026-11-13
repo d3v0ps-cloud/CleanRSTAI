@@ -81,6 +81,24 @@ fn canonical_resource(server_url: &str) -> String {
     u.trim_end_matches('/').to_owned()
 }
 
+/// True when the `resource` named in protected-resource metadata is this MCP server
+/// (RFC 9728 §3.3): the same scheme, host and port, and the server's own path or a parent of
+/// it. Anything else could make the user sign in for, and hand over a token to, another API.
+fn resource_matches(resource: &str, server_url: &str) -> bool {
+    let (Ok(resource), Ok(server)) = (
+        reqwest::Url::parse(resource),
+        reqwest::Url::parse(server_url),
+    ) else {
+        return false;
+    };
+    if resource.origin() != server.origin() || !resource.origin().is_tuple() {
+        return false;
+    }
+    let parent = resource.path().trim_end_matches('/');
+    let path = server.path().trim_end_matches('/');
+    parent.is_empty() || path == parent || path.starts_with(&format!("{parent}/"))
+}
+
 /// `resource_metadata="…"` from a `WWW-Authenticate: Bearer …` header.
 fn resource_metadata_url(www_authenticate: &str) -> Option<String> {
     let i = www_authenticate.find("resource_metadata=")? + "resource_metadata=".len();
@@ -133,11 +151,19 @@ async fn discover(
     let mut resource = canonical_resource(server_url);
     let mut auth_server = None;
     let mut scopes = Vec::new();
+    // Metadata for another resource is passed over; when that is all there is, sign-in
+    // fails rather than fall back to a guess.
+    let mut other_resource = None;
     for url in &candidates {
         if let Ok(v) = get_json(http, url).await {
             if let Some(r) = v.get("resource").and_then(Value::as_str) {
+                if !resource_matches(r, server_url) {
+                    other_resource.get_or_insert_with(|| r.to_owned());
+                    continue;
+                }
                 resource = r.to_owned();
             }
+            other_resource = None;
             scopes = string_list(&v, "scopes_supported");
             auth_server = v
                 .get("authorization_servers")
@@ -147,6 +173,9 @@ async fn discover(
                 .map(str::to_owned);
             break;
         }
+    }
+    if let Some(r) = other_resource {
+        bail!("the server's sign-in metadata is for another resource ({r})");
     }
     // Older servers act as their own authorization server.
     let issuer = auth_server.unwrap_or_else(|| server.origin().ascii_serialization());
@@ -583,6 +612,53 @@ mod tests {
             canonical_resource("https://Mcp.Example.com/mcp/?x=1#f"),
             "https://mcp.example.com/mcp"
         );
+    }
+
+    #[test]
+    fn resource_must_be_the_server_or_a_parent_of_it() {
+        let server = "https://mcp.example.com/tenant/mcp";
+        for ok in [
+            "https://mcp.example.com/tenant/mcp",
+            "https://mcp.example.com/tenant/mcp/",
+            "https://mcp.example.com/tenant",
+            "https://mcp.example.com",
+            "https://MCP.example.com:443/",
+        ] {
+            assert!(resource_matches(ok, server), "{ok}");
+        }
+        for bad in [
+            "https://api.other.com/mcp",
+            "https://evil.mcp.example.com/tenant/mcp",
+            "http://mcp.example.com/tenant/mcp",
+            "https://mcp.example.com:8443/tenant/mcp",
+            "https://mcp.example.com/tenant/mcp/deeper",
+            "https://mcp.example.com/ten",
+            "https://mcp.example.com/other",
+            "not a url",
+        ] {
+            assert!(!resource_matches(bad, server), "{bad}");
+        }
+    }
+
+    /// A server whose metadata names another API's resource gets no sign-in, so its
+    /// authorization server never sees a request for a token to that API.
+    #[tokio::test]
+    async fn metadata_for_another_resource_is_refused() {
+        use crate::testutil::{Response, serve};
+        let (base, _) = serve(|r| match r.path.as_str() {
+            "/.well-known/oauth-protected-resource/mcp"
+            | "/.well-known/oauth-protected-resource" => Response::json(serde_json::json!({
+                "resource": "https://api.victim.example/",
+                "authorization_servers": ["https://auth.victim.example"],
+            })),
+            _ => Response::status(404),
+        })
+        .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let err = discover(&http, &format!("{base}/mcp"), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("another resource"), "{err:#}");
     }
 
     #[test]

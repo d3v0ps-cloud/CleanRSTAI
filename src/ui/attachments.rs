@@ -8,33 +8,72 @@ use super::theme::icon;
 use super::widgets::code_block;
 use crate::attach::Attachment;
 
-/// Images kept before the cache is cleared, by count and by decoded bytes.
+/// Images kept before the least recently used are dropped, by count and by decoded bytes.
 const MAX_CACHED_IMAGES: usize = 256;
 const MAX_CACHED_BYTES: usize = 256 * 1024 * 1024;
 
-/// Decoded image bytes by URI, so base64 is decoded once rather than every frame. Cleared,
-/// together with egui's own copies, when it grows too large (like `DrawingCache`).
+/// Decoded image bytes by URI, so base64 is decoded once rather than every frame. When it grows
+/// too large the least recently used entries go, together with egui's own copies.
 #[derive(Default)]
 pub struct ImageCache {
-    images: HashMap<String, egui::load::Bytes>,
+    /// Bytes and the frame each was last used in.
+    images: HashMap<String, (egui::load::Bytes, u64)>,
     total: usize,
+}
+
+/// Which entries (uri, last-used frame, size) to drop so one more of `incoming` bytes fits:
+/// oldest first, never one used in `frame`. If only current ones remain, the budget is exceeded
+/// rather than thrashed.
+fn evict(
+    entries: &[(&str, u64, usize)],
+    frame: u64,
+    incoming: usize,
+    max_count: usize,
+    max_bytes: usize,
+) -> Vec<String> {
+    let mut count = entries.len();
+    let mut total: usize = entries.iter().map(|e| e.2).sum();
+    let mut old: Vec<_> = entries.iter().filter(|e| e.1 != frame).collect();
+    old.sort_by_key(|e| e.1);
+    let mut out = Vec::new();
+    for (uri, _, size) in old {
+        if count < max_count && total + incoming <= max_bytes {
+            break;
+        }
+        out.push((*uri).to_owned());
+        count -= 1;
+        total -= size;
+    }
+    out
 }
 
 impl ImageCache {
     fn get(&mut self, ctx: &egui::Context, uri: &str, a: &Attachment) -> egui::load::Bytes {
-        if let Some(b) = self.images.get(uri) {
+        let frame = ctx.cumulative_frame_nr();
+        if let Some((b, used)) = self.images.get_mut(uri) {
+            *used = frame;
             return b.clone();
         }
         let bytes: egui::load::Bytes = a.bytes().unwrap_or_default().into();
-        if self.images.len() >= MAX_CACHED_IMAGES || self.total + bytes.len() > MAX_CACHED_BYTES {
-            for uri in self.images.keys() {
-                ctx.forget_image(uri);
+        let entries: Vec<_> = self
+            .images
+            .iter()
+            .map(|(k, (b, used))| (k.as_str(), *used, b.len()))
+            .collect();
+        for gone in evict(
+            &entries,
+            frame,
+            bytes.len(),
+            MAX_CACHED_IMAGES,
+            MAX_CACHED_BYTES,
+        ) {
+            ctx.forget_image(&gone);
+            if let Some((b, _)) = self.images.remove(&gone) {
+                self.total -= b.len();
             }
-            self.images.clear();
-            self.total = 0;
         }
         self.total += bytes.len();
-        self.images.insert(uri.to_owned(), bytes.clone());
+        self.images.insert(uri.to_owned(), (bytes.clone(), frame));
         bytes
     }
 }
@@ -163,4 +202,29 @@ pub fn viewer(ctx: &egui::Context, image: &(String, egui::load::Bytes, String)) 
             });
         });
     open && !ctx.input(|i| i.key_pressed(egui::Key::Escape))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eviction_drops_the_least_recently_used_first() {
+        let e = [("a", 5, 10), ("b", 1, 10), ("c", 3, 10)];
+        // Room for a fourth by count: nothing goes.
+        assert!(evict(&e, 9, 10, 4, 1000).is_empty());
+        // Full by count: the oldest goes.
+        assert_eq!(evict(&e, 9, 10, 3, 1000), ["b"]);
+        // Full by bytes: enough go, oldest first.
+        assert_eq!(evict(&e, 9, 25, 10, 40), ["b", "c"]);
+    }
+
+    #[test]
+    fn eviction_spares_entries_used_this_frame() {
+        let e = [("a", 7, 10), ("b", 7, 10), ("c", 2, 10)];
+        assert_eq!(evict(&e, 7, 10, 3, 1000), ["c"]);
+        // Everything is current: go over the budget instead of thrashing.
+        let all = [("a", 7, 10), ("b", 7, 10)];
+        assert!(evict(&all, 7, 10, 2, 15).is_empty());
+    }
 }

@@ -294,13 +294,28 @@ pub fn externalize(
 }
 
 /// Fill blank secrets in `settings` from `store`. Returns accounts that couldn't be read.
+#[cfg(test)]
 pub fn internalize(
     settings: &mut Settings,
     store: &dyn SecretStore,
     accounts: &[String],
 ) -> Vec<String> {
+    let (mut failed, unreadable) = internalize_split(settings, store, accounts);
+    failed.extend(unreadable);
+    failed
+}
+
+/// [`internalize`], telling the accounts the keychain doesn't have (first) from those it
+/// couldn't be asked for (second: locked, or the prompt was refused). The second kind may
+/// still be there, so a save must not forget them.
+pub fn internalize_split(
+    settings: &mut Settings,
+    store: &dyn SecretStore,
+    accounts: &[String],
+) -> (Vec<String>, Vec<String>) {
     let wanted: BTreeSet<&str> = accounts.iter().map(String::as_str).collect();
     let mut failed = Vec::new();
+    let mut unreadable = Vec::new();
     for (account, value) in slots(settings) {
         if !value.is_empty() || !wanted.contains(account.as_str()) {
             continue;
@@ -310,11 +325,20 @@ pub fn internalize(
             Ok(None) => failed.push(account),
             Err(e) => {
                 log::warn!("reading {account} from keychain: {e}");
-                failed.push(account);
+                unreadable.push(account);
             }
         }
     }
-    failed
+    (failed, unreadable)
+}
+
+/// The accounts of `settings`' secret slots that are empty.
+pub fn empty_slots(settings: &mut Settings) -> Vec<String> {
+    slots(settings)
+        .into_iter()
+        .filter(|(_, value)| value.is_empty())
+        .map(|(account, _)| account)
+        .collect()
 }
 
 /// Delete accounts that were stored before but aren't any more (removed providers, keys…).
@@ -338,6 +362,8 @@ pub mod tests {
     pub struct MemoryStore {
         pub items: Mutex<HashMap<String, String>>,
         pub fail: bool,
+        /// Reads fail too, like a keychain that is locked.
+        pub locked: std::sync::atomic::AtomicBool,
         pub reads: AtomicUsize,
         pub writes: AtomicUsize,
     }
@@ -345,6 +371,9 @@ pub mod tests {
     impl SecretStore for MemoryStore {
         fn get(&self, a: &str) -> Result<Option<String>, String> {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.locked.load(Ordering::SeqCst) {
+                return Err("locked".into());
+            }
             Ok(self.items.locked().get(a).cloned())
         }
         fn set(&self, a: &str, s: &str) -> Result<(), String> {

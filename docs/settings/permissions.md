@@ -14,7 +14,8 @@ What runs without asking, how far one reply may go, and plan mode. Each chat pic
 
 ## Tool calls
 
-**Run MCP tools and subagents without asking for approval** (default off).
+**Run MCP tools and subagents without asking** (default off): each call otherwise asks for
+approval first, in chats in the Default mode.
 
 {: .warning }
 > This skips every approval, including web fetch and the workspace tools that write files and
@@ -28,13 +29,17 @@ can change its own mode in the tools menu or with ⌘K; chats that already exist
 
 How many times the model may call tools before it must answer: 1 to 200, default 20.
 
-## Reply limits
+## Token limit per reply
 
 Stop a reply once the requests it made used this many tokens in all (prompt and completion
-of every round, 0 to 100,000,000), or cost this much (in US dollars, 0 to 10,000, where the
-server reports or the app estimates a cost). Both default to 0, no limit. The check runs after
-each request, before the tools it asked for, so a reply over a limit ends with a message
-instead of calling more tools.
+of every round, 0 to 100,000,000). Default 0, no limit. The check runs after each request,
+before the tools it asked for, so a reply over a limit ends with a message instead of calling
+more tools.
+
+## Cost limit per reply
+
+The same, by what the requests cost (in US dollars, 0 to 10,000, where the server reports or
+the app estimates a cost). Default 0, no limit.
 
 ## Tool timeout
 

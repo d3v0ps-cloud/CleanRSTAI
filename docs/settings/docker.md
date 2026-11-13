@@ -42,7 +42,7 @@ container instead of on this computer. It is off by default. The other workspace
 - The `docker` command must work in a terminal. The app runs `docker` itself, so Docker
   contexts and the `DOCKER_HOST` variable apply.
 
-Use **Test** in the Status row to check. It reports the Docker version and whether the image is
+Use **Test** in the **Check** row to check. It reports the Docker version and whether the image is
 present.
 
 ## Settings
@@ -50,17 +50,17 @@ present.
 | Setting | Default | Description |
 |---|---|---|
 | **Run shell commands in a Docker container** | off | Turning it on or off applies to new commands. |
-| **Image** | Docker image | **Docker image** uses an image you name. **Custom Dockerfile** builds one from the text you write. See [Images](#images). |
-| **Image name** | `python:3.13-slim` | Shown for **Docker image**. Any image name and tag. An empty name is replaced by the default. |
-| **Get the image** | Pull when missing | Shown for **Docker image**. **Pull when missing**, **Pull every time the app starts**, or **Only use an image already on this computer**. |
-| **Dockerfile** | The small example | Shown for **Custom Dockerfile**. The Dockerfile text, with **Small example** and **Full example** buttons to load either example. See [Custom Dockerfile](#custom-dockerfile). |
-| **Network** | None (no network) | **None (no network)**, **Normal network (can reach this computer, your local network and the internet)** or **Only the hosts and ports below**. See [Custom network](#custom-network) and [Limits and hardening](#limits-and-hardening). |
-| **Allowed outbound** | none | With **Only the hosts and ports below**: the rules, each a host, a protocol and ports. See [Custom network](#custom-network). |
+| **Use** | A Docker image | **A Docker image** uses an image you name. **A custom Dockerfile** builds one from the text you write. See [Images](#images). |
+| **Image name** | `python:3.13-slim` | Shown for **A Docker image**. Any image name and tag. An empty name is replaced by the default. |
+| **Get the image** | Pull when missing | Shown for **A Docker image**. **Pull when missing**, **Pull every time the app starts**, or **Only use an image already on this computer**. |
+| **Dockerfile** | The small example | Shown for **A custom Dockerfile**. The Dockerfile text, with **Small example** and **Full example** buttons to load either example. See [Custom Dockerfile](#custom-dockerfile). |
+| **Network** | None | **None** (no network), **Normal network** (can reach this computer, your local network and the internet) or **Only the hosts and ports below**. See [Custom network](#custom-network) and [Limits and hardening](#limits-and-hardening). |
+| **Rules** (under Network) | none | With **Only the hosts and ports below**: the rules, each a host, a protocol and ports. See [Custom network](#custom-network). |
 | **CPUs** | 2 | How many CPUs a container may use, from 0.25 to 64. |
 | **Memory** | 2048 MB | How much memory a container may use, from 256 to 262144 MB. |
 | **Processes** | 512 | How many processes a container may run at once, from 32 to 65536. |
 | **Mount the workspace read-only** | off | Turn it on to stop commands changing the folder. |
-| **docker** | found on `PATH` | The path to the `docker` command. Leave it empty to find `docker` on `PATH`, or type a path or use **Browse…**. |
+| **docker program** | found on `PATH` | The path to the `docker` command. Leave it empty to find `docker` on `PATH`, or type a path or use **Browse…**. |
 | **Check** | | **Test**, and **Pull now** or **Build now**. See [Status](#status). |
 
 Values outside a range are kept within it. The sandbox applies to new commands; settings
@@ -136,7 +136,7 @@ The full example's Python packages:
 | Utilities | `tqdm`, `click`, `python-dotenv`, `arrow`, `pytz`, `loguru`, `pytest` |
 
 The full image is also published to GitHub Packages, built for Intel/AMD and ARM (Apple
-Silicon) machines, so you can skip the local build: choose **Docker image** and enter
+Silicon) machines, so you can skip the local build: choose **A Docker image** and enter
 `ghcr.io/d3v0ps-cloud/cleanrstai-sandbox:full`, which follows `main`; `:full-dev` follows the
 `dev` branch. Each build is also tagged `full-<hash>`, with the same hash the app uses for its own
 build of that Dockerfile, so you can pin one.
@@ -219,7 +219,7 @@ Limits:
 With **The workspace tools, with commands in their own sandbox container** on in
 [Settings → Subagents](subagents.html), each subagent that runs a command gets a container of
 its own, named like the chat's with `-s` and a short id at the end. It uses the same image,
-limits and **Mount read-only** setting, has the chat's folder at `/workspace`, and is removed
+limits and **Mount the workspace read-only** setting, has the chat's folder at `/workspace`, and is removed
 when the subagent finishes, fails or runs out of time. Subagents run their commands in
 parallel, each in its own container.
 
@@ -231,7 +231,7 @@ is removed with the chat's last container (after 15 idle minutes at the latest).
 
 In plain words, each container:
 
-- has **no network access** by default. With **Normal network (can reach this computer, your local network and the internet)** it can reach the internet; with **Only the hosts and ports below** only what the [rules](#custom-network) allow;
+- has **no network access** by default. With **Normal network** it can reach the internet; with **Only the hosts and ports below** only what the [rules](#custom-network) allow;
 - is limited to the **CPUs**, **Memory** and **Processes** you set. Swap is not extra: the
   memory limit is also the swap limit;
 - has no Linux capabilities (`--cap-drop ALL`), and cannot gain privileges through `setuid`
@@ -249,7 +249,7 @@ says what to do:
 
 - Docker isn't installed: "Docker isn't installed: install Docker Desktop or Docker Engine, or
   set its location in Settings → Docker."
-- The **docker** path points at no file: "docker not found at <path>"
+- The **docker program** path points at no file: "docker not found at <path>"
 - Docker isn't running: "Docker isn't running: start Docker Desktop (or the Docker service) and
   try again."
 - The image is missing and **Get the image** is **Only use an image already on this
@@ -276,7 +276,7 @@ The **Check** row under the image settings has these buttons:
   like "Docker 27.3.1 is running · image python:3.13-slim is present". For a Dockerfile it reads
   "image <tag> is built" or "isn't built yet". With **Only the hosts and ports below** it also
   checks the rules and adds "network image is built" or "isn't built yet".
-- **Pull now** (for **Docker image**) or **Build now** (for **Custom Dockerfile**) prepares the
+- **Pull now** (for **A Docker image**) or **Build now** (for **A custom Dockerfile**) prepares the
   image, and with a custom network rebuilds the network image too. A spinner shows while it
   works. The result appears under the buttons: "Pulled <image>" or "Built <image>" (with "and
   the network image"), or the error.
@@ -291,15 +291,15 @@ The sandbox limits what a command can reach. It does not make an untrusted comma
 **It protects against:**
 
 - commands reading or changing files outside the workspace folder;
-- commands using your network, when the network is set to **None (no network)**, or using more
+- commands using your network, when the network is set to **None**, or using more
   of it than the rules allow, with **Only the hosts and ports below**;
 - commands using more than the CPU, memory and processes you allow.
 
 **It doesn't protect against:**
 
-- files inside the workspace folder. Commands can read and change them, unless **Mount
-  read-only** is ticked;
-- your network, when **Normal network (can reach this computer, your local network and the internet)** is on. Commands can reach anything your computer can;
+- files inside the workspace folder. Commands can read and change them, unless **Mount the
+  workspace read-only** is ticked;
+- your network, when **Normal network** is on. Commands can reach anything your computer can;
 - what the image itself contains. Use images you trust;
 - bugs in Docker or the Linux kernel that let a program escape a container;
 - the other tools. The file tools, MCP servers and web fetch still run on your computer and are

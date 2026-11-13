@@ -36,7 +36,7 @@ link-local addresses, such as cloud metadata endpoints, also after a redirect.
 | **Search with** | CleanRSTAI's search service | **CleanRSTAI's search service** (the service below), or **the provider's own search when it has one**: Anthropic (Messages API), OpenAI (Responses API) and OpenRouter. Other providers keep the service below. |
 | **Service** | DuckDuckGo | **DuckDuckGo** (its HTML results page; no account or key, but it may ask for a human check after many searches), **SearXNG** (your own or a public instance), **Brave Search API**, **Tavily** or **Kagi Search API** (these three need an API key). Not used by the provider's own search. |
 | **Instance** | (empty) | SearXNG only: the instance's address, such as `https://searx.example.org` or `http://localhost:8888`. The instance must allow JSON results: add `json` to `search.formats` in its `settings.yml`. |
-| **API key** | (empty) | Brave, Tavily and Kagi only. Kept in the system keychain when **Store API keys and secrets in the system keychain** is on ([General](privacy.html#secrets)). |
+| **API key** | (empty) | Brave, Tavily and Kagi only. Kept in the system keychain when **Keep secrets in the system keychain** is on ([Data & privacy](privacy.html#secrets)). |
 | **Results per search** | 5 per search | 1–20. The model may ask for more in a call, up to 20. Not used by the provider's own search. |
 | **Searches per reply** | 5 | Only with the provider's own search: 1–20 searches the provider may run for one reply. |
 | **Safe search** | on | Asks the service to filter adult results (Tavily and Kagi have no such option). |

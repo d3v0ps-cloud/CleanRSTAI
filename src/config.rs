@@ -24,6 +24,18 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".cleanrstai"))
 }
 
+/// The folders the app writes its own files in, for [`sweep_temp_files`].
+pub fn private_dirs() -> Vec<PathBuf> {
+    let data = data_dir();
+    vec![
+        config_dir(),
+        data.join("conversations"),
+        data.join("projects"),
+        crate::blobs::dir(),
+        data,
+    ]
+}
+
 fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -1016,6 +1028,11 @@ pub struct GeneralSettings {
     /// The permission mode new chats start in (each chat can change its own).
     #[serde(default)]
     pub default_approval_mode: crate::approval::ApprovalMode,
+    /// The tool switches last flipped in a chat's tools menu (built-in, workspace, MCP server
+    /// and MCP tool keys of `ToolOverrides`), which new chats start with. Kept apart from the
+    /// defaults on the Tools and MCP pages, which they are relative to.
+    #[serde(skip_serializing_if = "crate::tools::ToolOverrides::is_empty")]
+    pub new_chat_tools: crate::tools::ToolOverrides,
     pub max_tool_rounds: u32,
     /// Stop a reply's tool loop once its requests used this many tokens in all (0: no limit).
     #[serde(skip_serializing_if = "is_zero_u64")]
@@ -1130,6 +1147,7 @@ impl Default for GeneralSettings {
             send_with_enter: true,
             auto_approve_tools: false,
             default_approval_mode: Default::default(),
+            new_chat_tools: crate::tools::ToolOverrides::default(),
             max_tool_rounds: 20,
             reply_token_limit: 0,
             reply_cost_limit_usd: 0.0,
@@ -1325,6 +1343,35 @@ impl Default for SandboxSettings {
     }
 }
 
+/// The keychain accounts that couldn't be read at startup (see
+/// `Settings::unreadable_secrets`). Shared by every copy of the settings (the Settings
+/// window edits one), and no part of what makes two settings equal.
+#[derive(Clone, Debug, Default)]
+pub struct UnreadableSecrets(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl UnreadableSecrets {
+    fn new(accounts: Vec<String>) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(accounts)))
+    }
+
+    fn list(&self) -> Vec<String> {
+        use crate::sync::LockExt as _;
+        self.0.locked().clone()
+    }
+
+    /// Drop the accounts in `stored`: their secrets were just written again.
+    fn forget(&self, stored: &[String]) {
+        use crate::sync::LockExt as _;
+        self.0.locked().retain(|a| !stored.contains(a));
+    }
+}
+
+impl PartialEq for UnreadableSecrets {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -1335,6 +1382,11 @@ pub struct Settings {
     pub subagents: SubagentSettings,
     /// Docker sandbox for the workspace shell tool.
     pub sandbox: SandboxSettings,
+    /// Keychain accounts that couldn't be read when the settings were loaded (a locked
+    /// keychain, a refused prompt). Their secrets are blank here but may still be in the
+    /// keychain, so a save keeps the accounts listed rather than deleting them.
+    #[serde(skip)]
+    pub unreadable_secrets: UnreadableSecrets,
 }
 
 impl Default for Settings {
@@ -1346,6 +1398,7 @@ impl Default for Settings {
             general: GeneralSettings::default(),
             subagents: SubagentSettings::default(),
             sandbox: SandboxSettings::default(),
+            unreadable_secrets: UnreadableSecrets::default(),
         }
     }
 }
@@ -1395,7 +1448,10 @@ impl Settings {
             .unwrap_or(false);
         let mut notice = None;
         if in_keychain {
-            let failed = crate::secrets::internalize(&mut settings, store, &stored_accounts(&raw));
+            let (mut failed, unreadable) =
+                crate::secrets::internalize_split(&mut settings, store, &stored_accounts(&raw));
+            failed.extend(unreadable.iter().cloned());
+            settings.unreadable_secrets = UnreadableSecrets::new(unreadable);
             if !failed.is_empty() {
                 notice = Some(format!(
                     "{} secret(s) couldn't be read from the system keychain; re-enter them in Settings.",
@@ -1437,18 +1493,37 @@ impl Settings {
                 Ok(a) => accounts = a,
                 Err(e) => {
                     warning = Some(format!(
-                        "Couldn't use the system keychain ({e}); secrets are saved in settings.json instead. Turn off \"Store API keys and secrets in the system keychain\" in Settings → General to stop this message."
+                        "Couldn't use the system keychain ({e}); secrets are saved in settings.json instead. Turn off \"Keep secrets in the system keychain\" in Settings → Data & privacy to stop this message."
                     ));
                     on_disk = self.clone();
                 }
             }
         }
+        // Secrets that couldn't be read at startup and are still blank stay listed, and stay
+        // in the keychain: they are read again at the next start.
+        // One that has been entered again is the user's from then on: clearing it later
+        // removes it like any other. With the keychain off there is nothing to wait for.
+        self.unreadable_secrets.forget(&accounts);
+        let unreadable = self.unreadable_secrets.list();
+        if self.general.use_keychain && !unreadable.is_empty() {
+            let blank = crate::secrets::empty_slots(&mut self.clone());
+            for account in unreadable {
+                if blank.contains(&account) && !accounts.contains(&account) {
+                    accounts.push(account);
+                }
+            }
+        }
         let mut doc = serde_json::to_value(&on_disk)?;
-        doc[KEY_IN_KEYCHAIN] = serde_json::json!(self.general.use_keychain && warning.is_none());
+        doc[KEY_IN_KEYCHAIN] = serde_json::json!(
+            self.general.use_keychain && (warning.is_none() || !accounts.is_empty())
+        );
         doc[KEY_ACCOUNTS] = serde_json::json!(accounts);
         write_private(path, serde_json::to_string_pretty(&doc)?.as_bytes())
             .with_context(|| format!("writing {}", path.display()))?;
-        crate::secrets::remove_stale(store, &previous, &accounts);
+        // When the keychain couldn't be written, nothing is deleted from it either.
+        if warning.is_none() {
+            crate::secrets::remove_stale(store, &previous, &accounts);
+        }
         Ok(warning)
     }
 
@@ -1649,12 +1724,63 @@ pub struct LoadedSettings {
     pub needs_migration: bool,
 }
 
+/// How [`write_private`]'s temporary files end.
+const TEMP_SUFFIX: &str = ".tmp";
+
+/// Remove the temporary files a write left in `dirs` when the app was killed in the middle
+/// of one. Only [`write_private`]'s own (`.<name>.<32 hex digits>.tmp`), and only old ones,
+/// so a write in progress in another process keeps its file. Call at startup.
+pub fn sweep_temp_files(dirs: &[PathBuf]) {
+    let old = std::time::Duration::from_secs(10 * 60);
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let aged = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > old);
+            if is_temp_name(&name) && aged {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+fn is_temp_name(name: &str) -> bool {
+    name.strip_prefix('.')
+        .and_then(|n| n.strip_suffix(TEMP_SUFFIX))
+        .and_then(|n| n.rsplit_once('.'))
+        .is_some_and(|(_, id)| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Write a file atomically; on Unix restrict it to the current user since it may hold API keys.
 pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
+    // A name of its own beside the file: two writers (this app and `cleanrstai exec`, or
+    // two saves of `report.pdf` and `report.docx`) never share it, and a file the user
+    // keeps there is never taken for it.
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    // Cut short, so a long file name still leaves room for the rest.
+    let name: String = name.chars().take(60).collect();
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}{TEMP_SUFFIX}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let written = write_then_rename(path, &tmp, bytes);
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+fn write_then_rename(path: &std::path::Path, tmp: &std::path::Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -1665,7 +1791,7 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&tmp)?;
+            .open(tmp)?;
         file.write_all(bytes)?;
         // On disk before the rename, so a power cut leaves the old file or the new one,
         // never an empty one.
@@ -1674,11 +1800,11 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     #[cfg(not(unix))]
     {
         use std::io::Write;
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = std::fs::File::create(tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    std::fs::rename(&tmp, path)?;
+    std::fs::rename(tmp, path)?;
     Ok(())
 }
 
@@ -1980,6 +2106,74 @@ mod tests {
         off.save_to(&path, &store).unwrap();
         assert!(store.items.lock().unwrap().is_empty());
         assert!(std::fs::read_to_string(&path).unwrap().contains("sk-1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_the_apps_own_old_temporary_files_are_swept() {
+        assert!(is_temp_name(
+            ".chat.json.0123456789abcdef0123456789abcdef.tmp"
+        ));
+        assert!(!is_temp_name("notes.tmp"));
+        assert!(!is_temp_name(".chat.json.tmp"));
+        assert!(!is_temp_name(".chat.json.0123.tmp"));
+        let dir = std::env::temp_dir().join(format!("cleanrstai-sweep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A fresh one may be a write in progress: it stays.
+        let fresh = dir.join(".a.json.0123456789abcdef0123456789abcdef.tmp");
+        std::fs::write(&fresh, b"x").unwrap();
+        sweep_temp_files(std::slice::from_ref(&dir));
+        assert!(fresh.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_locked_keychain_at_startup_doesnt_lose_the_secrets_on_the_next_save() {
+        use crate::secrets::tests::{MemoryStore, sample};
+        use std::sync::atomic::Ordering;
+        let dir = std::env::temp_dir().join(format!("cleanrstai-cfg-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let store = MemoryStore::default();
+        let settings = sample();
+        settings.save_to(&path, &store).unwrap();
+        let stored = store.items.lock().unwrap().len();
+        assert!(stored > 0);
+
+        // The keychain can't be read: the secrets are blank, with a notice.
+        store.locked.store(true, Ordering::SeqCst);
+        let loaded = Settings::load_from(&path, &store);
+        assert!(loaded.notice.is_some());
+        assert!(loaded.settings.providers[0].api_key.is_empty());
+        // The app saves by itself (a scheduled task's run time, say).
+        loaded.settings.save_to(&path, &store).unwrap();
+        assert_eq!(store.items.lock().unwrap().len(), stored);
+
+        // Unlocked at the next start, everything is back.
+        store.locked.store(false, Ordering::SeqCst);
+        let again = Settings::load_from(&path, &store);
+        assert!(again.notice.is_none());
+        assert_eq!(again.settings, settings);
+
+        // A secret entered again while locked out, then cleared, stays cleared.
+        store.locked.store(true, Ordering::SeqCst);
+        let mut loaded = Settings::load_from(&path, &store).settings;
+        store.locked.store(false, Ordering::SeqCst);
+        loaded.providers[0].api_key = "sk-new".into();
+        loaded.save_to(&path, &store).unwrap();
+        loaded.providers[0].api_key.clear();
+        loaded.save_to(&path, &store).unwrap();
+        assert!(
+            !store
+                .items
+                .lock()
+                .unwrap()
+                .contains_key("provider:p1:api_key")
+        );
+        assert!(
+            Settings::load_from(&path, &store).settings.providers[0]
+                .api_key
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2468,7 +2662,7 @@ mod tests {
         write_private(&path, b"first").unwrap();
         write_private(&path, b"second").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
-        assert!(!path.with_extension("tmp").exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

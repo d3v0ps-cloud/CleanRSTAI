@@ -107,6 +107,22 @@ impl ToolOverrides {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Whether `key` switches a tool (built-in, workspace, MCP server or MCP tool), not a chat
+    /// feature: only tool switches carry over to new chats.
+    pub fn is_tool_key(key: &str) -> bool {
+        ["builtin:", "server:", "tool:"]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+    }
+
+    /// `self` with `carried`'s switches under it: a switch the chat already has wins.
+    pub fn with_carried(mut self, carried: &ToolOverrides) -> Self {
+        for (key, on) in &carried.0 {
+            self.0.entry(key.clone()).or_insert(*on);
+        }
+        self
+    }
 }
 
 pub const COMPACTION: &str = "compaction";
@@ -819,6 +835,26 @@ pub fn task_summary(tasks: &[Task]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_tool_switches_carry_over_and_a_chats_own_win() {
+        assert!(ToolOverrides::is_tool_key("builtin:fetch"));
+        assert!(ToolOverrides::is_tool_key("server:camofox"));
+        assert!(ToolOverrides::is_tool_key("tool:camofox:click"));
+        assert!(!ToolOverrides::is_tool_key("feature:memory"));
+
+        let mut carried = ToolOverrides::default();
+        carried.set("server:camofox".into(), false, true);
+        carried.set("builtin:fetch".into(), true, false);
+        let mut own = ToolOverrides::default();
+        own.set("builtin:fetch".into(), false, true);
+        own.set("feature:memory".into(), false, true);
+        let chat = own.with_carried(&carried);
+        assert_eq!(chat.get("server:camofox"), Some(false));
+        // The chat's own switch stays.
+        assert_eq!(chat.get("builtin:fetch"), Some(false));
+        assert_eq!(chat.get("feature:memory"), Some(false));
+    }
     use crate::config::McpServerConfig;
 
     #[test]

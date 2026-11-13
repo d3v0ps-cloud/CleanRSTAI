@@ -515,6 +515,7 @@ mod remote_tests {
         let (respond, _answer) = tokio::sync::oneshot::channel();
         Run {
             task,
+            number: 0,
             approvals: vec![PendingApproval::new(call, None, None, respond)],
             running_tool: None,
             live_stats: None,

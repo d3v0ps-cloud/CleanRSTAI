@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -206,6 +206,8 @@ pub struct RemoteHandle {
     config: RemoteSettings,
     urls: Vec<String>,
     events: broadcast::Sender<RemoteEvent>,
+    /// Set to true to stop the server; open connections and event streams follow.
+    shutdown: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -214,12 +216,14 @@ impl RemoteHandle {
         config: RemoteSettings,
         urls: Vec<String>,
         events: broadcast::Sender<RemoteEvent>,
+        shutdown: watch::Sender<bool>,
         task: JoinHandle<()>,
     ) -> Self {
         Self {
             config,
             urls,
             events,
+            shutdown,
             task: Some(task),
         }
     }
@@ -245,8 +249,11 @@ impl RemoteHandle {
         self.events.subscribe()
     }
 
-    /// Stops the server task. Connected browsers see their event streams end.
+    /// Stops the server. The listener closes at once; connected browsers see their event
+    /// streams end, and their connections close once the requests in flight are answered, so
+    /// nothing is left serving the old sessions.
     pub fn stop(&mut self) {
+        self.shutdown.send_replace(true);
         if let Some(task) = self.task.take() {
             task.abort();
         }
@@ -297,6 +304,7 @@ pub fn start(
     let (events, _) = broadcast::channel(256);
     let auth = Auth::new(&cfg.password, tls.is_some());
     let hsts = server::hsts_enabled(cfg);
+    let (shutdown, stopped) = watch::channel(false);
     let task = rt.spawn(server::serve(
         listener,
         tls,
@@ -307,8 +315,9 @@ pub fn start(
         hsts,
         tunnel_hosts,
         access,
+        stopped,
     ));
-    Ok(RemoteHandle::new(cfg.clone(), urls, events, task))
+    Ok(RemoteHandle::new(cfg.clone(), urls, events, shutdown, task))
 }
 
 /// The settings the web server itself depends on: everything but the tunnel, which can start
@@ -442,11 +451,15 @@ mod tests {
             let (tx, _) = broadcast::channel(4);
             let task = tokio::spawn(std::future::pending::<()>());
             let abort = task.abort_handle();
-            let handle = RemoteHandle::new(RemoteSettings::default(), Vec::new(), tx, task);
+            let (shutdown, stopped) = watch::channel(false);
+            let handle =
+                RemoteHandle::new(RemoteSettings::default(), Vec::new(), tx, shutdown, task);
             let mut rx = handle.subscribe();
             drop(handle);
             tokio::task::yield_now().await;
             assert!(abort.is_finished());
+            // The shutdown signal went out too.
+            assert!(*stopped.borrow());
             // The event stream ends once the sender is gone.
             assert!(rx.recv().await.is_err());
         });

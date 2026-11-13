@@ -14,7 +14,7 @@ Where secrets are kept, what replies may load from the web, export and import, a
 
 ## Secrets
 
-**Store API keys and secrets in the system keychain** (default on) keeps API keys, HTTP header
+**Keep secrets in the system keychain** (default on) keeps API keys, HTTP header
 values, MCP environment variable values and the remote access password in the macOS Keychain, Windows Credential Manager
 or the Secret Service (GNOME Keyring, KWallet) on Linux. `settings.json` keeps only blank
 placeholders, and keys saved in plain text by earlier versions move to the keychain on first

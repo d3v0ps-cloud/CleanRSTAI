@@ -23,18 +23,21 @@ account's user name, from its first part (`aaron.b` greets *Aaron*).
 
 ## Sending
 
-- **Enter sends, Shift+Enter for newline** (default)
-- **Ctrl/⌘+Enter sends, Enter for newline**
+**Send messages with** (the other key starts a new line):
+
+- **Enter (Shift+Enter for a new line)** (default)
+- **Ctrl/⌘+Enter (Enter for a new line)**
 
 **⌘/Ctrl + Enter** sends in both modes.
 
 ## Updates
 
-- **Check GitHub for a new release at startup** (default on).
+- **Check for updates at startup** (default on): asks the release source below for a newer
+  release when the app starts.
 - **Update from**: where releases come from: an `owner/repo`, a `github.com` link or a URL
   that answers like GitHub's `releases/latest` API. **Reset** restores the default.
-- **Check for updates now** checks the source as typed, before you save, and shows the
-  installed version. If a newer release can be installed, **Install update** appears.
+- **Installed version** shows the running version; **Check now** checks the source as typed,
+  before you save. If a newer release can be installed, **Install update** appears.
 - **Install a version**: **List releases** fetches every release from the same source (the
   newest 50, dev builds included, marked **dev**; the installed one is marked **installed**).
   Pick one and click **Install vX.Y.Z** to move to that build, newer or older. It installs the
