@@ -1028,6 +1028,11 @@ pub struct GeneralSettings {
     /// The permission mode new chats start in (each chat can change its own).
     #[serde(default)]
     pub default_approval_mode: crate::approval::ApprovalMode,
+    /// The tool switches last flipped in a chat's tools menu (built-in, workspace, MCP server
+    /// and MCP tool keys of `ToolOverrides`), which new chats start with. Kept apart from the
+    /// defaults on the Tools and MCP pages, which they are relative to.
+    #[serde(skip_serializing_if = "crate::tools::ToolOverrides::is_empty")]
+    pub new_chat_tools: crate::tools::ToolOverrides,
     pub max_tool_rounds: u32,
     /// Stop a reply's tool loop once its requests used this many tokens in all (0: no limit).
     #[serde(skip_serializing_if = "is_zero_u64")]
@@ -1142,6 +1147,7 @@ impl Default for GeneralSettings {
             send_with_enter: true,
             auto_approve_tools: false,
             default_approval_mode: Default::default(),
+            new_chat_tools: crate::tools::ToolOverrides::default(),
             max_tool_rounds: 20,
             reply_token_limit: 0,
             reply_cost_limit_usd: 0.0,

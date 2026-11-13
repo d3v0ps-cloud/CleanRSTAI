@@ -688,6 +688,13 @@ impl ChatApp {
         {
             c.model_options = options;
         }
+        // The tool switches flipped last carry over; any the chat has itself stay.
+        let carried = self.settings.general.new_chat_tools.clone();
+        if !carried.is_empty()
+            && let Some(c) = self.conv_mut(id)
+        {
+            c.tool_overrides = std::mem::take(&mut c.tool_overrides).with_carried(&carried);
+        }
         id
     }
 
@@ -821,6 +828,14 @@ impl ChatApp {
     }
 
     fn set_tool_override(&mut self, key: String, on: bool, default: bool) {
+        // A tool switch is remembered for new chats too.
+        if ToolOverrides::is_tool_key(&key) {
+            self.settings
+                .general
+                .new_chat_tools
+                .set(key.clone(), on, default);
+            self.save_settings();
+        }
         match self.current.and_then(|id| self.conv_mut(id)) {
             Some(conv) => {
                 conv.tool_overrides.set(key, on, default);
@@ -833,6 +848,11 @@ impl ChatApp {
     }
 
     fn reset_tool_overrides(&mut self) {
+        // New chats go back to the defaults as well.
+        if !self.settings.general.new_chat_tools.is_empty() {
+            self.settings.general.new_chat_tools = ToolOverrides::default();
+            self.save_settings();
+        }
         match self.current.and_then(|id| self.conv_mut(id)) {
             Some(conv) => {
                 conv.tool_overrides = ToolOverrides::default();
@@ -1110,11 +1130,50 @@ impl ChatApp {
                                 v.status == crate::mcp::manager::ServerStatus::Connected
                             });
                             let mut on = sel.server_on(id);
-                            let resp = ui.checkbox(&mut on, RichText::new(name).strong());
-                            if resp.changed() {
-                                changes.push((ToolOverrides::server_key(id), on, true));
-                            }
+                            // A server's tools are folded under it until opened.
+                            let open_id = ui.make_persistent_id(("tools-open", id));
+                            let mut open =
+                                ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                            let tools = view
+                                .filter(|_| connected)
+                                .map_or(&[][..], |v| v.tools.as_slice());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if tools.is_empty() {
+                                    // Keeps the names lined up with the servers that fold.
+                                    ui.add_space(ui.spacing().interact_size.y);
+                                } else {
+                                    let arrow = if open {
+                                        icon::CARET_DOWN
+                                    } else {
+                                        icon::CARET_RIGHT
+                                    };
+                                    if ui
+                                        .add(egui::Button::new(arrow).frame(false))
+                                        .on_hover_text(if open {
+                                            "Hide this server's tools"
+                                        } else {
+                                            "Show this server's tools"
+                                        })
+                                        .clicked()
+                                    {
+                                        open = !open;
+                                        ui.data_mut(|d| d.insert_temp(open_id, open));
+                                    }
+                                }
+                                let resp = ui.checkbox(&mut on, RichText::new(name).strong());
+                                if resp.changed() {
+                                    changes.push((ToolOverrides::server_key(id), on, true));
+                                }
+                                if !tools.is_empty() {
+                                    let tools_on =
+                                        tools.iter().filter(|t| sel.tool_on(id, &t.name)).count();
+                                    ui.weak(format!("{tools_on}/{}", tools.len()));
+                                }
+                            });
                             match view {
+                                // Folded: the count beside the name says how many are on.
+                                Some(v) if connected && !v.tools.is_empty() && !open => {}
                                 Some(v) if connected && !v.tools.is_empty() => {
                                     ui.indent(("tools", id), |ui| {
                                         ui.add_enabled_ui(on, |ui| {
@@ -1989,7 +2048,10 @@ impl ChatApp {
         if new.general.html_preview != self.settings.general.html_preview {
             self.html_preview.reset();
         }
+        // The switches carried to new chats are the tools menu's, not the Settings window's.
+        let carried = std::mem::take(&mut self.settings.general.new_chat_tools);
         self.settings = new;
+        self.settings.general.new_chat_tools = carried;
         self.settings.normalize();
         self.slash_cache.clear();
         self.skill_cache.clear();

@@ -142,10 +142,15 @@ your computer.
 ## Per-chat tool switches
 
 The tools menu (**Tools** in the message box's **+** menu) lists the built-in tools, the workspace
-tools when the chat has a folder, and every MCP server and its tools, each with a switch. The
-switches apply to the current chat from the next message. Defaults for new chats are in
+tools when the chat has a folder, and every MCP server, each with a switch. A server's own
+tools are folded under it, with how many of them are on beside its name; the arrow before the
+name opens the list. The switches apply to the current chat from the next message.
+
+A tool switch you flip there is also kept for new chats: the next chat starts with the same
+tools on and off. **Reset to defaults** at the bottom of the menu goes back to the defaults in
 [Settings → Tools](../settings/built-in-tools.html) and
-[MCP Servers](../settings/mcp-servers.html).
+[MCP Servers](../settings/mcp-servers.html), for this chat and for new ones. Chat options (below)
+and a project's own switches don't carry over.
 
 Under **Chat options**, the same menu switches **Context compaction**, **Project
 instructions**, **Undo for file edits**, **Hooks**, **Branches** and **Memory** for the chat (defaults in
