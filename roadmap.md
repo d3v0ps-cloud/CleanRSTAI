@@ -49,8 +49,10 @@ reached the stable release in **v0.9.5**. A code audit's fixes shipped in **v0.9
 images from tools reaching the model, the workspace's boundaries (dangling links, a repository
 that points git elsewhere, linked instruction files and skills), secrets kept when the keychain
 is locked at startup, edits, plan approvals and stopped replies that could land in the wrong
-turn, remote access and MCP sign-in checks, and document and export limits. Signed builds are
-not planned.
+turn, remote access and MCP sign-in checks, and document and export limits; **v0.9.6-dev.2**
+followed with reviews limited to the working folder, an `.msi` that upgrades between builds of
+one version, and the git, proxy and tool-image checks of dev.1 made less strict. Signed builds
+are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
