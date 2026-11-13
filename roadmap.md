@@ -51,8 +51,11 @@ that points git elsewhere, linked instruction files and skills), secrets kept wh
 is locked at startup, edits, plan approvals and stopped replies that could land in the wrong
 turn, remote access and MCP sign-in checks, and document and export limits; **v0.9.6-dev.2**
 followed with reviews limited to the working folder, an `.msi` that upgrades between builds of
-one version, and the git, proxy and tool-image checks of dev.1 made less strict. Signed builds
-are not planned.
+one version, and the git, proxy and tool-image checks of dev.1 made less strict; and
+**v0.9.6-dev.3** with Anthropic replies replayed in their order, Cloudflare Access keys refreshed
+every six hours, an image cache that evicts the oldest pictures, a limit on how often a preview
+opens the browser, a lock on the memory file across processes, and fixes to deleted chats,
+edits and replies that die. Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
