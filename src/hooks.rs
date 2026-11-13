@@ -118,11 +118,34 @@ pub fn normalize(settings: &mut HookSettings) {
     }
 }
 
+/// The patterns of a comma-separated list. A comma inside braces belongs to its pattern
+/// (`{write_file,edit_file}`).
+fn split_patterns(patterns: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0u32, 0);
+    for (i, c) in patterns.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&patterns[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&patterns[start..]);
+    out.into_iter()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 /// Whether `tool` matches the comma-separated glob `patterns` (`write_file, github__*`).
 /// Empty patterns match every tool. A pattern that isn't a valid glob matches only itself.
 pub fn matches(patterns: &str, tool: &str) -> bool {
     let mut any = false;
-    for pattern in patterns.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+    for pattern in split_patterns(patterns) {
         any = true;
         let hit = match globset::Glob::new(pattern) {
             Ok(glob) => glob.compile_matcher().is_match(tool),
@@ -490,6 +513,10 @@ mod tests {
         assert!(matches("write_file, edit_file", "edit_file"));
         assert!(!matches("write_file, edit_file", "read_file"));
         assert!(matches("github__*", "github__create_issue"));
+        // A comma inside braces belongs to the pattern.
+        assert!(matches("{write_file,edit_file}", "edit_file"));
+        assert!(matches("read_file, {write,edit}_file", "write_file"));
+        assert!(!matches("{write_file,edit_file}", "read_file"));
         assert!(!matches("github__*", "fetch"));
         assert!(matches("read_*,write_file", "write_file"));
         assert!(!matches("read_*", "write_file"));

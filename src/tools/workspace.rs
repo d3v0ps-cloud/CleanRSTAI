@@ -211,8 +211,12 @@ impl Workspace {
     /// must be inside the workspace.
     fn writable(&self, rel: &str) -> Result<PathBuf> {
         let joined = self.join(rel)?;
-        if joined.exists() {
-            let real = joined.canonicalize()?;
+        // A link counts as existing even when its target doesn't: writing through a
+        // dangling link would create the target, wherever it points.
+        if joined.symlink_metadata().is_ok() {
+            let real = joined
+                .canonicalize()
+                .with_context(|| format!("{rel} is a link to a file that doesn't exist"))?;
             self.check_inside(&real, rel)?;
             if real.is_dir() {
                 bail!("{rel} is a folder");
@@ -311,7 +315,12 @@ impl Workspace {
         if path.is_dir() {
             bail!("{rel} is a folder; use get_info or file_glob_search to list it");
         }
-        let size = path.metadata()?.len();
+        let meta = path.metadata()?;
+        // A pipe or a device would block the read, or never end.
+        if !meta.is_file() {
+            bail!("{rel} isn't a regular file");
+        }
+        let size = meta.len();
         if size > MAX_READ_BYTES {
             bail!(
                 "{rel} is {} MB; files over 10 MB can't be read",
@@ -350,7 +359,7 @@ impl Workspace {
         if offset > lines.len() {
             bail!("{rel} has only {} lines", lines.len());
         }
-        let end = (offset - 1 + limit).min(lines.len());
+        let end = (offset - 1).saturating_add(limit).min(lines.len());
         let mut out = String::new();
         for (i, line) in lines[offset - 1..end].iter().enumerate() {
             out.push_str(&format!(
@@ -564,8 +573,19 @@ impl Workspace {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, &plan.after)?;
         let created = matches!(plan.before, Before::Missing);
+        if created {
+            // `create_new` refuses a link put there since the path was checked.
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .and_then(|mut f| f.write_all(plan.after.as_bytes()))
+                .with_context(|| format!("couldn't create {shown}"))?;
+        } else {
+            std::fs::write(path, &plan.after)?;
+        }
         let text = if function == WRITE_FILE {
             format!(
                 "{} {} ({} bytes, {} lines).",
@@ -655,7 +675,8 @@ impl Workspace {
             }
         } else {
             out.push_str(&format!("Type: file\nSize: {} bytes\n", meta.len()));
-            if meta.len() <= MAX_READ_BYTES
+            if meta.is_file()
+                && meta.len() <= MAX_READ_BYTES
                 && let Ok(bytes) = std::fs::read(&path)
                 && !is_binary(&bytes)
             {
@@ -686,25 +707,36 @@ impl Workspace {
         // Its own process group, so a timeout can stop everything the command started.
         #[cfg(unix)]
         cmd.process_group(0);
-        let child = cmd.spawn().context("couldn't start the shell")?;
+        let mut child = cmd.spawn().context("couldn't start the shell")?;
         let pid = child.id();
-        let output =
-            match tokio::time::timeout(Duration::from_secs(secs), child.wait_with_output()).await {
-                Ok(r) => r.context("the shell failed")?,
-                Err(_) => {
-                    if let Some(pid) = pid {
-                        kill_command(pid);
-                    }
-                    bail!("the command didn't finish within {secs} s and was stopped")
+        // Both pipes are read to the end, keeping only the two ends of each, so a command
+        // that prints without end can't fill the memory.
+        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        let half = crate::sandbox::docker::OUTPUT_CAP / 2;
+        let run = async {
+            let (out, err, status) = tokio::join!(
+                crate::sandbox::docker::capture_stream(stdout, half),
+                crate::sandbox::docker::capture_stream(stderr, half),
+                child.wait()
+            );
+            status.map(|status| (out, err, status))
+        };
+        let (out, err, status) = match tokio::time::timeout(Duration::from_secs(secs), run).await {
+            Ok(r) => r.context("the shell failed")?,
+            Err(_) => {
+                if let Some(pid) = pid {
+                    kill_command(pid);
                 }
-            };
+                bail!("the command didn't finish within {secs} s and was stopped")
+            }
+        };
         Ok(ToolOutput {
             text: shell_output(
-                output.status.code(),
-                (output.stdout.as_slice(), 0),
-                (output.stderr.as_slice(), 0),
+                status.code(),
+                (out.0.as_slice(), out.1),
+                (err.0.as_slice(), err.1),
             ),
-            is_error: !output.status.success(),
+            is_error: !status.success(),
             images: Vec::new(),
             sandbox: None,
             edit: None,
@@ -977,6 +1009,15 @@ fn is_binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)
 }
 
+/// Whether `path`, with every link followed, is still inside `folder`. A workspace file the
+/// app reads by itself (instructions, skills) must be, or a link could point it at any file.
+pub(crate) fn stays_inside(path: &Path, folder: &Path) -> bool {
+    match (path.canonicalize(), folder.canonicalize()) {
+        (Ok(real), Ok(folder)) => real.starts_with(folder),
+        _ => false,
+    }
+}
+
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -1008,7 +1049,7 @@ fn shell_name() -> &'static str {
 fn git_branch(root: &Path) -> Option<String> {
     let head = std::fs::read_to_string(root.join(".git/HEAD")).ok()?;
     Some(head.trim().strip_prefix("ref: refs/heads/").map_or_else(
-        || format!("detached at {}", &head.trim()[..head.trim().len().min(12)]),
+        || format!("detached at {}", clip(head.trim(), 12)),
         str::to_owned,
     ))
 }

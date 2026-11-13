@@ -96,6 +96,12 @@ pub fn discover(dirs: &[(PathBuf, SkillSource)], settings: &SkillSettings) -> Ve
             .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.join(SKILL_FILE).is_file())
+            // A workspace is someone else's content: a skill there that is a link to a
+            // file outside its folder would put that file in the prompt.
+            .filter(|p| {
+                *source != SkillSource::Workspace
+                    || crate::tools::workspace::stays_inside(&p.join(SKILL_FILE), root)
+            })
             .collect();
         folders.sort();
         for dir in folders {

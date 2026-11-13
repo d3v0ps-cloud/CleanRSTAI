@@ -33,7 +33,7 @@ pub fn load(root: &Path, s: &InstructionSettings) -> Option<Loaded> {
     for folder in folders {
         for name in &s.file_names {
             let path = folder.join(name);
-            if !path.is_file() {
+            if !path.is_file() || !crate::tools::workspace::stays_inside(&path, &folder) {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(&path) else {

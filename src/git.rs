@@ -4,7 +4,7 @@
 //! are switched off here. The diff calls also pass `--no-ext-diff --no-textconv`, and the
 //! status and diff calls pass `--ignore-submodules=all` (see the call sites).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -32,7 +32,72 @@ pub fn command(dir: &Path) -> Command {
     .current_dir(dir)
     .stdin(Stdio::null())
     .kill_on_drop(true);
+    // The repository is the one around `dir` and its files are the ones there, whatever
+    // `core.worktree` in its config says.
+    if let Some(repo) = Repository::around(dir) {
+        cmd.env("GIT_WORK_TREE", &repo.top);
+        if repo.git.is_dir() {
+            cmd.env("GIT_DIR", &repo.git);
+        }
+    }
     cmd
+}
+
+/// The repository a folder is in: the nearest folder at or above it that has a `.git`.
+struct Repository {
+    top: PathBuf,
+    /// `top/.git`: a folder, or in a linked worktree or submodule a file that names one.
+    git: PathBuf,
+}
+
+impl Repository {
+    fn around(dir: &Path) -> Option<Self> {
+        // Not `canonicalize`: on Windows that gives a `\\?\` path git can't take.
+        let dir = std::path::absolute(dir).ok()?;
+        dir.ancestors().find_map(|top| {
+            let git = top.join(".git");
+            git.symlink_metadata().is_ok().then(|| Repository {
+                top: top.to_path_buf(),
+                git,
+            })
+        })
+    }
+
+    /// A `.git` file is how git links a worktree or a submodule to its repository, and its
+    /// target is then under that repository's `.git/worktrees` or `.git/modules`. Any other
+    /// target would have the git tools read a repository the workspace merely points at.
+    fn check(&self) -> Result<(), String> {
+        const REFUSED: &str = "The workspace's .git points at another repository, so the git \
+                               tools won't run";
+        let Ok(meta) = self.git.symlink_metadata() else {
+            return Ok(());
+        };
+        if meta.is_dir() {
+            return Ok(());
+        }
+        if meta.file_type().is_symlink() {
+            return Err(REFUSED.to_owned());
+        }
+        let text = std::fs::read_to_string(&self.git).map_err(|_| REFUSED.to_owned())?;
+        let target = text
+            .trim()
+            .strip_prefix("gitdir:")
+            .map(str::trim)
+            .ok_or_else(|| REFUSED.to_owned())?;
+        let target = self.top.join(target);
+        let names: Vec<_> = target
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let linked = names
+            .windows(2)
+            .any(|w| w[0] == ".git" && matches!(w[1].as_str(), "worktrees" | "modules"));
+        if linked {
+            Ok(())
+        } else {
+            Err(REFUSED.to_owned())
+        }
+    }
 }
 
 /// [`command`], plus the overrides that stop a repository's filter drivers from running.
@@ -46,6 +111,9 @@ pub fn command(dir: &Path) -> Command {
 /// Reading the config runs nothing. If the list can't be read, or a name can't be passed as
 /// `-c` safely, this returns an error rather than a command without the overrides.
 pub async fn safe_command(dir: &Path) -> Result<Command, String> {
+    if let Some(repo) = Repository::around(dir) {
+        repo.check()?;
+    }
     let keys = filter_keys(dir).await?;
     let mut cmd = command(dir);
     for key in keys {
@@ -277,5 +345,54 @@ mod tests {
         assert!(pair("core.attributesFile", "/dev/null"), "{args:?}");
         // The base overrides are still there.
         assert!(pair("core.fsmonitor", "false"), "{args:?}");
+    }
+
+    #[tokio::test]
+    async fn the_repository_cannot_point_the_tools_somewhere_else() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("cleanrstai-git-{}", uuid::Uuid::new_v4()));
+        let (repo, other) = (base.join("repo"), base.join("other"));
+        for dir in [&repo, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+            test_support::plain_git(dir, &["init", "-q"]);
+        }
+        std::fs::write(other.join("secret.txt"), "secret").unwrap();
+        std::fs::write(repo.join("mine.txt"), "mine").unwrap();
+        // `core.worktree` would have status list the other folder's files.
+        test_support::plain_git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
+        let out = safe_command(&repo)
+            .await
+            .unwrap()
+            .args(["status", "--short"])
+            .output()
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(text.contains("mine.txt"), "{text}");
+        assert!(!text.contains("secret.txt"), "{text}");
+
+        // A `.git` file that names another repository is refused; a linked worktree's isn't.
+        let pointer = base.join("pointer");
+        std::fs::create_dir_all(&pointer).unwrap();
+        std::fs::write(
+            pointer.join(".git"),
+            format!("gitdir: {}\n", other.join(".git").display()),
+        )
+        .unwrap();
+        assert!(safe_command(&pointer).await.is_err());
+        std::fs::write(
+            pointer.join(".git"),
+            format!("gitdir: {}\n", other.join(".git/worktrees/w").display()),
+        )
+        .unwrap();
+        assert!(Repository::around(&pointer).unwrap().check().is_ok());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

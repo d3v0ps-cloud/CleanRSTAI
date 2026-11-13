@@ -11,7 +11,11 @@ pub fn evaluate(expr: &str) -> Result<f64> {
     if tokens.is_empty() {
         bail!("empty expression");
     }
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    };
     let v = p.expr()?;
     if let Some(t) = p.peek() {
         bail!("unexpected '{}'", t.text());
@@ -150,7 +154,11 @@ fn tokenize(s: &str) -> Result<Vec<Tok>> {
 struct Parser {
     tokens: Vec<Tok>,
     pos: usize,
+    /// How deep the brackets and signs are nested; limited so the stack can't run out.
+    depth: u32,
 }
+
+const MAX_DEPTH: u32 = 200;
 
 impl Parser {
     fn peek(&self) -> Option<&Tok> {
@@ -212,13 +220,19 @@ impl Parser {
 
     /// unary := ('-' | '+') unary | power
     fn unary(&mut self) -> Result<f64> {
-        if self.eat(&Tok::Op('-')) {
-            return Ok(-self.unary()?);
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            bail!("the expression is nested too deeply");
         }
-        if self.eat(&Tok::Op('+')) {
-            return self.unary();
-        }
-        self.power()
+        let v = if self.eat(&Tok::Op('-')) {
+            self.unary().map(|v| -v)
+        } else if self.eat(&Tok::Op('+')) {
+            self.unary()
+        } else {
+            self.power()
+        };
+        self.depth -= 1;
+        v
     }
 
     /// power := postfix ('^' unary)?   (right-associative, so 2^3^2 = 2^9)
@@ -419,5 +433,14 @@ mod tests {
         assert_eq!(format_number(1.0 / 3.0), "0.333333333333333");
         assert_eq!(format_number(2f64.powi(80)), "1.20892581961463e24");
         assert_eq!(format_number(f64::INFINITY), "∞");
+    }
+
+    #[test]
+    fn deep_nesting_is_an_error_not_a_crash() {
+        let deep = format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000));
+        assert!(evaluate(&deep).unwrap_err().to_string().contains("nested"));
+        assert!(evaluate(&format!("{}1", "-".repeat(100_000))).is_err());
+        let fine = format!("{}1{}", "(".repeat(50), ")".repeat(50));
+        assert_eq!(evaluate(&fine).unwrap(), 1.0);
     }
 }
