@@ -55,7 +55,8 @@ one version, and the git, proxy and tool-image checks of dev.1 made less strict;
 **v0.9.6-dev.3** with Anthropic replies replayed in their order, Cloudflare Access keys refreshed
 every six hours, an image cache that evicts the oldest pictures, a limit on how often a preview
 opens the browser, a lock on the memory file across processes, and fixes to deleted chats,
-edits and replies that die. Signed builds are not planned.
+edits and replies that die; and **v0.9.6-dev.4** without the "Where is use_default?" window
+macOS showed at a reply's first desktop notification. Signed builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request
