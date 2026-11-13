@@ -1515,6 +1515,7 @@ impl ChatApp {
             ui.set_opacity(ease);
             ui.set_min_size(size);
             ui.set_max_size(size);
+            sui.chat_counts = crate::ui::settings::ChatCounts::of(&self.conversations);
             sui.show(
                 ui,
                 &self.settings,

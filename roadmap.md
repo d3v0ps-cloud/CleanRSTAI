@@ -61,7 +61,9 @@ server's tools folded in the tools menu and tool switches carried over to new ch
 **v0.9.6-dev.6** with images pasted from the clipboard into the message box (⌘/Ctrl + V, or
 Paste in its new right-click menu); and **v0.9.6-dev.7** with the tool switches kept for new
 chats shown, and kept, after a restart, all of which reached the stable release in **v0.9.6**.
-Signed builds are not planned.
+**Delete all chats** (Settings → Data & privacy, keeping pinned chats and chats in projects if
+you like) shipped in **v0.9.7-dev.1** and reached the stable release in **v0.9.7**. Signed
+builds are not planned.
 Unticked items are still open.
 
 ## 1. Display prefill and decode speed per request

@@ -351,6 +351,64 @@ impl SettingsUi {
                     });
                 });
             }
+            section(ui, "Delete");
+            let counts = self.chat_counts;
+            setting_row(
+                ui,
+                "Delete all chats",
+                "Removes the chats and their files from this computer; this can't be undone",
+                |ui| {
+                    let button = egui::Button::new("Delete all chats…");
+                    if ui
+                        .add_enabled(counts.all > 0 && self.delete_chats.is_none(), button)
+                        .clicked()
+                    {
+                        self.delete_chats = Some(super::DeleteChats {
+                            keep_pinned: true,
+                            keep_projects: true,
+                        });
+                    }
+                },
+            );
+            let mut close_delete = false;
+            if let Some(choice) = &mut self.delete_chats {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.checkbox(
+                        &mut choice.keep_pinned,
+                        format!("Keep pinned chats ({})", counts.pinned),
+                    );
+                    ui.checkbox(
+                        &mut choice.keep_projects,
+                        format!("Keep chats in projects ({})", counts.in_project),
+                    );
+                    let n = counts.deleted(choice.keep_pinned, choice.keep_projects);
+                    ui.label(format!(
+                        "Delete {n} chat{}? Replies still running in them are stopped. This \
+                         can't be undone; Export conversations first to keep a copy.",
+                        if n == 1 { "" } else { "s" }
+                    ));
+                    ui.horizontal(|ui| {
+                        let delete = egui::Button::new(
+                            egui::RichText::new(format!("Delete {n}"))
+                                .color(ui.visuals().error_fg_color),
+                        );
+                        if ui.add_enabled(n > 0, delete).clicked() {
+                            actions.push(SettingsAction::DeleteAllChats {
+                                keep_pinned: choice.keep_pinned,
+                                keep_projects: choice.keep_projects,
+                            });
+                            close_delete = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_delete = true;
+                        }
+                    });
+                });
+            }
+            if close_delete {
+                self.delete_chats = None;
+            }
+
             match &self.export_status {
                 Some(Ok(msg)) => {
                     ui.colored_label(crate::ui::theme::success(ui.visuals().dark_mode), msg);
