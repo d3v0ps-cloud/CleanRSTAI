@@ -359,6 +359,8 @@ struct PromptForm {
 enum FileSource {
     Path(std::path::PathBuf),
     Dropped(egui::DroppedFileHandle),
+    /// An image pasted from the clipboard, and the name it is attached under.
+    Pasted(Arc<egui::ColorImage>, String),
 }
 
 impl FileSource {
@@ -374,8 +376,31 @@ impl FileSource {
                 let bytes = f.bytes().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
                 Attachment::read_bytes(name, bytes)
             }
+            Self::Pasted(image, name) => {
+                let png = png_of(&image)?;
+                Ok(Reading::Done(Attachment::image(
+                    name,
+                    "image/png".into(),
+                    &png,
+                )))
+            }
         }
     }
+}
+
+/// A clipboard image as PNG bytes.
+fn png_of(image: &egui::ColorImage) -> anyhow::Result<Vec<u8>> {
+    let [w, h] = image.size;
+    let rgba: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|c| c.to_srgba_unmultiplied())
+        .collect();
+    let buffer = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
+        .ok_or_else(|| anyhow::anyhow!("the pasted image is {w}×{h} but its pixels don't fit"))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    buffer.write_to(&mut png, image::ImageFormat::Png)?;
+    Ok(png.into_inner())
 }
 
 /// Copies a task's run times and save time from the live settings to the Settings draft (the
@@ -4173,6 +4198,36 @@ impl ChatApp {
         }
         self.input_focused_once = true;
         let has_focus = ui.memory(|m| m.has_focus(id));
+        // An image pasted while the message box (or nothing else) has the keyboard is attached;
+        // egui only reports one when the clipboard holds no text.
+        if self.settings_ui.is_none() && (has_focus || ui.memory(|m| m.focused().is_none())) {
+            let images: Vec<Arc<egui::ColorImage>> = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::PasteImage(image) => Some(image.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            if !images.is_empty() {
+                let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M.%S");
+                let count = images.len();
+                let files = images
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, image)| {
+                        let name = if count == 1 {
+                            format!("Pasted image {stamp}.png")
+                        } else {
+                            format!("Pasted image {stamp} ({}).png", n + 1)
+                        };
+                        FileSource::Pasted(image, name)
+                    })
+                    .collect();
+                self.read_files(files);
+            }
+        }
         let mut send = false;
         if has_focus && !running {
             send = ui.input_mut(|i| {
@@ -4368,7 +4423,7 @@ impl ChatApp {
                         .id_salt("input-scroll")
                         .max_height(240.0)
                         .show(ui, |ui| {
-                            ui.add(
+                            let edit = ui.add(
                                 egui::TextEdit::multiline(&mut self.input)
                                     .id(id)
                                     .font(egui::FontId::proportional(theme::size::READING))
@@ -4384,6 +4439,22 @@ impl ChatApp {
                                     .lock_focus(false)
                                     .desired_width(f32::INFINITY),
                             );
+                            // Right-click: the clipboard commands, which go through the same
+                            // path as their shortcuts (so Paste attaches a copied image too).
+                            edit.context_menu(|ui| {
+                                let commands = [
+                                    ("Cut", egui::ViewportCommand::RequestCut),
+                                    ("Copy", egui::ViewportCommand::RequestCopy),
+                                    ("Paste", egui::ViewportCommand::RequestPaste),
+                                ];
+                                for (label, command) in commands {
+                                    if ui.button(label).clicked() {
+                                        ui.memory_mut(|m| m.request_focus(id));
+                                        ui.ctx().send_viewport_cmd(command);
+                                        ui.close();
+                                    }
+                                }
+                            });
                         });
                     ui.horizontal(|ui| {
                         // Icon buttons without outlines, like the rest of the box.
@@ -5229,5 +5300,25 @@ mod enter_key_tests {
     fn shift_enter_inserts_newline_and_enter_sends() {
         assert_eq!(run(true), (false, "hi\n".to_owned()));
         assert_eq!(run(false), (true, "hi".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    #[test]
+    fn a_pasted_image_becomes_a_png_with_its_colours() {
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([2, 1], &[255, 0, 0, 255, 0, 0, 255, 128]);
+        let png = png_of(&image).unwrap();
+        assert_eq!(crate::attach::image_mime(&png), Some("image/png"));
+        let back = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(back.dimensions(), (2, 1));
+        assert_eq!(back.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        // Half-transparent blue keeps its alpha (premultiplied rounding aside).
+        let [r, g, b, a] = back.get_pixel(1, 0).0;
+        assert_eq!((r, g, a), (0, 0, 128));
+        assert!(b >= 250, "{b}");
     }
 }

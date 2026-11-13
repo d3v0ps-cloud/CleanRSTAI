@@ -12,6 +12,7 @@ Use **⌘** on macOS and **Ctrl** on Linux and Windows.
 |---|---|
 | Enter / Shift+Enter | Send / new line (can be swapped in [General](../settings/general.html#sending)) |
 | ⌘/Ctrl + Enter | Send |
+| ⌘/Ctrl + V | Paste; an image on the clipboard is attached to the message (also **Paste** in the message box's right-click menu) |
 | ⌘/Ctrl + N | New chat |
 | ⌘/Ctrl + K | Command palette: switch model or provider, open a chat, change theme, export… |
 | ⌘/Ctrl + B | Show or hide the sidebar |

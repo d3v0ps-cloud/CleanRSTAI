@@ -338,8 +338,11 @@ are written only where you choose; nothing is sent anywhere.
 
 ## Attachments
 
-Attach files with the **+** button or by dropping them on the window. Files up to 50 MB can be
-attached; text beyond a million characters is cut, with a note saying so.
+Attach files with the **+** button or by dropping them on the window. An image copied to the
+clipboard (a screenshot, or **Copy Image** in a browser) is attached with **⌘/Ctrl + V** in the
+message box, or **Paste** in its right-click menu, as `Pasted image <date and time>.png`; when
+the clipboard also holds text, the text is pasted instead. Files up to 50 MB can be attached;
+text beyond a million characters is cut, with a note saying so.
 
 | Kind | Sent as |
 |---|---|
