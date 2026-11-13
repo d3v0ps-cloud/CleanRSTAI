@@ -531,7 +531,8 @@ mod tests {
         assert_eq!(MemoryStore::at(&path).remove_all(|_| true).unwrap(), 1);
         assert!(MemoryStore::at(&path).all().is_empty());
         // No temporary file is left behind.
-        assert!(!path.with_extension("tmp").exists());
+        let left = std::fs::read_dir(path.parent().unwrap()).unwrap();
+        assert_eq!(left.count(), 1);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
