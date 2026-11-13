@@ -31,6 +31,20 @@ impl std::fmt::Display for SessionExpired {
 
 impl std::error::Error for SessionExpired {}
 const VERSION_HEADER: &str = "mcp-protocol-version";
+/// The notification stream is opened again after this wait, doubled for each failure in a row
+/// up to `RETRY_MAX`.
+#[cfg(not(test))]
+const RETRY_BASE: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const RETRY_BASE: Duration = Duration::from_millis(1);
+const RETRY_MAX: Duration = RETRY_BASE.saturating_mul(60);
+
+/// The wait before opening the notification stream again after `failures` failures in a row.
+fn retry_delay(failures: u32) -> Duration {
+    RETRY_BASE
+        .saturating_mul(1 << failures.min(6))
+        .min(RETRY_MAX)
+}
 
 struct Inner {
     http: reqwest::Client,
@@ -119,9 +133,11 @@ impl HttpTransport {
     }
 
     /// Open the optional GET stream for server-initiated notifications and requests.
-    /// Servers that don't offer it answer 405, which simply ends the listener. Other
-    /// failures (including 401 while a token is refreshed, or 404 while an expired session
-    /// is renewed) are retried with backoff.
+    /// Servers that don't offer it answer 405 (or something other than an event stream),
+    /// which simply ends the listener. Other failures (including 401 while a token is
+    /// refreshed, 404 while an expired session is renewed, or a server that is restarting)
+    /// are retried for as long as the connection lasts, waiting at most a minute between
+    /// tries, so `list_changed` notifications arrive again once the server is back.
     pub fn start_listening(&self) {
         let inner = self.inner.clone();
         let task = tokio::spawn(async move {
@@ -131,14 +147,11 @@ impl HttpTransport {
                     Ok(Listen::NotSupported) => return,
                     Ok(Listen::Ended) => failures = 0,
                     Err(e) => {
-                        failures += 1;
+                        failures = failures.saturating_add(1);
                         log::debug!("MCP notification stream: {e:#}");
-                        if failures >= 5 {
-                            return;
-                        }
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(2u64.pow(failures.min(5)))).await;
+                tokio::time::sleep(retry_delay(failures)).await;
             }
         });
         *self.listener.locked() = Some(task);
@@ -363,6 +376,52 @@ mod tests {
             key: key.into(),
             value: value.into(),
         }
+    }
+
+    #[test]
+    fn retry_waits_double_up_to_a_cap() {
+        assert_eq!(retry_delay(0), RETRY_BASE);
+        assert_eq!(retry_delay(1), RETRY_BASE * 2);
+        assert_eq!(retry_delay(3), RETRY_BASE * 8);
+        assert_eq!(retry_delay(6), RETRY_MAX);
+        assert_eq!(retry_delay(u32::MAX), RETRY_MAX);
+    }
+
+    /// A server that is down for a while (many failed tries in a row) still gets its
+    /// notification stream back once it answers again.
+    #[tokio::test]
+    async fn notification_stream_comes_back_after_many_failures() {
+        use crate::testutil::{Response, serve};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gets = Arc::new(AtomicUsize::new(0));
+        let seen = gets.clone();
+        let (base, _) = serve(move |r| {
+            if r.method != "GET" {
+                return Response::status(202);
+            }
+            if seen.fetch_add(1, Ordering::SeqCst) < 8 {
+                return Response::status(503);
+            }
+            Response::with_type(
+                200,
+                "text/event-stream",
+                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n",
+            )
+        })
+        .await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let on_notify: NotifyFn = Arc::new(move |method: &str| {
+            let _ = tx.send(method.to_owned());
+        });
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let transport =
+            HttpTransport::new(http, &format!("{base}/mcp"), &[], on_notify, None).unwrap();
+        transport.start_listening();
+        let method = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("no notification after the server came back");
+        assert_eq!(method.as_deref(), Some("notifications/tools/list_changed"));
+        assert!(gets.load(Ordering::SeqCst) > 8);
     }
 
     #[test]

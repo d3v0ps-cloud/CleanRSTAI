@@ -40,6 +40,15 @@ t("headings h2 and h6", () => {
 t("hash without space is not a heading", () => {
   assert.strictEqual(M.render("#tag"), "<p>#tag</p>");
 });
+t("closing hashes after a space are dropped from a heading", () => {
+  assert.strictEqual(M.render("## Title ##  "), "<h2>Title</h2>");
+  assert.strictEqual(M.render("# C#"), "<h1>C#</h1>");
+  assert.strictEqual(M.render("# ##"), "<h1>##</h1>");
+});
+t("inline code loses one space of padding on each side", () => {
+  assert.strictEqual(M.render("`` `x` ``"), "<p><code>`x`</code></p>");
+  assert.strictEqual(M.render("`  `"), "<p><code>  </code></p>");
+});
 
 // ---- Inline formatting ----
 t("bold with ** and __", () => {
@@ -120,6 +129,12 @@ t("blockquote", () => {
 });
 t("horizontal rule", () => {
   assert.strictEqual(M.render("---"), "<hr>");
+});
+t("table separator rows with and without outer pipes", () => {
+  assert(M.render("a|b\n---|:-:").includes("<table>"));
+  assert(M.render("|a|b|\n| --- | ---: |").includes("<table>"));
+  assert(!M.render("a|b\n---||").includes("<table>"));
+  assert(!M.render("a|b\n--x|---").includes("<table>"));
 });
 t("table with alignment and inline cells", () => {
   assert.strictEqual(M.render("| a | b |\n|:--|--:|\n| 1 | **2** |"),
@@ -211,6 +226,11 @@ function renderMs(text) {
   ["unmatched ** openers", "**a ".repeat(20000)],
   ["many [ sharing one ] and an unclosed (", "[".repeat(20000) + "a](" + "a".repeat(20000)],
   ["autolink with many trailing )", "https://x" + ")".repeat(20000)],
+  ["inline code with no closing space", "`` " + "a ".repeat(30000) + "a``"],
+  ["heading with a long run of spaces", "# a" + " ".repeat(40000) + "b"],
+  ["heading with spaces before a closing #", "# a" + " ".repeat(40000) + "#b"],
+  ["table separator with leading spaces", "a|b\n" + " ".repeat(40000) + "x"],
+  ["table separator with trailing spaces", "a|b\n|---" + " ".repeat(40000) + "x"],
 ].forEach(([name, text]) => {
   t("performance: " + name + " renders in < 300 ms", () => {
     const ms = renderMs(text);

@@ -294,6 +294,9 @@ fn now_secs() -> u64 {
 /// The Access settings the server checks requests with, and the team's keys once fetched.
 pub struct Gate {
     state: Mutex<State>,
+    /// Held while the keys are fetched, so requests for an unknown key id wait for the fetch
+    /// and then look again, instead of being refused while it runs.
+    fetching: tokio::sync::Mutex<()>,
     http: reqwest::Client,
     /// Tests serve the keys from a local address; the app always uses the team's own address.
     test_keys_url: Option<String>,
@@ -321,6 +324,7 @@ impl Gate {
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             state: Mutex::new(State::default()),
+            fetching: tokio::sync::Mutex::new(()),
             http,
             test_keys_url: None,
         }
@@ -331,6 +335,7 @@ impl Gate {
     pub fn for_tests(url: &str) -> Self {
         Self {
             state: Mutex::new(State::default()),
+            fetching: tokio::sync::Mutex::new(()),
             http: reqwest::Client::builder()
                 .no_proxy()
                 .timeout(FETCH_TIMEOUT)
@@ -409,8 +414,17 @@ impl Gate {
 
     /// The key with this id. Unknown ids fetch the team's keys again, at most once a minute.
     async fn key(&self, team: &str, kid: &str) -> Result<RsaKey, AccessError> {
+        if let Some(key) = lock(&self.state).keys.get(kid) {
+            return Ok(key.clone());
+        }
+        // One fetch at a time. A request that waited here looks at the keys again, since the
+        // fetch it waited for may have brought this one.
+        let _fetching = self.fetching.lock().await;
         {
             let mut s = lock(&self.state);
+            if s.team != team {
+                return Err(AccessError::NotConfigured);
+            }
             if let Some(key) = s.keys.get(kid) {
                 return Ok(key.clone());
             }
@@ -421,7 +435,6 @@ impl Gate {
                     None => AccessError::UnknownKey,
                 });
             }
-            // Claimed before the fetch, so requests that arrive meanwhile don't fetch too.
             s.fetched = Some(Instant::now());
         }
         let fetched = self.fetch(team).await;
@@ -906,6 +919,22 @@ mod tests {
         assert_eq!(*fetches.lock().unwrap(), 1);
         // A known key still works without a fetch.
         assert!(gate.verify(Some(token_now().as_str())).await.is_ok());
+        assert_eq!(*fetches.lock().unwrap(), 1);
+    }
+
+    /// Requests that arrive while the first fetch runs wait for it instead of being refused.
+    #[tokio::test]
+    async fn requests_during_a_key_fetch_wait_for_it() {
+        let (gate, fetches) = gate_with_keys(jwks(), false).await;
+        let (a, b, c) = (token_now(), token_now(), token_now());
+        let (a, b, c) = tokio::join!(
+            gate.verify(Some(a.as_str())),
+            gate.verify(Some(b.as_str())),
+            gate.verify(Some(c.as_str())),
+        );
+        assert!(a.is_ok(), "{a:?}");
+        assert!(b.is_ok(), "{b:?}");
+        assert!(c.is_ok(), "{c:?}");
         assert_eq!(*fetches.lock().unwrap(), 1);
     }
 

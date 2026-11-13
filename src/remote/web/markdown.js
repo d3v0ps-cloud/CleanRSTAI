@@ -17,11 +17,13 @@ var CleanMarkdown = (function () {
   // Block patterns
   var FENCE_OPEN = /^ {0,3}(`{3,})([^`]*)$/;
   var FENCE_CLOSE = /^ {0,3}(`{3,})[ \t]*$/;
-  var HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+  // Trailing spaces and closing #s are removed by headingText, not here: a lazy match
+  // followed by [ \t]*$ backtracks quadratically over long runs of spaces.
+  var HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/;
   var HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
   var BLOCKQUOTE = /^ {0,3}>/;
   var ITEM = /^( *)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
-  var TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+  var SEP_CELL = /^:?-+:?$/;
   var LANG = /^[A-Za-z0-9_+-]+$/;
 
   // Inline patterns, matched with sticky flags at the current index
@@ -31,6 +33,44 @@ var CleanMarkdown = (function () {
   var SAFE_URL = /^(https?:\/\/|mailto:)/i;
 
   function isBlank(s) { return /^\s*$/.test(s); }
+
+  function isSpaceOrTab(c) { return c === " " || c === "\t"; }
+
+  // A table's separator row, such as "| --- | :-: |". Checked cell by cell on trimmed text,
+  // since a single regex with optional pipes between \s* runs backtracks quadratically.
+  function isTableSep(line) {
+    var s = line.trim();
+    if (s.charAt(0) === "|") s = s.slice(1);
+    if (s.charAt(s.length - 1) === "|") s = s.slice(0, -1);
+    var cells = s.split("|");
+    for (var c = 0; c < cells.length; c++) {
+      if (!SEP_CELL.test(cells[c].trim())) return false;
+    }
+    return true;
+  }
+
+  // A heading's text without trailing spaces and without a closing run of #s that follows a
+  // space ("## Title ##" gives "Title").
+  function headingText(s) {
+    var end = s.length;
+    while (end > 0 && isSpaceOrTab(s.charAt(end - 1))) end--;
+    var k = end;
+    while (k > 0 && s.charAt(k - 1) === "#") k--;
+    if (k < end && k > 0 && isSpaceOrTab(s.charAt(k - 1))) {
+      end = k;
+      while (end > 0 && isSpaceOrTab(s.charAt(end - 1))) end--;
+    }
+    return s.slice(0, end);
+  }
+
+  // Inline code padded with a space on both sides loses one on each side, unless it is all
+  // spaces. Plain string checks: a regex like /^ .*\S.* $/ backtracks quadratically.
+  function stripCodePadding(code) {
+    var padded = code.length > 2 && code.charAt(0) === " " &&
+      code.charAt(code.length - 1) === " " && /\S/.test(code) &&
+      !/[\n\r\u2028\u2029]/.test(code);
+    return padded ? code.slice(1, -1) : code;
+  }
 
   function isWord(c) { return c !== "" && /[\p{L}\p{N}]/u.test(c); }
 
@@ -70,8 +110,7 @@ var CleanMarkdown = (function () {
           i += n;
           continue;
         }
-        var code = raw.slice(i + n, close);
-        if (/^ .*\S.* $/.test(code)) code = code.slice(1, -1);
+        var code = stripCodePadding(raw.slice(i + n, close));
         flush();
         out += "<code>" + escapeHtml(code) + "</code>";
         i = close + n;
@@ -275,7 +314,7 @@ var CleanMarkdown = (function () {
 
   function isTableStart(lines, i) {
     return i + 1 < lines.length && lines[i].indexOf("|") !== -1 &&
-      TABLE_SEP.test(lines[i + 1]) &&
+      isTableSep(lines[i + 1]) &&
       splitRow(lines[i]).length === splitRow(lines[i + 1]).length;
   }
 
@@ -403,7 +442,7 @@ var CleanMarkdown = (function () {
 
       if ((m = HEADING.exec(line))) {
         var tag = "h" + m[1].length;
-        var title = (m[2] || "").replace(/[ \t]+#+$/, "");
+        var title = headingText(m[2] || "");
         out.push("<" + tag + ">" + inline(title, false, 0) + "</" + tag + ">");
         i++;
         continue;

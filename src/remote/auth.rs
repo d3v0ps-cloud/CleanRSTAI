@@ -37,7 +37,8 @@ struct Failures {
 pub struct Auth {
     /// SHA-256 of the configured password, so comparisons are of fixed length.
     password_digest: [u8; 32],
-    /// Add `Secure` to the cookie (TLS on).
+    /// Add `Secure` to every cookie (TLS on). Cookies for visitors through the tunnel always
+    /// get it, since Cloudflare serves them over HTTPS.
     secure_cookie: bool,
     sessions: Mutex<HashMap<String, Session>>,
     failures: Mutex<HashMap<IpAddr, Failures>>,
@@ -109,13 +110,14 @@ impl Auth {
         lock(&self.sessions).remove(token);
     }
 
-    /// The `Set-Cookie` value that starts a session.
-    pub fn session_cookie(&self, token: &str) -> String {
+    /// The `Set-Cookie` value that starts a session. `tunnel` is true for a request that came
+    /// through the Cloudflare Tunnel.
+    pub fn session_cookie(&self, token: &str, tunnel: bool) -> String {
         format!(
             "{}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
             Self::cookie_pair(token),
             SESSION_ABSOLUTE.as_secs(),
-            self.secure_attr()
+            self.secure_attr(tunnel)
         )
     }
 
@@ -125,10 +127,10 @@ impl Auth {
     }
 
     /// The `Set-Cookie` value that removes the session cookie.
-    pub fn clear_cookie(&self) -> String {
+    pub fn clear_cookie(&self, tunnel: bool) -> String {
         format!(
             "{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}",
-            self.secure_attr()
+            self.secure_attr(tunnel)
         )
     }
 
@@ -141,8 +143,12 @@ impl Auth {
             .find(|token| !token.is_empty())
     }
 
-    fn secure_attr(&self) -> &'static str {
-        if self.secure_cookie { "; Secure" } else { "" }
+    fn secure_attr(&self, tunnel: bool) -> &'static str {
+        if self.secure_cookie || tunnel {
+            "; Secure"
+        } else {
+            ""
+        }
     }
 
     /// True while tunnel logins are paused after too many failures through the tunnel.
@@ -436,20 +442,32 @@ mod tests {
 
     #[test]
     fn cookies_have_the_spec_attributes() {
-        let plain = auth(false).session_cookie("tok");
+        let plain = auth(false).session_cookie("tok", false);
         assert_eq!(
             plain,
             "cleanrstai_session=tok; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
         );
         assert!(!plain.contains("Secure"));
-        let secure = auth(true).session_cookie("tok");
+        let secure = auth(true).session_cookie("tok", false);
         assert!(secure.ends_with("Max-Age=2592000; Secure"));
+        // Through the tunnel the browser is on HTTPS even when this server is not.
+        let tunnel = auth(false).session_cookie("tok", true);
+        assert!(tunnel.ends_with("Max-Age=2592000; Secure"));
 
-        let clear = auth(false).clear_cookie();
+        let clear = auth(false).clear_cookie(false);
         assert_eq!(
             clear,
             "cleanrstai_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
         );
-        assert!(auth(true).clear_cookie().ends_with("Max-Age=0; Secure"));
+        assert!(
+            auth(true)
+                .clear_cookie(false)
+                .ends_with("Max-Age=0; Secure")
+        );
+        assert!(
+            auth(false)
+                .clear_cookie(true)
+                .ends_with("Max-Age=0; Secure")
+        );
     }
 }

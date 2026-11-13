@@ -17,6 +17,8 @@ use crate::config::McpTransportConfig;
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(120);
+/// A list longer than this many pages is taken to be a server that never stops paging.
+const MAX_PAGES: usize = 1000;
 
 fn initialize_params() -> Value {
     json!({
@@ -300,11 +302,14 @@ impl McpClient {
             .is_some_and(|c| !c.is_null())
     }
 
-    /// Fetch every page of a paginated list method (`tools/list`, `resources/list`, …).
+    /// Fetch every page of a paginated list method (`tools/list`, `resources/list`, …). A
+    /// server that hands back a cursor it gave before, or pages on past `MAX_PAGES`, would
+    /// keep this going forever, so that is an error.
     async fn list_all(&self, method: &str, key: &str) -> Result<Vec<Value>> {
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
-        loop {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..MAX_PAGES {
             let params = match &cursor {
                 Some(c) => json!({"cursor": c}),
                 None => json!({}),
@@ -324,10 +329,15 @@ impl McpClient {
                 .and_then(|c| c.as_str())
                 .filter(|c| !c.is_empty())
                 .map(str::to_owned);
-            if cursor.is_none() {
-                return Ok(items);
+            match &cursor {
+                None => return Ok(items),
+                Some(c) if !seen.insert(c.clone()) => {
+                    bail!("'{method}' repeated the page cursor '{c}'")
+                }
+                Some(_) => {}
             }
         }
+        bail!("'{method}' returned more than {MAX_PAGES} pages")
     }
 
     pub async fn list_resources(&self) -> Result<Vec<McpResource>> {
@@ -428,26 +438,12 @@ impl McpClient {
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
-        let mut tools = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let params = match &cursor {
-                Some(c) => json!({"cursor": c}),
-                None => json!({}),
-            };
-            let res = self
-                .request("tools/list", params, Duration::from_secs(60))
-                .await?;
-            for t in res
-                .get("tools")
-                .and_then(|t| t.as_array())
-                .into_iter()
-                .flatten()
-            {
-                let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
-                    continue;
-                };
-                tools.push(McpTool {
+        let items = self.list_all("tools/list", "tools").await?;
+        Ok(items
+            .iter()
+            .filter_map(|t| {
+                let name = t.get("name").and_then(|n| n.as_str())?;
+                Some(McpTool {
                     name: name.to_owned(),
                     description: t
                         .get("description")
@@ -459,18 +455,9 @@ impl McpClient {
                         .get("inputSchema")
                         .cloned()
                         .unwrap_or_else(|| json!({"type": "object"})),
-                });
-            }
-            cursor = res
-                .get("nextCursor")
-                .and_then(|c| c.as_str())
-                .filter(|c| !c.is_empty())
-                .map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok(tools)
+                })
+            })
+            .collect())
     }
 
     pub async fn call_tool(
@@ -688,6 +675,80 @@ pub fn format_tool_result(res: &Value) -> ToolOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Connects to a mock server whose `tools/list` answers with `next(cursor)` as the next
+    /// cursor, and lists the tools.
+    async fn list_tools_with(
+        next: impl Fn(Option<&str>) -> Option<String> + Send + Sync + 'static,
+    ) -> Result<Vec<McpTool>> {
+        use crate::testutil::{Response, serve};
+        let (base, _) = serve(move |r| {
+            if r.method == "GET" {
+                return Response::status(405);
+            }
+            let req = r.json();
+            let id = req["id"].clone();
+            match req["method"].as_str().unwrap_or("") {
+                "initialize" => Response::json(json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "mock", "version": "1"}}})),
+                "tools/list" => {
+                    let cursor = req["params"]["cursor"].as_str();
+                    let name = format!("t{}", cursor.unwrap_or("0"));
+                    let mut result = json!({"tools": [{"name": name}]});
+                    if let Some(c) = next(cursor) {
+                        result["nextCursor"] = json!(c);
+                    }
+                    Response::json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+                }
+                _ => Response::status(202),
+            }
+        })
+        .await;
+        let cfg = McpTransportConfig::Http {
+            url: base,
+            headers: Vec::new(),
+            oauth_client_id: String::new(),
+        };
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let client = McpClient::connect(&cfg, http, Arc::new(|_| {}), None)
+            .await
+            .unwrap();
+        client.list_tools().await
+    }
+
+    #[tokio::test]
+    async fn tool_pages_are_followed_to_the_end() {
+        let tools = list_tools_with(|cursor| match cursor {
+            None => Some("1".into()),
+            Some("1") => Some("2".into()),
+            _ => None,
+        })
+        .await
+        .unwrap();
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["t0", "t1", "t2"]);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_cursor_ends_the_listing_with_an_error() {
+        let err = list_tools_with(|_| Some("again".into())).await.unwrap_err();
+        assert!(
+            err.to_string().contains("repeated the page cursor"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn endless_pages_end_with_an_error() {
+        let err = list_tools_with(|cursor| {
+            let n: u64 = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
+            Some((n + 1).to_string())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("more than"), "{err:#}");
+    }
 
     #[tokio::test]
     async fn starts_a_new_http_session_when_the_old_one_expires() {
