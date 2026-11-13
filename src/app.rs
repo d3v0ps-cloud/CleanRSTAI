@@ -1206,6 +1206,16 @@ impl ChatApp {
         self.errors.remove(&id);
         self.unread.remove(&id);
         self.always_allow.remove(&id);
+        self.instructions.remove(&id);
+        self.holds.remove(&id);
+        self.remote_seen.remove(&id);
+        self.remote_sent.remove(&id);
+        if self.editing.is_some_and(|(c, _)| c == id) {
+            self.editing = None;
+        }
+        if self.artifact.as_ref().is_some_and(|v| v.conv == id) {
+            self.artifact = None;
+        }
         if self.current == Some(id) {
             self.current = self.conversations.first().map(|c| c.id);
         }
@@ -1227,9 +1237,11 @@ impl ChatApp {
         if self.busy(id) {
             return;
         }
+        let typed = text.clone();
         let text = self.expand_command(id, text);
-        // `/name` for a skill (not a command) asks the model to load it.
-        let text = if text.starts_with('/') {
+        // `/name` for a skill (not a command) asks the model to load it. Only text as typed
+        // counts: an expanded command's prompt is sent as it is.
+        let text = if text == typed && text.starts_with('/') {
             let workspace = self.current_workspace();
             let skills = self
                 .skill_cache
@@ -1741,16 +1753,33 @@ impl ChatApp {
             .map(|(id, _)| *id)
             .collect();
         for id in stuck {
-            self.runs.remove(&id);
-            if let Some(hold) = self.holds.remove(&id)
-                && let Some(conv) = self.conv_mut(id)
-            {
-                branches::settle(&mut conv.messages, hold);
+            let compact_only = self.runs.remove(&id).is_some_and(|r| r.compact_only);
+            let hold = self.holds.remove(&id);
+            if let Some(conv) = self.conv_mut(id) {
+                // The reply died, so what it made stays (as after `Done`) and a regeneration
+                // keeps its new tail; only an empty placeholder goes.
+                if let Some(hold) = hold {
+                    branches::settle(&mut conv.messages, hold);
+                }
+                // (One that holds a turn's other versions stays, or they would go with it.)
+                if conv.messages.last().is_some_and(|m| {
+                    m.role == Role::Assistant
+                        && m.content.is_empty()
+                        && m.tool_calls.is_empty()
+                        && m.alternatives.is_empty()
+                }) {
+                    conv.messages.pop();
+                    conv.updated_at = chrono::Utc::now();
+                    conv.save();
+                }
             }
             self.errors
                 .entry(id)
                 .or_insert_with(|| "The reply stopped unexpectedly.".into());
-            self.reply_ended(id, Outcome::Failed);
+            // A compaction isn't a reply, so it doesn't notify as a failed one.
+            if !compact_only {
+                self.reply_ended(id, Outcome::Failed);
+            }
         }
     }
 
@@ -4602,9 +4631,25 @@ impl ChatApp {
                         // still shows it.
                         let text = c.messages[idx].content.clone();
                         let attachments = c.messages[idx].attachments.clone();
+                        // Don't throw away what is already in the message box.
+                        if !self.input.trim().is_empty() && self.editing.is_none() {
+                            self.notice =
+                                Some("Empty the message box before editing a message.".into());
+                            continue;
+                        }
                         self.editing = Some((conv, idx));
                         self.input = text;
-                        self.pending_attachments = attachments;
+                        // Files waiting in the box stay; the message's own follow them.
+                        for a in attachments {
+                            let tag = a.content_tag();
+                            if !self
+                                .pending_attachments
+                                .iter()
+                                .any(|p| p.name == a.name && p.content_tag() == tag)
+                            {
+                                self.pending_attachments.push(a);
+                            }
+                        }
                         self.errors.remove(&conv);
                         ctx.memory_mut(|m| m.request_focus(egui::Id::unique(INPUT_ID)));
                     }

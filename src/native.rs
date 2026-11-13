@@ -324,8 +324,14 @@ fn anthropic_messages(messages: &[Value]) -> (Vec<Value>, Vec<Value>) {
             }
             "assistant" => {
                 let mut blocks = native_items(m, ProviderApi::Anthropic);
+                // Items with text in them are the whole turn in the API's order. Older chats
+                // kept no text there, so the message's text goes after the items.
+                let in_order = blocks.iter().any(|b| b["type"] == "text");
+                blocks.retain(|b| {
+                    b["type"] != "text" || b["text"].as_str().is_some_and(|t| !t.is_empty())
+                });
                 let text = text_of(&m["content"]);
-                if !text.is_empty() {
+                if !in_order && !text.is_empty() {
                     blocks.push(json!({"type": "text", "text": text}));
                 }
                 for call in m["tool_calls"].as_array().into_iter().flatten() {
@@ -447,7 +453,8 @@ pub(crate) fn anthropic_body(
 }
 
 enum Block {
-    Text,
+    /// The text so far, kept so a replayed turn has its blocks in the order the API sent.
+    Text(String),
     Thinking {
         thinking: String,
         signature: String,
@@ -495,15 +502,16 @@ impl AnthropicReader {
             Some("text") => {
                 // Text that resumes after a search or a tool block is a new paragraph;
                 // neighbouring text blocks (cited and uncited runs) are one sentence.
-                let resumes = !matches!(self.blocks.last(), None | Some(Block::Text));
+                let resumes = !matches!(self.blocks.last(), None | Some(Block::Text(_)));
                 if resumes && !sink.turn.content.is_empty() && !sink.turn.content.ends_with('\n') {
                     sink.content("\n\n");
                 }
-                sink.content(b["text"].as_str().unwrap_or_default());
+                let text = b["text"].as_str().unwrap_or_default();
+                sink.content(text);
                 for c in b["citations"].as_array().into_iter().flatten() {
                     add_citation(&mut sink.turn.sources, c);
                 }
-                Block::Text
+                Block::Text(text.to_owned())
             }
             Some("thinking") => {
                 sink.reasoning(b["thinking"].as_str().unwrap_or_default());
@@ -602,7 +610,12 @@ impl Reader for AnthropicReader {
                 let d = &v["delta"];
                 let text = |k: &str| d[k].as_str().unwrap_or_default();
                 match (d["type"].as_str(), self.blocks.get_mut(index)) {
-                    (Some("text_delta"), _) => sink.content(text("text")),
+                    (Some("text_delta"), block) => {
+                        if let Some(Block::Text(t)) = block {
+                            t.push_str(text("text"));
+                        }
+                        sink.content(text("text"));
+                    }
                     (Some("thinking_delta"), Some(Block::Thinking { thinking, .. })) => {
                         thinking.push_str(text("thinking"));
                         sink.reasoning(text("thinking"));
@@ -655,15 +668,31 @@ impl Reader for AnthropicReader {
 
     fn finish(self, sink: &mut Sink<'_>) {
         let mut items = Vec::new();
+        // Whether the turn has blocks the API needs back (thinking, search); only then does
+        // the order of the text among them matter, so a plain reply keeps no native items.
+        let mut needs_back = false;
         for (i, b) in self.blocks.into_iter().enumerate() {
             match b {
+                Block::Text(text) => {
+                    // An empty text block is rejected by the API.
+                    if !text.is_empty() {
+                        items.push(json!({"type": "text", "text": text}));
+                    }
+                }
                 Block::Thinking {
                     thinking,
                     signature,
-                } => items.push(json!({"type": "thinking", "thinking": thinking,
-                                      "signature": signature})),
-                Block::Verbatim(v) => items.push(v),
+                } => {
+                    needs_back = true;
+                    items.push(json!({"type": "thinking", "thinking": thinking,
+                                      "signature": signature}));
+                }
+                Block::Verbatim(v) => {
+                    needs_back = true;
+                    items.push(v);
+                }
                 Block::Server { mut value, json } => {
+                    needs_back = true;
                     value["input"] = if json.trim().is_empty() {
                         value["input"].clone()
                     } else {
@@ -695,10 +724,10 @@ impl Reader for AnthropicReader {
                         arguments,
                     });
                 }
-                Block::Text | Block::Other => {}
+                Block::Other => {}
             }
         }
-        if !items.is_empty() {
+        if needs_back {
             sink.turn.native = Some(NativeItems {
                 api: ProviderApi::Anthropic,
                 items,
@@ -1620,11 +1649,18 @@ mod tests {
         assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
         let native = turn.native.unwrap();
         assert_eq!(native.api, ProviderApi::Anthropic);
-        assert_eq!(native.items.len(), 2);
-        assert_eq!(native.items[0]["type"], "server_tool_use");
-        assert_eq!(native.items[0]["input"]["query"], "rust 1.95");
-        assert_eq!(native.items[1]["type"], "web_search_tool_result");
-        assert_eq!(native.items[1]["content"][0]["encrypted_content"], "enc1");
+        // The text blocks are kept too, in order; the search items are what this checks.
+        let search: Vec<&Value> = native
+            .items
+            .iter()
+            .filter(|i| i["type"] != "text")
+            .collect();
+        assert!(native.items.len() > search.len());
+        assert_eq!(search.len(), 2);
+        assert_eq!(search[0]["type"], "server_tool_use");
+        assert_eq!(search[0]["input"]["query"], "rust 1.95");
+        assert_eq!(search[1]["type"], "web_search_tool_result");
+        assert_eq!(search[1]["content"][0]["encrypted_content"], "enc1");
 
         let log = log.lock().unwrap();
         let body = log[0].json();
@@ -1751,6 +1787,90 @@ mod tests {
             turn.native
                 .is_none_or(|n| n.items.iter().all(|i| i["type"] != "web_search_call"))
         );
+    }
+
+    #[tokio::test]
+    async fn anthropic_replays_text_among_search_blocks_in_order() {
+        let (base, _log) = serve(|_| {
+            Response::sse(&[
+                json!({"type": "message_start", "message": {"model": "claude-x"}}),
+                json!({"type": "content_block_start", "index": 0,
+                       "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "text_delta", "text": "I'll "}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "text_delta", "text": "search."}}),
+                json!({"type": "content_block_start", "index": 1,
+                       "content_block": {"type": "server_tool_use", "id": "srvtoolu_1",
+                                         "name": "web_search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 1,
+                       "delta": {"type": "input_json_delta", "partial_json": "{\"query\":\"x\"}"}}),
+                json!({"type": "content_block_start", "index": 2,
+                       "content_block": {"type": "web_search_tool_result",
+                                         "tool_use_id": "srvtoolu_1", "content": []}}),
+                json!({"type": "content_block_start", "index": 3,
+                       "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 3,
+                       "delta": {"type": "text_delta", "text": "Based on the results"}}),
+                json!({"type": "content_block_delta", "index": 3,
+                       "delta": {"type": "citations_delta", "citation": {
+                           "type": "web_search_result_location",
+                           "url": "https://a.example/1", "title": "A"}}}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                       "usage": {"output_tokens": 5}}),
+                json!({"type": "message_stop"}),
+            ])
+        })
+        .await;
+        let http = build_http_client();
+        let p = provider(&base, ProviderApi::Anthropic);
+        let turn = chat_completion(&http, &p, vec![], &[], |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "I'll search.\n\nBased on the results");
+        let native = turn.native.clone().unwrap();
+        let types: Vec<&str> = native
+            .items
+            .iter()
+            .filter_map(|i| i["type"].as_str())
+            .collect();
+        assert_eq!(
+            types,
+            ["text", "server_tool_use", "web_search_tool_result", "text"]
+        );
+        assert_eq!(native.items[0]["text"], "I'll search.");
+        assert_eq!(native.items[1]["input"]["query"], "x");
+        assert_eq!(native.items[3]["text"], "Based on the results");
+        assert!(native.items[3].get("citations").is_none());
+
+        let mut a = ChatMessage::new(Role::Assistant, &turn.content);
+        a.native = turn.native;
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "q"), a]);
+        let body = anthropic_body(&p, &msgs, &[], &ModelOptions::default());
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        let types: Vec<&str> = blocks.iter().filter_map(|b| b["type"].as_str()).collect();
+        assert_eq!(
+            types,
+            ["text", "server_tool_use", "web_search_tool_result", "text"]
+        );
+        assert_eq!(blocks[0]["text"], "I'll search.");
+        assert_eq!(blocks[3]["text"], "Based on the results");
+    }
+
+    #[test]
+    fn anthropic_never_replays_an_empty_text_item() {
+        let mut a = ChatMessage::new(Role::Assistant, "Hi.");
+        a.native = Some(NativeItems {
+            api: ProviderApi::Anthropic,
+            items: vec![
+                json!({"type": "text", "text": ""}),
+                json!({"type": "text", "text": "Hi."}),
+            ],
+        });
+        let msgs = to_api_messages("", &[ChatMessage::new(Role::User, "q"), a]);
+        let (_, out) = anthropic_messages(&msgs);
+        assert_eq!(out[1]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(out[1]["content"][0]["text"], "Hi.");
     }
 
     #[test]
