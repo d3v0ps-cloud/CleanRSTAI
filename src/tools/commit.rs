@@ -213,21 +213,25 @@ impl Workspace {
     /// Signing runs a program, and the repository's own config could name any: only one from
     /// the user's own git settings is run.
     async fn refuse_local_signing_program(&self) -> Result<(), String> {
-        let out = self
-            .git_output(
-                &[],
-                &[
-                    "config",
-                    "--local",
-                    "--includes",
-                    "--name-only",
-                    "--get-regexp",
-                    r"^gpg\.",
-                ],
-                None,
-            )
-            .await?;
-        let names = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        // The repository's config, and a linked worktree's own (`extensions.worktreeConfig`).
+        let mut names = String::new();
+        for scope in ["--local", "--worktree"] {
+            let out = self
+                .git_output(
+                    &[],
+                    &[
+                        "config",
+                        scope,
+                        "--includes",
+                        "--name-only",
+                        "--get-regexp",
+                        r"^gpg\.",
+                    ],
+                    None,
+                )
+                .await?;
+            names.push_str(&String::from_utf8_lossy(&out.stdout).to_lowercase());
+        }
         match names
             .lines()
             .map(str::trim)

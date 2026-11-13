@@ -155,6 +155,7 @@ impl HtmlPreview {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native {
     use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use eframe::egui;
@@ -169,6 +170,8 @@ mod native {
         page: u64,
         /// The page itself, for the navigation handler.
         current: Arc<Mutex<String>>,
+        /// Set when a page is given to the view, until its own navigation is seen.
+        loading: Arc<AtomicBool>,
         bounds: [i32; 4],
         visible: bool,
     }
@@ -181,8 +184,15 @@ mod native {
     }
 
     /// Only the page itself (and in-page anchors) loads in the view; links open in the browser.
-    fn navigate(url: String, current: &Mutex<String>) -> bool {
+    fn navigate(url: String, current: &Mutex<String>, loading: &AtomicBool) -> bool {
         if super::loads_in_view(&url, Some(&current.locked())) {
+            loading.store(false, Ordering::SeqCst);
+            return true;
+        }
+        // WebView2 loads the page as a `data:` URL. Should it write that URL another way
+        // than the check above expects, the first one after a load is still the page: no
+        // script of the page has run before it.
+        if cfg!(windows) && url.starts_with("data:") && loading.swap(false, Ordering::SeqCst) {
             return true;
         }
         if url.starts_with("http://") || url.starts_with("https://") {
@@ -214,6 +224,7 @@ mod native {
                 if v.page != hash {
                     // The handler must know the new page before its navigation starts.
                     *v.current.locked() = page.clone();
+                    v.loading.store(true, Ordering::SeqCst);
                     v.webview.load_html(&page).map_err(|e| e.to_string())?;
                     v.page = hash;
                 }
@@ -230,14 +241,16 @@ mod native {
             }
             None => {
                 let current = Arc::new(Mutex::new(page.clone()));
+                let loading = Arc::new(AtomicBool::new(true));
                 let (on_nav, on_window) = (current.clone(), current.clone());
+                let (nav_loading, window_loading) = (loading.clone(), loading.clone());
                 let webview = wry::WebViewBuilder::new()
                     .with_html(page)
                     .with_bounds(rect(bounds))
                     .with_devtools(false)
-                    .with_navigation_handler(move |url| navigate(url, &on_nav))
+                    .with_navigation_handler(move |url| navigate(url, &on_nav, &nav_loading))
                     .with_new_window_req_handler(move |url, _| {
-                        navigate(url, &on_window);
+                        navigate(url, &on_window, &window_loading);
                         wry::NewWindowResponse::Deny
                     })
                     .build_as_child(frame)
@@ -246,6 +259,7 @@ mod native {
                     webview,
                     page: hash,
                     current,
+                    loading,
                     bounds,
                     visible: true,
                 });

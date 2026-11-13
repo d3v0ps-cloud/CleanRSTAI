@@ -150,7 +150,7 @@ fn is_pdf(bytes: &[u8]) -> bool {
     }
     let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
     has(&bytes[..bytes.len().min(1024)], b"%PDF-")
-        && has(&bytes[bytes.len().saturating_sub(1024)..], b"%%EOF")
+        && has(&bytes[bytes.len().saturating_sub(8192)..], b"%%EOF")
 }
 
 /// What extraction found: the text, or a PDF with no text layer (to be read by OCR).

@@ -715,6 +715,11 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
     if !system_prompt.trim().is_empty() {
         out.push(json!({"role": "system", "content": system_prompt}));
     }
+    // Where the turn in progress starts.
+    let last_user = history
+        .iter()
+        .rposition(|m| m.role == Role::User)
+        .unwrap_or(0);
     let mut i = 0;
     while i < history.len() {
         let m = &history[i];
@@ -778,9 +783,12 @@ pub fn to_api_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Valu
                     }
                 }
                 // A tool message carries text only, so images a tool returned (a picture
-                // read from the workspace or fetched) follow in a user message.
+                // read from the workspace or fetched) follow in a user message. Only while
+                // the turn that asked for them runs: they aren't sent again with every later
+                // message, and a model that can't take images fails that turn alone.
                 let images: Vec<Value> = history[i + 1..j]
                     .iter()
+                    .filter(|_| i > last_user)
                     .flat_map(|t| &t.attachments)
                     .filter(|a| a.is_image())
                     .filter_map(|a| a.data_url())
@@ -1217,6 +1225,26 @@ mod tests {
         assert_eq!(msgs[3]["content"][0]["text"], TOOL_IMAGES_NOTE);
         let url = msgs[3]["content"][1]["image_url"]["url"].as_str().unwrap();
         assert!(url.starts_with("data:image/png;base64,"), "{url}");
+
+        // Once the user has written again, the image isn't sent any more.
+        let mut later = vec![ChatMessage::new(Role::User, "hi")];
+        let mut a = ChatMessage::new(Role::Assistant, "");
+        a.tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }];
+        let mut t = ChatMessage::tool_result(&a.tool_calls[0], "a.png is attached.", false);
+        t.attachments = vec![crate::attach::Attachment::image(
+            "a.png".into(),
+            "image/png".into(),
+            b"png",
+        )];
+        later.extend([a, t, ChatMessage::new(Role::User, "and now?")]);
+        let msgs = to_api_messages("", &later);
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "user"]);
+        assert_eq!(msgs[3]["content"], "and now?");
     }
 
     #[test]

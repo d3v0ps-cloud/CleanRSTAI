@@ -151,14 +151,19 @@ async fn discover(
     let mut resource = canonical_resource(server_url);
     let mut auth_server = None;
     let mut scopes = Vec::new();
+    // Metadata for another resource is passed over; when that is all there is, sign-in
+    // fails rather than fall back to a guess.
+    let mut other_resource = None;
     for url in &candidates {
         if let Ok(v) = get_json(http, url).await {
             if let Some(r) = v.get("resource").and_then(Value::as_str) {
                 if !resource_matches(r, server_url) {
-                    bail!("the server's sign-in metadata is for another resource ({r})");
+                    other_resource.get_or_insert_with(|| r.to_owned());
+                    continue;
                 }
                 resource = r.to_owned();
             }
+            other_resource = None;
             scopes = string_list(&v, "scopes_supported");
             auth_server = v
                 .get("authorization_servers")
@@ -168,6 +173,9 @@ async fn discover(
                 .map(str::to_owned);
             break;
         }
+    }
+    if let Some(r) = other_resource {
+        bail!("the server's sign-in metadata is for another resource ({r})");
     }
     // Older servers act as their own authorization server.
     let issuer = auth_server.unwrap_or_else(|| server.origin().ascii_serialization());

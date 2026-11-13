@@ -206,15 +206,18 @@ fn proxied() -> bool {
         .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
 }
 
-/// Behind a proxy: refuse a host that this computer resolves to a private address, or
-/// can't resolve at all (a name only the proxy knows is inside its network).
+/// Behind a proxy: refuse a host that this computer resolves to a private address. A name
+/// it can't resolve is left to the proxy, as on a network where only the proxy looks up
+/// outside names.
 fn check_resolved(
     host: &str,
     addrs: std::io::Result<Vec<IpAddr>>,
 ) -> std::result::Result<(), String> {
     match addrs {
-        Ok(addrs) if !addrs.is_empty() && addrs.iter().all(|ip| is_public(*ip)) => Ok(()),
-        _ => Err(format!("{host}: {PRIVATE_REFUSED}")),
+        Ok(addrs) if addrs.iter().any(|ip| !is_public(*ip)) => {
+            Err(format!("{host}: {PRIVATE_REFUSED}"))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -581,8 +584,9 @@ mod tests {
         assert!(check_resolved("a", Ok(vec![ip("93.184.216.34")])).is_ok());
         assert!(check_resolved("a", Ok(vec![ip("93.184.216.34"), ip("10.0.0.1")])).is_err());
         assert!(check_resolved("a", Ok(vec![ip("::ffff:127.0.0.1")])).is_err());
-        assert!(check_resolved("a", Ok(Vec::new())).is_err());
+        // A name only the proxy can look up is the proxy's to answer.
+        assert!(check_resolved("a", Ok(Vec::new())).is_ok());
         let unknown = std::io::Error::other("no such host");
-        assert!(check_resolved("intranet.corp", Err(unknown)).is_err());
+        assert!(check_resolved("example.com", Err(unknown)).is_ok());
     }
 }

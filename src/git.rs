@@ -76,9 +76,11 @@ impl Repository {
         })
     }
 
-    /// A `.git` file is how git links a worktree or a submodule to its repository, and its
-    /// target is then under that repository's `.git/worktrees` or `.git/modules`. Any other
-    /// target would have the git tools read a repository the workspace merely points at.
+    /// A `.git` file is how git links a worktree or a submodule to its repository, or a
+    /// repository to a git folder kept elsewhere. Its target then says so itself: a linked
+    /// worktree's has a `commondir` file, and the other two name this folder as their
+    /// `core.worktree`. Any other target would have the git tools read a repository the
+    /// workspace merely points at.
     fn check(&self) -> Result<(), String> {
         const REFUSED: &str = "The workspace's .git points at another repository, so the git \
                                tools won't run";
@@ -98,18 +100,30 @@ impl Repository {
             .map(str::trim)
             .ok_or_else(|| REFUSED.to_owned())?;
         let target = self.top.join(target);
-        let names: Vec<_> = target
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let linked = names
-            .windows(2)
-            .any(|w| w[0] == ".git" && matches!(w[1].as_str(), "worktrees" | "modules"));
-        if linked {
+        if target.join("commondir").is_file() || self.is_worktree_of(&target) {
             Ok(())
         } else {
             Err(REFUSED.to_owned())
         }
+    }
+
+    /// Whether the git folder `target` has this folder as its `core.worktree` (a submodule,
+    /// or `git init --separate-git-dir`).
+    fn is_worktree_of(&self, target: &Path) -> bool {
+        let Ok(config) = std::fs::read_to_string(target.join("config")) else {
+            return false;
+        };
+        let Ok(top) = self.top.canonicalize() else {
+            return false;
+        };
+        config
+            .lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .filter(|(key, _)| key.trim().eq_ignore_ascii_case("worktree"))
+            .any(|(_, value)| {
+                let value = value.trim().trim_matches('"');
+                target.join(value).canonicalize().is_ok_and(|w| w == top)
+            })
     }
 }
 
@@ -412,9 +426,27 @@ mod tests {
         )
         .unwrap();
         assert!(safe_command(&pointer).await.is_err());
+        // A linked worktree's git folder has a `commondir`, also under a bare repository.
+        let linked = base.join("bare.git/worktrees/w");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(linked.join("commondir"), "../..\n").unwrap();
         std::fs::write(
             pointer.join(".git"),
-            format!("gitdir: {}\n", other.join(".git/worktrees/w").display()),
+            format!("gitdir: {}\n", linked.display()),
+        )
+        .unwrap();
+        assert!(Repository::around(&pointer).unwrap().check().is_ok());
+        // A git folder kept elsewhere names the folder as its work tree.
+        let apart = base.join("apart.git");
+        std::fs::create_dir_all(&apart).unwrap();
+        std::fs::write(
+            apart.join("config"),
+            format!("[core]\n\tworktree = {}\n", pointer.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            pointer.join(".git"),
+            format!("gitdir: {}\n", apart.display()),
         )
         .unwrap();
         assert!(Repository::around(&pointer).unwrap().check().is_ok());

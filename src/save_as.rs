@@ -409,7 +409,16 @@ impl Inline {
             Event::TaskListMarker(done) => self.push(if done { "[x] " } else { "[ ] " }, false),
             Event::FootnoteReference(label) => self.push(format!("[{label}]"), false),
             // Raw HTML keeps its characters, so `List<String>` and `<br>` stay readable.
-            Event::Html(t) | Event::InlineHtml(t) => self.push(t.to_string(), false),
+            Event::Html(t) | Event::InlineHtml(t) => {
+                let tag = t.trim();
+                if tag.starts_with("<!--") {
+                    // A comment isn't part of the text.
+                } else if tag.to_ascii_lowercase().starts_with("<br") {
+                    self.push(" ", false);
+                } else {
+                    self.push(t.to_string(), false);
+                }
+            }
             Event::Start(Tag::Strong) => self.bold += 1,
             Event::End(TagEnd::Strong) => self.bold = self.bold.saturating_sub(1),
             Event::Start(Tag::Emphasis) => self.italic += 1,

@@ -1049,7 +1049,10 @@ fn shell_name() -> &'static str {
 fn git_branch(root: &Path) -> Option<String> {
     let head = std::fs::read_to_string(root.join(".git/HEAD")).ok()?;
     Some(head.trim().strip_prefix("ref: refs/heads/").map_or_else(
-        || format!("detached at {}", clip(head.trim(), 12)),
+        || {
+            let id: String = head.trim().chars().take(12).collect();
+            format!("detached at {id}")
+        },
         str::to_owned,
     ))
 }
