@@ -23,7 +23,7 @@ The left column lists your profiles; **●** marks the active one. Below it:
   settings).
 - **－** removes it (you always keep at least one).
 
-**Use this provider** at the bottom of the page makes the selected profile the active one.
+The **Active provider** row at the top of the page shows **Active** for the active profile; for any other, **Use this provider** makes the selected profile the active one.
 
 ## Fields
 
@@ -106,7 +106,7 @@ context-use figure in the chat's stats. When neither this nor the server gives a
 
 ### Token usage
 
-**Request usage in streamed responses (stream_options)** (default on). Needed for exact token
+**Request token usage** (default on) asks for usage in streamed responses (`stream_options`). Needed for exact token
 counts and speeds; turn it off if the server rejects the request.
 
 ### Streaming

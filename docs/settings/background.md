@@ -15,7 +15,7 @@ for how it looks in a chat.
 | Setting | Default | Description |
 |---|---|---|
 | **Notify when a reply finishes, fails or needs approval** | on | Sends a desktop notification titled CleanRSTAI, such as "Trip plan: reply finished", "Trip plan: needs approval for write_file" or "Trip plan: failed". Each chat can switch its own notifications on or off from the tools menu (**Notifications**), which starts from this setting. |
-| **Only while the CleanRSTAI window is in the background** | on | Notify only when the window does not have focus. When off, a notification is also sent for a chat other than the one open. |
+| **Only while the window is in the background** | on | Notify only when the window does not have focus. When off, a notification is also sent for a chat other than the one open. |
 | **Replies at once** | 4 | How many chats can have a reply running at the same time (1–32). |
 | **Time limit** | 0 min | Stop a reply that has run this many minutes (0–1440). 0 means no limit. |
 | **Keep running in the menu bar or system tray when the window is closed** | off | Closing the window hides it instead of quitting. The icon in the menu bar (macOS) or system tray (Windows) shows the window again or quits. Not available on Linux yet. |
@@ -68,8 +68,8 @@ or a script. The `--mode`, `--no-mcp` and `--save` flags override the matching s
 
 | Setting | Default | Description |
 |---|---|---|
-| **Allow `cleanrstai exec` to run requests from a terminal or script** | on | When off, the command prints "cleanrstai exec is off (Settings → Background)" and exits with status 2. |
+| **Allow `cleanrstai exec`** | on | Runs requests from a terminal or script. When off, the command prints "cleanrstai exec is off (Settings → Background)" and exits with status 2. |
 | **Approvals** | Read only | The approval mode of a command-line request: Read only, Plan, Default permissions, Auto in workspace or Allow all. A call the mode doesn't allow is denied, not asked. |
 | **Start MCP servers for each request** | on | Starts the servers from [MCP servers](mcp-servers.html) for the request. |
-| **Wait for them** | 10 s | How long a request waits for servers to connect before it starts (0–120). Servers still connecting after that are used by later rounds of tool calls once they connect. |
+| **Wait for MCP servers** | 10 s | How long a request waits for servers to connect before it starts (0–120). Servers still connecting after that are used by later rounds of tool calls once they connect. |
 | **Save each run's chat** | off | Keep every command-line chat in the chat list, as if `--save` were given. |

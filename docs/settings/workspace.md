@@ -23,17 +23,17 @@ menu shows which files the latest request read.
 |---|---|---|
 | **File names** | `AGENTS.md, CLAUDE.md` | Names to look for, in this order, separated by commas. |
 | **Which files** | The first one found | Or **Every one found, in order**. |
-| **Parent folders** | off | Also read them from the folders above the workspace, outermost first, so the workspace's own file reads as the most specific. |
+| **Also read parent folders** | off | Read them from the folders above the workspace, outermost first, so the workspace's own file reads as the most specific. |
 | **Size limit** | 64 KB | Text beyond this, in all the files together, is left out (1–1024 KB). |
 
 ## Workspace file edits
 
 | Setting | Default | Description |
 |---|---|---|
-| **Show the change as a diff on the approval prompt and in the tool card** | on | `write_file` and `edit_file` show what they will change before you approve them, and what they changed afterwards, as a diff with added lines in green and removed lines in red. |
-| **Keep checkpoints so a turn's `write_file` and `edit_file` changes can be undone** | on | Each edit keeps the file's previous content in the chat. |
+| **Show changes as a diff** | on | On the approval prompt and in the tool card. `write_file` and `edit_file` show what they will change before you approve them, and what they changed afterwards, as a diff with added lines in green and removed lines in red. |
+| **Keep checkpoints for undo** | on | So a turn's `write_file` and `edit_file` changes can be undone. Each edit keeps the file's previous content in the chat. |
 | **Largest file** | 1024 KB | Files bigger than this are changed without a checkpoint (16–65,536 KB). |
-| **Keep for** | 20 turns | Checkpoints older than this many turns are dropped; 0 keeps them all. |
+| **Keep for** | 20 turns | Checkpoints older than this many turns are dropped (0–1000); 0 keeps them all. |
 
 With checkpoints on, **Undo file edits** under the last reply of a turn puts back the files that
 turn changed, newest first. A file that changed again after the edit (by you, a later turn or
@@ -53,7 +53,7 @@ both entries.
 | Setting | Default | Description |
 |---|---|---|
 | **Code review** | on | Shows **Review changes** in the tools menu and the command palette. |
-| **Uncommitted changes** or **This branch against its base** | Uncommitted changes | Uncommitted: everything since the last commit (staged, unstaged, and new files, which are listed by name only). Branch: the commits on this branch since it forked from its base, plus nothing uncommitted. |
+| **Changes to review** | Uncommitted changes | **Uncommitted changes** or **This branch against its base**. Uncommitted: everything since the last commit (staged, unstaged, and new files, which are listed by name only). Branch: the commits on this branch since it forked from its base, plus nothing uncommitted. |
 | **Base branch** | auto | The branch for the branch scope. Empty uses `origin/HEAD`, then `main`, then `master`. |
 | **Review by** | The chat's provider | The provider profile that writes the review. |
 | **Review model** | the provider's selected model | A model for the review, such as a stronger one. |

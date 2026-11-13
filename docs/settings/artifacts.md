@@ -17,17 +17,13 @@ The artifact panel, live web pages, the Save as formats, and reading scanned PDF
 On by default. When a reply makes an [artifact](../using/chats.html#artifacts) (a web page,
 drawing or long code), the panel opens beside the chat. When off, open it with **Open in panel**
 by its link in the reply, or the panel button at the top right. How web pages show in the panel
-is under [General → Web page preview](artifacts.html#web-page-preview).
+is under [Web page preview](artifacts.html#web-page-preview) below.
 
-## Artifacts
-
-How the artifact panel opens is on the [Appearance](appearance.html) page.
-
-### Web page preview
+## Web page preview
 
 | Setting | Default | Description |
 |---|---|---|
-| **Show web pages live in the panel** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). On Linux the panel's **Open live preview** button shows the page in a window of its own, when WebKitGTK is installed (see below). Off: the panel shows the code, and **Open in browser** opens the page. |
+| **Show web pages live** | on | Web page artifacts show in the panel's **Preview** tab in a web view (WebKit on macOS, WebView2 on Windows). On Linux the panel's **Open live preview** button shows the page in a window of its own, when WebKitGTK is installed (see below). Off: the panel shows the code, and **Open in browser** opens the page. |
 | **Let pages run their scripts** | on | Off blocks every script in the page. |
 | **Let pages load from the network** | off | Off: scripts, styles, fonts, images and requests from the web are blocked, so a page can't send chat content anywhere; what is written into the page itself still works. Pages that load a library from a CDN need this on. |
 
@@ -39,7 +35,7 @@ browser instead, with a notice the first time.
 
 Links in a previewed page open in your browser, never in the panel or the Linux window.
 
-## Save as files
+## Save as
 
 Which formats the **Save as…** menu of a [reply or artifact](../using/chats.html#saving-as-files)
 offers. The menu lists only the checked formats that suit the content.
@@ -52,7 +48,7 @@ offers. The menu lists only the checked formats that suit the content.
 
 With all three off, no reply or artifact offers **Save as…**.
 
-## OCR for scanned PDFs
+## Scanned PDFs
 
 A PDF with no text layer (a scan, or a photo of pages) has almost no text when the app reads it.
 With **Read scanned PDFs (OCR)** on, its page images are read when the file is attached, and the

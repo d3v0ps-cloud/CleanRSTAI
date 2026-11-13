@@ -16,9 +16,9 @@ Saved prompts, typed as `/name` in the message box (see
 
 | Setting | Default | Description |
 |---|---|---|
-| **Slash commands (saved prompts)** | on | Expands `/name` when a message is sent, and lists the matching commands while you type. Off: `/name` is sent as typed. |
+| **Slash commands** | on | Expands `/name` when a message is sent, and lists the matching commands while you type. Off: `/name` is sent as typed. |
 | **Commands** | `explain`, `summarize` | Each has a **name** (letters, digits, `-` and `_`; trimmed, and a name used twice keeps its first entry), a **description** shown in the list, and a **prompt** (several lines). `{{args}}` in the prompt is replaced by what you type after the name; without it, the text is added after a blank line. Delete with the bin button, add with **Add command**. |
-| **Also load commands from the chat's working folder** | on | Each `.cleanrstai/commands/<name>.md` file in the chat's folder is a command whose prompt is the file's text. A first line `description: …` sets its description and is not sent. A file replaces a command here with the same name. |
+| **Also load commands from the working folder** | on | Each `.cleanrstai/commands/<name>.md` file in the chat's folder is a command whose prompt is the file's text. A first line `description: …` sets its description and is not sent. A file replaces a command here with the same name. |
 
 The commands are kept in `settings.json` with the other settings; the workspace files are
 read only when you type a command, so nothing is read from the folder otherwise.
@@ -34,7 +34,7 @@ provider only when the model loads it (see [Data and privacy](../reference/data-
 | Setting | Default | Description |
 |---|---|---|
 | **Offer skills to the model** | on | Lists the skills in the system prompt and offers the `load_skill` tool. Off: no skill is listed and the tool isn't offered. |
-| **Load skills from the workspace's .cleanrstai/skills folder** | on | Each `.cleanrstai/skills/<name>/SKILL.md` in a chat's working folder is a skill for that chat. A workspace skill replaces a skill from your skills folder with the same name. |
+| **Load skills from the workspace** | on | Each `.cleanrstai/skills/<name>/SKILL.md` in a chat's working folder is a skill for that chat. A workspace skill replaces a skill from your skills folder with the same name. |
 | **Size limit per load** | 64 KB (1–1024) | Text beyond this is left out when the model loads a skill, with a note saying so. |
 | **Your skills folder → Open folder** | | Creates the skills folder if it's missing and opens it in the file manager. Its path is shown under the button. |
 | **Skill checkboxes** | on | Lists the skills in your skills folder. Switch one off and it is neither listed nor loadable, in any chat. **Refresh** reads the folder again. |
@@ -50,10 +50,10 @@ default.
 
 ### Where skills come from
 
-- **Your skills folder**: the `skills` folder in the app's settings folder. **Open skills
+- **Your skills folder**: the `skills` folder in the app's settings folder. **Open
   folder** shows the exact path.
 - **The workspace**: `.cleanrstai/skills/` in the chat's working folder, when *Load skills from
-  the workspace's .cleanrstai/skills folder* is on.
+  the workspace* is on.
 
 Skills are read when a message is sent, so a new skill is available to the next message.
 Subagents don't get skills.

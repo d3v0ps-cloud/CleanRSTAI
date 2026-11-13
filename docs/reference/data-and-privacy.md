@@ -47,7 +47,7 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   With **Search with** set to the provider's own search, the query goes to the chat's provider
   instead, which searches on its side; the search service isn't contacted and nothing is asked.
 - **OCR for scanned PDFs**, when on: each page image of a PDF with no text layer goes to the
-  vision model's provider (chosen in [Artifacts & files](../settings/artifacts.html#ocr-for-scanned-pdfs)),
+  vision model's provider (chosen in [Artifacts & files](../settings/artifacts.html#scanned-pdfs)),
   one request per page, with the prompt to transcribe it. With **Tesseract** the pages are read
   by the `tesseract` program on this computer and nothing leaves it.
 - **Context compaction** sends the older messages of a long chat (shortened where they are
@@ -106,7 +106,7 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   `ghcr.io`), and a custom Dockerfile's `FROM` and `RUN` lines download what they name. With
   **Only the hosts and ports below**, the app also builds a small network image from
   `ubuntu:24.04` and Ubuntu's package mirrors. Containers get only the chat's workspace folder, not the rest of your files, and no
-  API keys or other secrets. With **Normal network (can reach this computer, your local network and the internet)** on, commands can reach the internet;
+  API keys or other secrets. With **Normal network** on, commands can reach the internet;
   with **Only the hosts and ports below**, only the hosts and ports you list, and the domains in
   those rules are looked up through your computer's DNS servers
   ([Docker sandbox](../settings/docker.html)).
@@ -128,7 +128,7 @@ when the server restarts ([Remote access](../using/remote-access.html)).
   The app only does this when you click **Open in browser**.
 - **Web pages previewed in the panel** (macOS and Windows) can't load anything from the network
   unless **Let pages load from the network** is on in
-  [General](../settings/artifacts.html#web-page-preview).
+  [Artifacts & files](../settings/artifacts.html#web-page-preview).
 
 Nothing else is sent: there is no telemetry.
 

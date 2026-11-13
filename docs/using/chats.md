@@ -301,7 +301,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   on. Made-up names like "Flowchart" never make versions.
 - **Web pages** show live in the panel's **Preview** tab on macOS and Windows, in a web view
   that runs the page's scripts but, by default, blocks everything from the network (set in
-  [General](../settings/artifacts.html#web-page-preview)); links open in your browser. On Linux,
+  [Artifacts & files](../settings/artifacts.html#web-page-preview)); links open in your browser. On Linux,
   **Open live preview** shows the page in a window of its own, with the same settings, when
   WebKitGTK is installed; the window follows the page as a reply streams. Without WebKitGTK it
   opens in your browser, with a notice. **Open in browser** writes the page to a temporary file
@@ -309,7 +309,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
   load anything. SVGs can open there too.
 - The panel opens by itself when a reply makes an artifact, and follows each new one while
   the newest is shown. Turn that off with **Open web pages, drawings and long code in a side
-  panel** in [General](../settings/artifacts.html#artifacts); **Open in panel** and the top-bar
+  panel** in [Artifacts & files](../settings/artifacts.html#artifacts-in-a-side-panel); **Open in panel** and the top-bar
   button still open it.
 - **Save as…** in the panel's title row saves Markdown documents, code, and CSV or TSV
   artifacts as a Word document, a PDF or (for CSV and TSV) an Excel workbook.
@@ -317,7 +317,7 @@ panel beside the chat; the reply keeps only a link to each, with its name, type 
 ## Saving as files
 
 A reply or a Markdown, code or CSV artifact can be saved as a file from its **Save as…** menu.
-Each format is switched on or off in [General](../settings/artifacts.html#save-as-files); the menu
+Each format is switched on or off in [Artifacts & files](../settings/artifacts.html#save-as); the menu
 offers only the enabled ones that suit the content. The file dialog suggests the chat's name (or
 the artifact's title) with the new extension.
 
@@ -344,7 +344,7 @@ attached; text beyond a million characters is cut, with a note saying so.
 | Kind | Sent as |
 |---|---|
 | Images (PNG, JPEG, GIF, WebP) | images for vision models; click one to enlarge it |
-| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Artifacts & files](../settings/artifacts.html#ocr-for-scanned-pdfs)), or attached with a note saying so |
+| PDF (`.pdf`) | its text; a scanned PDF without a text layer is read by OCR when it is on ([Artifacts & files](../settings/artifacts.html#scanned-pdfs)), or attached with a note saying so |
 | Word (`.docx`, `.doc`) | its text |
 | Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`) | one CSV block per sheet |
 | PowerPoint (`.pptx`, `.ppt`) | numbered slides, with speaker notes |

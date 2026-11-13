@@ -26,7 +26,8 @@ summary starts (see [Chats → Long chats](../using/chats.html#long-chats)).
 | **Context size** | 0 | The context size, in tokens, to assume when neither the server nor the provider's own **Context size** ([Providers](providers.html#context-size)) gives one. With 0, automatic compaction only happens when one of them does: llama.cpp, LiteLLM, Ollama, LM Studio, vLLM and OpenRouter report it (set **Server type** on the provider). For other servers, enter the model's context size on the provider. |
 | **Summary by** | The chat's provider | The provider profile that writes the summary. |
 | **Summary model** | the provider's selected model | A model for the summary, such as a cheaper or faster one. |
-| **Older tool results** | off, 2000 characters | **Shorten long results of older tool calls in what is sent**: results older than the kept messages are cut to this many characters (200–100,000). This is a cheaper step that sends less with every request; the chat keeps the results whole. |
+| **Shorten older tool results** | off | A cheaper step that sends less with every request: results of older tool calls, older than the kept messages, are cut in what is sent. The chat keeps the results whole. |
+| **Shorten to** | 2000 characters | With **Shorten older tool results** on: the length older results are cut to (200–100,000). |
 | **Summary instructions** | (built in) | What the summarising model is asked to keep. **Reset** restores the built-in text. |
 
 **Compact now** in the tools menu, and **Compact this chat** in the command palette (⌘/Ctrl +
