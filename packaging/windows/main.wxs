@@ -9,7 +9,7 @@
            Version="$(var.Version)"
            UpgradeCode="be754cee-9c94-46bc-a7cb-a6a11a488893"
            Scope="perMachine">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of CleanRSTAI is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of CleanRSTAI is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- The app icon for the Start menu shortcut and Settings → Apps. -->

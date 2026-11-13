@@ -104,20 +104,32 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
     if inside.ok().as_deref().map(str::trim) != Some("true") {
         return Err("The working folder isn't a git repository".into());
     }
-    let (mut text, untracked, covers) = match settings.scope {
+    let (text, untracked, covers) = match settings.scope {
         ReviewScope::Uncommitted => {
-            let text = run_git(
-                dir,
-                &[
-                    "diff",
-                    "--no-color",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--ignore-submodules=all",
-                    "HEAD",
-                ],
-            )
-            .await?;
+            // A repository without a commit has no HEAD to compare with: its files are
+            // all new, and listed below.
+            let has_head = run_git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"])
+                .await
+                .is_ok();
+            let text = if has_head {
+                run_git(
+                    dir,
+                    &[
+                        "diff",
+                        "--no-color",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--ignore-submodules=all",
+                        "HEAD",
+                        // Only the working folder, also when it is part of a larger repository.
+                        "--",
+                        ".",
+                    ],
+                )
+                .await?
+            } else {
+                String::new()
+            };
             let listed = run_git(dir, &["ls-files", "--others", "--exclude-standard"]).await?;
             let names: Vec<String> = listed
                 .lines()
@@ -163,6 +175,8 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
                     "--no-textconv",
                     "--ignore-submodules=all",
                     &range,
+                    "--",
+                    ".",
                 ],
             )
             .await
@@ -177,6 +191,8 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
     if text.trim().is_empty() && untracked.is_empty() {
         return Err("No changes to review".into());
     }
+    // Cut before the list of new files is added, so a long diff doesn't lose the list.
+    let mut text = truncate(&text, settings.max_diff_kb);
     if !untracked.is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -188,10 +204,7 @@ pub async fn collect(dir: &Path, settings: &ReviewSettings) -> Result<ReviewDiff
             text.push('\n');
         }
     }
-    Ok(ReviewDiff {
-        text: truncate(&text, settings.max_diff_kb),
-        covers,
-    })
+    Ok(ReviewDiff { text, covers })
 }
 
 #[cfg(test)]
@@ -313,6 +326,38 @@ mod tests {
         assert!(diff.text.contains("+two changed"), "{}", diff.text);
         assert!(diff.text.contains("new_file.txt"), "{}", diff.text);
         assert_eq!(diff.covers, "uncommitted changes in the working folder");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subfolder_is_reviewed_alone_and_a_new_repository_lists_its_files() {
+        if !git_available() {
+            eprintln!("git isn't installed; skipping");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cleanrstai-review-{}", uuid::Uuid::new_v4()));
+        let (a, b) = (dir.join("pkg-a"), dir.join("pkg-b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let settings = ReviewSettings::default();
+        sync_git(&dir, &["init", "-q"]);
+        sync_git(&dir, &["config", "user.name", "Test"]);
+        sync_git(&dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(a.join("a.txt"), "one\n").unwrap();
+        std::fs::write(b.join("b.txt"), "one\n").unwrap();
+
+        // No commit yet: nothing to compare with, so the files are listed as new.
+        let fresh = collect(&a, &settings).await.unwrap();
+        assert!(fresh.text.contains("new file: a.txt"), "{}", fresh.text);
+
+        sync_git(&dir, &["add", "."]);
+        sync_git(&dir, &["commit", "-qm", "init"]);
+        std::fs::write(a.join("a.txt"), "one\nin a\n").unwrap();
+        std::fs::write(b.join("b.txt"), "one\nin b\n").unwrap();
+        let diff = collect(&a, &settings).await;
+        std::fs::remove_dir_all(&dir).ok();
+        let diff = diff.unwrap();
+        assert!(diff.text.contains("+in a"), "{}", diff.text);
+        assert!(!diff.text.contains("in b"), "{}", diff.text);
     }
 
     /// The review's diff must not run the repository's filter drivers (see

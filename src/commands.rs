@@ -108,13 +108,15 @@ pub fn workspace_commands(dir: &Path) -> Vec<SlashCommand> {
     let folder = WORKSPACE_DIR
         .iter()
         .fold(dir.to_path_buf(), |p, s| p.join(s));
-    let Ok(entries) = std::fs::read_dir(folder) else {
+    let Ok(entries) = std::fs::read_dir(&folder) else {
         return Vec::new();
     };
     let mut out: Vec<SlashCommand> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "md") && p.is_file())
+        // Not a link to a file elsewhere, which `/name` would then send as the prompt.
+        .filter(|p| crate::tools::workspace::stays_inside(p, &folder))
         .filter_map(|p| {
             let name = p.file_stem()?.to_str()?.to_owned();
             if !valid_name(&name) {

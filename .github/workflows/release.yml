@@ -270,7 +270,10 @@ jobs:
 
       - name: Checksums
         working-directory: dist
-        run: sha256sum * | tee SHA256SUMS.txt
+        # Listed before the file exists, so it never lists itself.
+        run: |
+          sums=$(sha256sum *)
+          printf '%s\n' "$sums" | tee SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
