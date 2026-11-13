@@ -95,14 +95,21 @@ never `//`. Preview with `cd docs && bundle install && bundle exec jekyll serve`
 **Threads and events.** egui runs on the main thread (`app::ChatApp`); network and MCP I/O
 run on a tokio runtime created in `main.rs`. Background work sends `agent::AppEvent`s over an
 unbounded channel that `ChatApp::handle_events` drains each frame, and calls
-`ctx.request_repaint()`. UI code never awaits.
+`ctx.request_repaint()`. UI code never awaits. Each run has a number (`AgentRequest::run`,
+`Run::number`) that its `AppEvent::Chat` events carry, so a late event of a stopped run is
+ignored even when the chat's next run has started; speech readings do the same
+(`Speaking::number`).
 
 **One generation** (`agent::run`) streams a completion (`llm::chat_completion`, SSE via
 `sse.rs`; `llm::send_with_retry` retries connection failures and 408/425/429/5xx/529 up to
 `ProviderConfig.retries` times before any output, and `llm::next_chunk` ends a stream that is
-quiet for longer than the provider's timeout, which no longer limits the whole reply), emits `ChatEvent`s (deltas, final message, tool approval, tool result, done), runs
+quiet for longer than the provider's timeout, which no longer limits the whole reply), emits `ChatEvent`s (deltas, final message, tool approval, tool result, done; `Warning` for
+something that went wrong beside a reply that carries on, such as a failed compaction, which
+unlike `Error` doesn't make the reply a failed one), runs
 any tool calls and loops until the model answers without tools, hits `max_tool_rounds`, or
-goes over the reply limits (`reply_token_limit`, `reply_cost_limit_usd`; `agent::Usage`).
+goes over the reply limits (`reply_token_limit`, `reply_cost_limit_usd`; `agent::Usage`, which
+subagent requests count towards). `llm::to_api_messages` sends images a tool returned in a user
+message after the tool results, for the turn in progress only.
 The toolbox is rebuilt every round so MCP servers that finish connecting are picked up.
 
 **Tools** (`tools/mod.rs`): a `Toolbox` for one request combines:
@@ -115,7 +122,10 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
   app makes goes through `git::safe_command` (`git.rs`), which switches off the repository's own
   fsmonitor, external diff, textconv and pager programs, blanks its clean/smudge/process filter
   drivers (git runs them on `status` and `diff`), and leaves submodules out
-  (`--ignore-submodules=all`); `review.rs` uses it too. `git_commit` (`tools/commit.rs`, switch `builtin_tools.git_commit`, off by
+  (`--ignore-submodules=all`); `review.rs` uses it too. `git::command` also pins the
+  repository to the one around the folder (`GIT_DIR`/`GIT_WORK_TREE`, over `core.worktree`;
+  paths without Windows' `\\?\` prefix), and `safe_command` refuses a `.git` file whose
+  target is neither a linked worktree's nor names the folder as its work tree. `git_commit` (`tools/commit.rs`, switch `builtin_tools.git_commit`, off by
   default) stages the chosen paths and runs `git commit -- <paths>` (hooks off, signing off unless
   `allow_signing`), never pushes; `approval::always_asks` makes it ask in every mode but AllowAll
   and keeps it out of "Always allow". Read only drops it, subagents never get it, and the Commit
@@ -127,7 +137,9 @@ The toolbox is rebuilt every round so MCP servers that finish connecting are pic
 `Toolbox::needs_approval` decides which calls ask first (MCP tools, `delegate`, `fetch`,
 `web_search`, and the workspace tools that write or run commands; `Toolbox::asks` lets web
 search follow its own setting); everything else runs directly. Workspace paths are confined to the chosen
-folder (`..`, outside absolute paths and symlinks out are refused). `fetch` reaches only
+folder (`..`, outside absolute paths, symlinks out and dangling links are refused; a new file is
+made with `create_new`). Files the app reads from a workspace by itself (instructions, skills,
+slash commands) must pass `workspace::stays_inside`. `fetch` reaches only
 public addresses (its own client with a filtering DNS resolver and redirect policy) unless
 `fetch_private_networks` is on; tests against `testutil::serve` turn that on.
 
@@ -296,7 +308,7 @@ runs `speak::os_voice_command` (text on stdin, never in argv on Windows) or fetc
 (`types::Conversation`). New fields must be `#[serde(default)]` (usually with
 `skip_serializing_if`) so older files still load. API keys and MCP secrets go to the OS
 keychain through the `secrets::SecretStore` trait (tests use the in-memory store), with
-plain-text fallback when the keychain is off or unavailable. Chat files are written by the saver thread in `blobs.rs` (`Conversation::save` queues a clone; saves of one chat coalesce, a delete is ordered after them, `blobs::flush` runs before the app exits, `save_now` for the command line). Images are kept once in `attachments/<sha256>.bin`: `Attachment`'s own `Serialize` swaps `data` for a `blob` key only inside `blobs::externalizing`, so read images through `Attachment::base64`/`bytes`, and call `Conversation::inline_attachments` for anything that leaves the computer (backups, project exports). `load_all` parses on several threads and renames unreadable files to `.json.corrupt`. `write_private` syncs before its rename. Use `crate::sync`'s `LockExt::locked` / `RwLockExt` instead of `.lock().unwrap()`.
+plain-text fallback when the keychain is off or unavailable. Chat files are written by the saver thread in `blobs.rs` (`Conversation::save` queues a clone; saves of one chat coalesce, a delete is ordered after them, `blobs::flush` runs before the app exits, `save_now` for the command line). Images are kept once in `attachments/<sha256>.bin`: `Attachment`'s own `Serialize` swaps `data` for a `blob` key only inside `blobs::externalizing`, so read images through `Attachment::base64`/`bytes`, and call `Conversation::inline_attachments` for anything that leaves the computer (backups, project exports). `load_all` parses on several threads and renames unreadable files to `.json.corrupt`. `write_private` syncs before its rename, through a temporary file of its own name (`.<name>.<uuid>.tmp`; `config::sweep_temp_files` removes old ones at startup). Keychain accounts that couldn't be read at startup stay listed and undeleted on save (`Settings::unreadable_secrets`) until their secret is entered again. Use `crate::sync`'s `LockExt::locked` / `RwLockExt` instead of `.lock().unwrap()`.
 
 **Share as HTML** (`export.rs`, `render_body`) renders the chat's Markdown with pulldown-cmark,
 drops all raw HTML except the app's own `<details>` wrapper, and allow-lists link (http/https/mailto)
