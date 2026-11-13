@@ -119,6 +119,27 @@ pub fn message(chat_title: &str, outcome: &Outcome) -> String {
     format!("{chat_title}: {what}")
 }
 
+/// The app's bundle identifier (`[package.metadata.bundle]` in Cargo.toml).
+#[cfg(target_os = "macos")]
+const BUNDLE_ID: &str = "net.bukn.cleanrstai";
+
+/// On macOS, tells the notification library which app is notifying, once. Left to itself, its
+/// first notification asks AppleScript for the id of an application named "use_default",
+/// which makes macOS show a "Where is use_default?" window to pick an app. This lookup asks
+/// Launch Services instead and shows nothing; should it fail (a copy that isn't installed as
+/// an app), the library still never falls back to the AppleScript.
+fn name_the_app() {
+    #[cfg(target_os = "macos")]
+    {
+        static NAMED: std::sync::Once = std::sync::Once::new();
+        NAMED.call_once(|| {
+            if let Err(e) = notify_rust::set_application(BUNDLE_ID) {
+                log::warn!("desktop notifications: couldn't name the app: {e}");
+            }
+        });
+    }
+}
+
 /// Shows a desktop notification titled CleanRSTAI on a blocking thread, so the UI never waits
 /// for the OS. Errors are logged and otherwise ignored. Does nothing in tests.
 pub fn notify(rt: &tokio::runtime::Handle, body: String) {
@@ -126,6 +147,7 @@ pub fn notify(rt: &tokio::runtime::Handle, body: String) {
         return;
     }
     rt.spawn_blocking(move || {
+        name_the_app();
         let result = notify_rust::Notification::new()
             .appname("CleanRSTAI")
             .summary("CleanRSTAI")
