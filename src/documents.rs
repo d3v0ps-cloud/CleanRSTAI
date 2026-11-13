@@ -84,11 +84,7 @@ impl Format {
 /// Recognise a document from its bytes. `Err` for a recognised container that can't be
 /// read, such as a password-protected Office file.
 pub fn detect(bytes: &[u8]) -> Result<Option<Format>> {
-    // PDF readers accept the header anywhere in the first kilobyte.
-    if bytes[..bytes.len().min(1024)]
-        .windows(5)
-        .any(|w| w == b"%PDF-")
-    {
+    if is_pdf(bytes) {
         return Ok(Some(Format::Pdf));
     }
     if bytes.starts_with(b"{\\rtf") {
@@ -141,6 +137,20 @@ pub fn detect(bytes: &[u8]) -> Result<Option<Format>> {
         });
     }
     Ok(None)
+}
+
+/// Whether `bytes` are a PDF: the header at the start (after a byte order mark or
+/// whitespace), or, as PDF readers allow, anywhere in the first kilobyte of a file that also
+/// ends like a PDF. A text file that only mentions the header is not one.
+fn is_pdf(bytes: &[u8]) -> bool {
+    let start = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let start = start.trim_ascii_start();
+    if start.starts_with(b"%PDF-") {
+        return true;
+    }
+    let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    has(&bytes[..bytes.len().min(1024)], b"%PDF-")
+        && has(&bytes[bytes.len().saturating_sub(1024)..], b"%%EOF")
 }
 
 /// What extraction found: the text, or a PDF with no text layer (to be read by OCR).
@@ -261,6 +271,20 @@ fn read_capped(r: impl Read, declared: u64, cap: u64) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// Fail when the entries of the zip in `bytes` claim to expand to more than `cap` in all
+/// (the zip reader holds each entry to its claimed size).
+fn check_expanded_size(bytes: &[u8], cap: u64) -> Result<()> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
+    let mut total = 0u64;
+    for i in 0..zip.len() {
+        total = total.saturating_add(zip.by_index_raw(i)?.size());
+        if total > cap {
+            bail!("it expands to more than {} MB", cap / (1024 * 1024));
+        }
+    }
+    Ok(())
+}
+
 fn docx(bytes: &[u8]) -> Result<String> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
     xml_text(&zip_entry(&mut zip, "word/document.xml")?, Markup::Ooxml)
@@ -286,6 +310,10 @@ fn pptx(bytes: &[u8]) -> Result<String> {
     };
     let mut out = String::new();
     for (n, path) in slides.iter().enumerate() {
+        // A slide that is listed but missing from the file is left out, not the whole file.
+        if zip.index_for_name(path).is_none() {
+            continue;
+        }
         out.push_str(&format!("\n\n## Slide {}\n\n", n + 1));
         out.push_str(&xml_text(&zip_entry(&mut zip, path)?, Markup::Ooxml)?);
         let notes = relationships(&mut zip, path)
@@ -553,6 +581,10 @@ fn collapse_spaces(text: &str) -> Cow<'_, str> {
 /// Every sheet of a workbook (xlsx, xlsm, xlsb, xls, ods) as CSV under a `## Sheet` heading.
 fn spreadsheet(bytes: &[u8]) -> Result<String> {
     use calamine::{Data, Reader as _};
+    // calamine reads xlsx and ods without a size limit; cap what the zip may expand to.
+    if bytes.starts_with(b"PK\x03\x04") {
+        check_expanded_size(bytes, MAX_ENTRY_BYTES)?;
+    }
     let mut book =
         calamine::open_workbook_auto_from_rs(Cursor::new(bytes.to_vec())).map_err(|e| match e {
             calamine::Error::Xlsx(calamine::XlsxError::Password)
@@ -757,7 +789,21 @@ fn ppt(bytes: &[u8]) -> Result<String> {
         Notes,
     }
 
-    fn walk(data: &[u8], mut at: usize, end: usize, place: Place, out: &mut Collected) {
+    /// Containers nest only a few levels in real files; deeper is a damaged or hostile
+    /// file, whose recursion would overflow the stack.
+    const MAX_DEPTH: usize = 32;
+
+    fn walk(
+        data: &[u8],
+        mut at: usize,
+        end: usize,
+        place: Place,
+        depth: usize,
+        out: &mut Collected,
+    ) {
+        if depth > MAX_DEPTH {
+            return;
+        }
         while at + 8 <= end {
             let ver_inst = u16::from_le_bytes([data[at], data[at + 1]]);
             let kind = u16::from_le_bytes([data[at + 2], data[at + 3]]);
@@ -819,7 +865,7 @@ fn ppt(bytes: &[u8]) -> Result<String> {
                     _ => Some(place),
                 };
                 if let Some(inner) = inner {
-                    walk(data, body, next, inner, out);
+                    walk(data, body, next, inner, depth + 1, out);
                 }
             }
             at = next;
@@ -827,7 +873,7 @@ fn ppt(bytes: &[u8]) -> Result<String> {
     }
 
     let mut found = Collected::default();
-    walk(&stream, 0, stream.len(), Place::Other, &mut found);
+    walk(&stream, 0, stream.len(), Place::Other, 0, &mut found);
     let count = found.listed.len().max(found.drawn.len());
     let mut out = String::new();
     for n in 0..count {
@@ -896,6 +942,8 @@ fn rtf(bytes: &[u8]) -> String {
     let (mut skip, mut uc) = (false, 1usize);
     // Fallback characters still to drop after a `\uN`.
     let mut drop = 0usize;
+    // The high half of a surrogate pair, waiting for its low half in the next `\uN`.
+    let mut high: Option<u32> = None;
     // Bytes from `\'hh` escapes, decoded together so multi-byte code pages work.
     let mut pending: Vec<u8> = Vec::new();
     let flush = |pending: &mut Vec<u8>, out: &mut String, skip: bool| {
@@ -973,7 +1021,14 @@ fn rtf(bytes: &[u8]) -> String {
                         "u" => {
                             let code = param.unwrap_or(0);
                             let code = if code < 0 { code + 65536 } else { code } as u32;
-                            out.extend(char::from_u32(code));
+                            match (high.take(), code) {
+                                // A pair (written as two negative values) is one character.
+                                (Some(hi), 0xDC00..=0xDFFF) => out.extend(char::from_u32(
+                                    0x10000 + ((hi - 0xD800) << 10) + (code - 0xDC00),
+                                )),
+                                (_, 0xD800..=0xDBFF) => high = Some(code),
+                                _ => out.extend(char::from_u32(code)),
+                            }
                             drop = uc;
                         }
                         _ => {}
@@ -1283,6 +1338,88 @@ pub(crate) mod tests {
             "## Slide 1\n\nListed title\nBytes body\nExtra box\n\n## Slide 2\n\n\
              Drawn only\nsecond line\n\n## Notes\n\nA note"
         );
+    }
+
+    #[test]
+    fn deeply_nested_powerpoint_records_stop_instead_of_overflowing() {
+        // 100,000 containers inside each other, each holding the next.
+        let depth = 100_000;
+        let mut stream = Vec::with_capacity(depth * 8);
+        for level in 0..depth {
+            stream.extend(0x000Fu16.to_le_bytes());
+            stream.extend(0x03E8u16.to_le_bytes());
+            stream.extend((((depth - level - 1) * 8) as u32).to_le_bytes());
+        }
+        let mut cfb = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+        std::io::Write::write_all(
+            &mut cfb.create_stream("/PowerPoint Document").unwrap(),
+            &stream,
+        )
+        .unwrap();
+        let bytes = cfb.into_inner().into_inner();
+        assert!(extract(Format::Ppt, &bytes).is_err(), "no text, no crash");
+    }
+
+    /// A zip with one stored entry of `len` zero bytes.
+    fn zip_with(name: &str, len: usize) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, &vec![0; len]).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn spreadsheet_zips_are_size_capped() {
+        let bytes = zip_with("xl/workbook.xml", 2048);
+        assert!(check_expanded_size(&bytes, 4096).is_ok());
+        let err = check_expanded_size(&bytes, 1024).unwrap_err();
+        assert!(err.to_string().contains("expands to more than"), "{err}");
+        // The real workbooks are well under the cap.
+        for name in ["sales.xlsx", "sales.ods"] {
+            assert!(check_expanded_size(&fixture(name), MAX_ENTRY_BYTES).is_ok());
+        }
+    }
+
+    #[test]
+    fn pdf_header_must_start_the_file() {
+        assert!(is_pdf(b"%PDF-1.7\n..."));
+        assert!(is_pdf(b"\xEF\xBB\xBF \n%PDF-1.4\n"));
+        // Junk before the header, as readers allow, when the file ends like a PDF.
+        assert!(is_pdf(b"junk\r\n%PDF-1.4\n...\n%%EOF\n"));
+        // Source or notes that only mention it.
+        let text = b"// Checks for the %PDF- header.\nfn main() {}\n";
+        assert!(!is_pdf(text));
+        assert_eq!(detect(text).unwrap(), None);
+    }
+
+    #[test]
+    fn pptx_skips_a_listed_slide_that_is_missing() {
+        let deck = fixture("deck.pptx");
+        let mut src = zip::ZipArchive::new(Cursor::new(&deck[..])).unwrap();
+        let order = pptx_slide_order(&mut src).unwrap();
+        assert!(order.len() >= 2, "{order:?}");
+        // Copy the deck without its first slide.
+        let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for i in 0..src.len() {
+            let f = src.by_index(i).unwrap();
+            let name = f.name().map(|n| n.into_owned()).unwrap_or_default();
+            if name != order[0] {
+                out.raw_copy_file(f).unwrap();
+            }
+        }
+        let bytes = out.finish().unwrap().into_inner();
+        let text = extract(Format::Pptx, &bytes).unwrap();
+        assert!(!text.contains("## Slide 1\n"), "{text}");
+        assert!(text.contains("## Slide 2"), "{text}");
+        assert!(text.contains("Budget café"), "{text}");
+    }
+
+    #[test]
+    fn rtf_surrogate_pairs_make_one_character() {
+        // U+1F600 as the UTF-16 pair D83D DE00, written as negative numbers.
+        let rtf = br"{\rtf1\ansi\uc1 smile \u-10179?\u-8704? done}";
+        assert_eq!(extract(Format::Rtf, rtf).unwrap(), "smile \u{1F600} done");
     }
 
     #[test]

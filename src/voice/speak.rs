@@ -240,7 +240,12 @@ pub fn parse_wav(bytes: &[u8]) -> Result<Wav, String> {
         let start = pos + 8;
         let end = start.saturating_add(size).min(bytes.len());
         if id == b"fmt " && end - start >= 16 {
-            let tag = u16_at(start);
+            let mut tag = u16_at(start);
+            // WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of the
+            // sub-format GUID, 24 bytes into the chunk (1 for PCM, 3 for float).
+            if tag == 0xFFFE && end - start >= 40 {
+                tag = u16_at(start + 24);
+            }
             let channels = u16_at(start + 2) as usize;
             let rate = u32_at(start + 4);
             let bits = u16_at(start + 14);
@@ -255,7 +260,7 @@ pub fn parse_wav(bytes: &[u8]) -> Result<Wav, String> {
     if channels == 0 || rate == 0 {
         return Err("The WAV audio has no channels or sample rate".into());
     }
-    // 0xFFFE (extensible) carries PCM or float in a sub-format; the sample size decides here.
+    // An extensible format too short to name its sub-format is taken as PCM.
     let float = tag == 3 && bits == 32;
     if tag != 1 && tag != 3 && tag != 0xFFFE {
         return Err(format!("Unsupported WAV encoding {tag}"));
@@ -564,6 +569,46 @@ mod tests {
         assert_eq!(wav.samples.len(), 4);
         assert!((wav.samples[1] - 0.5).abs() < 1e-4);
         assert!((wav.samples[2] + 0.5).abs() < 1e-4);
+    }
+
+    /// A WAVE_FORMAT_EXTENSIBLE file whose sub-format GUID starts with `sub` (1 PCM, 3 float).
+    fn extensible_wav(sub: u16, bits: u16, data: &[u8]) -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend(0xFFFEu16.to_le_bytes());
+        fmt.extend(1u16.to_le_bytes()); // channels
+        fmt.extend(16_000u32.to_le_bytes());
+        fmt.extend((16_000 * u32::from(bits / 8)).to_le_bytes());
+        fmt.extend((bits / 8).to_le_bytes());
+        fmt.extend(bits.to_le_bytes());
+        fmt.extend(22u16.to_le_bytes()); // extension size
+        fmt.extend(bits.to_le_bytes()); // valid bits
+        fmt.extend(4u32.to_le_bytes()); // channel mask
+        fmt.extend(sub.to_le_bytes());
+        fmt.extend([
+            0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+        ]);
+        let mut out = b"RIFF".to_vec();
+        out.extend(((4 + 8 + fmt.len() + 8 + data.len()) as u32).to_le_bytes());
+        out.extend(b"WAVEfmt ");
+        out.extend((fmt.len() as u32).to_le_bytes());
+        out.extend(fmt);
+        out.extend(b"data");
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend(data);
+        out
+    }
+
+    #[test]
+    fn extensible_wav_reads_its_sub_format() {
+        let floats: Vec<u8> = [0.5f32, -0.25]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let wav = parse_wav(&extensible_wav(3, 32, &floats)).unwrap();
+        assert_eq!(wav.samples, vec![0.5, -0.25]);
+        let ints: Vec<u8> = [1i32 << 30].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let wav = parse_wav(&extensible_wav(1, 32, &ints)).unwrap();
+        assert_eq!(wav.samples, vec![0.5]);
     }
 
     #[test]

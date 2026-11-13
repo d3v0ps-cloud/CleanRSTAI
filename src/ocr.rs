@@ -239,6 +239,9 @@ fn page_image_streams(doc: &Document, page: ObjectId) -> Vec<&Stream> {
     found
 }
 
+/// The most pixel data (width × height × channels) an image may have.
+const MAX_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+
 /// The image as a file a model can read: JPEG bytes as they are, or 8-bit grey or RGB pixels
 /// (Flate-compressed or not) encoded as PNG. Other encodings say why they were skipped.
 fn image_bytes(
@@ -275,6 +278,14 @@ fn image_bytes(
                 None => return Err("its colour space isn't supported".into()),
             };
             let (w, h) = dimensions(dict)?;
+            // Check the size before decompressing, so a huge image isn't inflated first.
+            let expected = u64::from(w) * u64::from(h) * u64::from(channels);
+            if expected > MAX_IMAGE_BYTES {
+                return Err(format!(
+                    "it is too large ({w} × {h} pixels, over {} MB)",
+                    MAX_IMAGE_BYTES / (1024 * 1024)
+                ));
+            }
             let raw = if only.is_none() {
                 stream.content.clone()
             } else {
@@ -638,6 +649,16 @@ mod tests {
         let png = image::load_from_memory(&read.images[1].bytes).unwrap();
         assert_eq!((png.width(), png.height()), (64, 64));
         assert_eq!(png.to_rgb8().get_pixel(10, 10).0, [200, 30, 30]);
+    }
+
+    #[test]
+    fn huge_images_are_refused_before_decompressing() {
+        // 20000 × 20000 RGB is 1.2 GB of pixels; the stream itself is a few bytes.
+        let mut big = image_stream("DeviceRGB", 8, 20_000, None, vec![0; 16]);
+        big.dict
+            .set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        let err = image_bytes(&Document::new(), &big).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
     }
 
     #[test]

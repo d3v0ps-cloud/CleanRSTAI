@@ -408,6 +408,8 @@ impl Inline {
             Event::HardBreak => self.push("\n", false),
             Event::TaskListMarker(done) => self.push(if done { "[x] " } else { "[ ] " }, false),
             Event::FootnoteReference(label) => self.push(format!("[{label}]"), false),
+            // Raw HTML keeps its characters, so `List<String>` and `<br>` stay readable.
+            Event::Html(t) | Event::InlineHtml(t) => self.push(t.to_string(), false),
             Event::Start(Tag::Strong) => self.bold += 1,
             Event::End(TagEnd::Strong) => self.bold = self.bold.saturating_sub(1),
             Event::Start(Tag::Emphasis) => self.italic += 1,
@@ -425,7 +427,7 @@ impl Inline {
                     self.close_link(start, &dest);
                 }
             }
-            // Strikethrough, super- and subscript and raw HTML are written as plain text.
+            // Strikethrough, super- and subscript are written as plain text.
             _ => {}
         }
     }
@@ -723,6 +725,8 @@ const MONO: &[u8] = include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf");
 
 /// Body text size, in points.
 const PDF_BODY_SIZE: u8 = 10;
+/// Text width between the page margins (A4 less 20 mm on each side), in mm.
+const PDF_TEXT_WIDTH: f64 = 170.0;
 
 /// A PDF on A4 pages with the Markdown laid out as in [`to_docx`]. Text is set in Instrument
 /// Sans and code in IBM Plex Mono. Italics use the regular face (the font has no italic), and
@@ -753,8 +757,11 @@ pub fn to_pdf(markdown: &str) -> Result<Vec<u8>> {
     doc.set_page_decorator(decorator);
 
     let mut layout = elements::LinearLayout::vertical();
-    let mut ctx = Pdf { mono };
-    ctx.blocks(&blocks(markdown), &mut layout);
+    let ctx = Pdf {
+        mono,
+        fonts: doc.font_cache(),
+    };
+    ctx.blocks(&blocks(markdown), PDF_TEXT_WIDTH, &mut layout);
     doc.push(layout);
 
     let mut out = Vec::new();
@@ -763,12 +770,15 @@ pub fn to_pdf(markdown: &str) -> Result<Vec<u8>> {
 }
 
 /// The fonts a PDF is laid out with.
-struct Pdf {
+struct Pdf<'a> {
     mono: genpdf::fonts::FontFamily<genpdf::fonts::Font>,
+    /// For measuring words, so none is wider than its line.
+    fonts: &'a genpdf::fonts::FontCache,
 }
 
-impl Pdf {
-    fn blocks(&mut self, blocks: &[Block], out: &mut genpdf::elements::LinearLayout) {
+impl Pdf<'_> {
+    /// Lay out `blocks` in a column `width` mm wide.
+    fn blocks(&self, blocks: &[Block], width: f64, out: &mut genpdf::elements::LinearLayout) {
         for block in blocks {
             match block {
                 Block::Heading { level, runs } => {
@@ -780,11 +790,11 @@ impl Pdf {
                     let mut p = elements::Paragraph::default();
                     for run in runs {
                         let style = self.style(run).with_font_size(size).bold();
-                        p.push_styled(pdf_text(&run.text), style);
+                        self.push(&mut p, &pdf_text(&run.text), style, width);
                     }
                     out.push(p);
                 }
-                Block::Paragraph(runs) => out.push(self.paragraph(runs, false)),
+                Block::Paragraph(runs) => out.push(self.paragraph(runs, false, width)),
                 Block::List {
                     ordered,
                     start,
@@ -793,7 +803,8 @@ impl Pdf {
                     let mut inners = Vec::new();
                     for item in items {
                         let mut inner = elements::LinearLayout::vertical();
-                        self.blocks(item, &mut inner);
+                        // genpdf indents list items by 10 mm.
+                        self.blocks(item, width - 10.0, &mut inner);
                         inners.push(inner);
                     }
                     // The two list kinds are different types, so each fills its own.
@@ -817,14 +828,13 @@ impl Pdf {
                         let line = pdf_text(&line.replace('\t', "    "));
                         let mut p = elements::Paragraph::default();
                         let style = Style::new().with_font_family(self.mono).with_font_size(9);
-                        p.push_styled(
-                            if line.is_empty() {
-                                " ".to_owned()
-                            } else {
-                                line
-                            },
-                            style,
-                        );
+                        let line = if line.is_empty() {
+                            " ".to_owned()
+                        } else {
+                            line
+                        };
+                        // The frame's padding takes 3 mm on each side.
+                        self.push(&mut p, &line, style, width - 6.0);
                         inner.push(p);
                     }
                     out.push(elements::FramedElement::new(elements::PaddedElement::new(
@@ -834,13 +844,13 @@ impl Pdf {
                 }
                 Block::Quote(inner_blocks) => {
                     let mut inner = elements::LinearLayout::vertical();
-                    self.blocks(inner_blocks, &mut inner);
+                    self.blocks(inner_blocks, width - 8.0, &mut inner);
                     out.push(elements::PaddedElement::new(
                         inner,
                         Margins::trbl(0, 0, 0, 8),
                     ));
                 }
-                Block::Table(table) => self.table(table, out),
+                Block::Table(table) => self.table(table, width, out),
                 Block::Rule => {
                     let mut p = elements::Paragraph::default();
                     p.push_styled("–".repeat(60), Style::new().with_font_size(8));
@@ -865,19 +875,32 @@ impl Pdf {
         style
     }
 
-    fn paragraph(&self, runs: &[Run], bold: bool) -> genpdf::elements::Paragraph {
+    /// Add `text` to `p`, cut so that no word is wider than `width` mm: genpdf breaks lines
+    /// only at spaces, and drops a word that can't fit a line along with the rest of the
+    /// paragraph.
+    fn push(&self, p: &mut genpdf::elements::Paragraph, text: &str, style: Style, width: f64) {
+        // A little room for kerning and the frame lines. Unsized text measures at 12 pt,
+        // above the body size, which errs the same way.
+        let max = (width * 0.95).max(5.0);
+        let char_width = |c: char| -> f64 { style.char_width(self.fonts, c).into() };
+        for piece in word_pieces(text, max, char_width) {
+            p.push_styled(piece, style);
+        }
+    }
+
+    fn paragraph(&self, runs: &[Run], bold: bool, width: f64) -> genpdf::elements::Paragraph {
         let mut p = genpdf::elements::Paragraph::default();
         for run in runs {
             let mut style = self.style(run);
             if bold {
                 style.set_bold();
             }
-            p.push_styled(pdf_text(&run.text), style);
+            self.push(&mut p, &pdf_text(&run.text), style, width);
         }
         p
     }
 
-    fn table(&self, table: &Table, out: &mut genpdf::elements::LinearLayout) {
+    fn table(&self, table: &Table, width: f64, out: &mut genpdf::elements::LinearLayout) {
         let cols = table
             .header
             .len()
@@ -892,17 +915,48 @@ impl Pdf {
             .then_some(&table.header)
             .into_iter()
             .chain(table.rows.iter());
+        // The columns share the width equally.
+        let column = width / cols as f64;
         for (i, cells) in rows.enumerate() {
             let mut row = layout.row();
             for c in 0..cols {
                 let runs = cells.get(c).map_or(&[][..], Vec::as_slice);
-                row = row.element(self.paragraph(runs, header && i == 0));
+                row = row.element(self.paragraph(runs, header && i == 0, column));
             }
             // Every row has `cols` cells, so this cannot fail.
             let _ = row.push();
         }
         out.push(layout);
     }
+}
+
+/// `text` in pieces that genpdf may break lines between: words (up to and with the space
+/// after them), and any word wider than `max` cut into parts no wider than `max`, measured
+/// with `char_width`. Joined, the pieces are `text` again.
+fn word_pieces(text: &str, max: f64, char_width: impl Fn(char) -> f64) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut piece = String::new();
+    // The width of the current word (since the last space) in `piece`.
+    let mut word = 0.0;
+    for c in text.chars() {
+        if c == ' ' {
+            piece.push(c);
+            word = 0.0;
+            continue;
+        }
+        let w = char_width(c);
+        // Cut before `c` when the word would overflow (a lone character always stays).
+        if word + w > max && word > 0.0 {
+            out.push(std::mem::take(&mut piece));
+            word = 0.0;
+        }
+        piece.push(c);
+        word += w;
+    }
+    if !piece.is_empty() || out.is_empty() {
+        out.push(piece);
+    }
+    out
 }
 
 /// Text as the PDF writer sets it: line breaks and tabs become spaces.
@@ -1239,6 +1293,8 @@ fn xml_escape(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            // U+FFFE and U+FFFF are not XML characters either.
+            '\u{fffe}' | '\u{ffff}' => {}
             c if c == '\t' || c == '\n' || c == '\r' || c >= ' ' => out.push(c),
             _ => {}
         }
@@ -1415,7 +1471,10 @@ mod tests {
         };
         assert_eq!(joined(&items[0][0]), "[x] done");
         assert_eq!(joined(&items[1][0]), "[ ] open");
-        assert!(!format!("{b:?}").contains("<div>"));
+        // An HTML block and inline HTML keep their text, angle brackets included.
+        assert_eq!(joined(&b[1]).trim_end(), "<div>raw</div>");
+        let b = blocks("Use List<String> here.");
+        assert_eq!(joined(&b[0]), "Use List<String> here.");
     }
 
     #[test]
@@ -1543,11 +1602,11 @@ mod tests {
 
     #[test]
     fn docx_escapes_markup_characters() {
-        // Raw HTML is dropped; the ampersand and quotes must survive the XML escaping.
+        // Raw HTML is plain text; it, the ampersand and quotes must survive the XML escaping.
         let text = docx_text(&to_docx("Fish & chips <b>not bold</b> \"quoted\"").unwrap());
         assert!(text.contains("Fish & chips"), "{text}");
         assert!(text.contains("\"quoted\""), "{text}");
-        assert!(!text.contains("<b>"), "{text}");
+        assert!(text.contains("<b>not bold</b>"), "{text}");
     }
 
     #[test]
@@ -1620,6 +1679,36 @@ mod tests {
             assert!(text.contains(want), "missing {want:?}");
         }
         assert!(text.contains("--- Page 2 ---"), "expected several pages");
+    }
+
+    #[test]
+    fn words_wider_than_the_line_are_cut() {
+        let pieces = word_pieces("see abcdefghij end", 4.0, |_| 1.0);
+        assert_eq!(pieces, vec!["see abcd", "efgh", "ij end"]);
+        assert_eq!(pieces.concat(), "see abcdefghij end");
+        // Short words stay whole, and a character wider than the line still comes out.
+        assert_eq!(word_pieces("a bc", 4.0, |_| 1.0), vec!["a bc"]);
+        assert_eq!(word_pieces("xy", 0.5, |_| 1.0), vec!["x", "y"]);
+        assert_eq!(word_pieces("", 4.0, |_| 1.0), vec![""]);
+    }
+
+    #[test]
+    fn pdf_keeps_words_wider_than_the_line() {
+        let url = format!("https://example.com/{}", "a".repeat(150));
+        let token = format!("TOKEN{}", "x".repeat(200));
+        let md = format!(
+            "Before {url} AFTER-BODY\n\n| Link | Note |\n|---|---|\n| {url} | AFTER-CELL |\n\n\
+             ```\n{token} AFTER-CODE\n```\n"
+        );
+        let text = extracted(crate::documents::Format::Pdf, &to_pdf(&md).unwrap());
+        for want in ["AFTER-BODY", "AFTER-CELL", "AFTER-CODE", "TOKENxxx"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn xml_escape_drops_non_characters() {
+        assert_eq!(xml_escape("a\u{fffe}b\u{ffff}c\u{1}<"), "abc&lt;");
     }
 
     #[test]

@@ -17,15 +17,16 @@ pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows")
 /// Whether live previews open in a window of their own (Linux, when WebKitGTK is installed).
 pub const OWN_WINDOW: bool = cfg!(target_os = "linux");
 
-/// The Content-Security-Policy for a preview, or `None` when it may do anything.
+/// The Content-Security-Policy for a preview, or `None` when it may do anything. `base-uri`
+/// keeps a `<base>` element from pointing the page's relative links elsewhere.
 pub fn policy(s: &HtmlPreviewSettings) -> Option<String> {
     match (s.scripts, s.network) {
         (true, true) => None,
-        (false, true) => Some("script-src 'none'".into()),
+        (false, true) => Some("base-uri 'none'; script-src 'none'".into()),
         (scripts, false) => Some(format!(
             "default-src 'none'; img-src data: blob:; media-src data: blob:; font-src data:; \
              style-src 'unsafe-inline' data:; connect-src 'none'; frame-src 'none'; \
-             form-action 'none'; script-src {}",
+             form-action 'none'; base-uri 'none'; script-src {}",
             if scripts {
                 "'unsafe-inline' 'unsafe-eval' blob: data:"
             } else {
@@ -53,6 +54,52 @@ pub fn page(html: &str, s: &HtmlPreviewSettings) -> String {
         return format!("{}{meta}{}", &html[..at], &html[at..]);
     }
     format!("{meta}{html}")
+}
+
+/// Whether a navigation may load in the preview itself: the blank document the page is
+/// written into (WKWebView and WebKitGTK load it as `about:blank`), its in-page anchors and
+/// `srcdoc` frames (which keep the page's policy), and, when `page` is given, a `data:` URL
+/// holding exactly that page (WebView2 loads it that way). Any other `data:` document would
+/// start without the page's policy, so it is refused.
+pub fn loads_in_view(url: &str, page: Option<&str>) -> bool {
+    let url = url.split_once('#').map_or(url, |(before, _)| before);
+    if url == "about:blank" || url == "about:srcdoc" {
+        return true;
+    }
+    page.is_some_and(|page| data_url_body(url).is_some_and(|body| body == page.as_bytes()))
+}
+
+/// The bytes a `data:` URL holds (base64 or percent-encoded), or `None` for anything else.
+fn data_url_body(url: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let rest = url
+        .get(..5)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("data:"))
+        .map(|_| &url[5..])?;
+    let (meta, body) = rest.split_once(',')?;
+    if meta.to_ascii_lowercase().ends_with(";base64") {
+        return base64::engine::general_purpose::STANDARD.decode(body).ok();
+    }
+    let bytes = body.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The web view, while one exists.
@@ -108,16 +155,20 @@ impl HtmlPreview {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native {
     use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::sync::{Arc, Mutex};
 
     use eframe::egui;
     use wry::dpi::{PhysicalPosition, PhysicalSize};
 
     use crate::config::HtmlPreviewSettings;
+    use crate::sync::LockExt as _;
 
     pub struct Shown {
         webview: wry::WebView,
         /// Hash of the page loaded.
         page: u64,
+        /// The page itself, for the navigation handler.
+        current: Arc<Mutex<String>>,
         bounds: [i32; 4],
         visible: bool,
     }
@@ -130,8 +181,8 @@ mod native {
     }
 
     /// Only the page itself (and in-page anchors) loads in the view; links open in the browser.
-    fn navigate(url: String) -> bool {
-        if url.starts_with("about:") || url.starts_with("data:") {
+    fn navigate(url: String, current: &Mutex<String>) -> bool {
+        if super::loads_in_view(&url, Some(&current.locked())) {
             return true;
         }
         if url.starts_with("http://") || url.starts_with("https://") {
@@ -161,6 +212,8 @@ mod native {
         match shown {
             Some(v) => {
                 if v.page != hash {
+                    // The handler must know the new page before its navigation starts.
+                    *v.current.locked() = page.clone();
                     v.webview.load_html(&page).map_err(|e| e.to_string())?;
                     v.page = hash;
                 }
@@ -176,13 +229,15 @@ mod native {
                 }
             }
             None => {
+                let current = Arc::new(Mutex::new(page.clone()));
+                let (on_nav, on_window) = (current.clone(), current.clone());
                 let webview = wry::WebViewBuilder::new()
                     .with_html(page)
                     .with_bounds(rect(bounds))
                     .with_devtools(false)
-                    .with_navigation_handler(navigate)
-                    .with_new_window_req_handler(|url, _| {
-                        navigate(url);
+                    .with_navigation_handler(move |url| navigate(url, &on_nav))
+                    .with_new_window_req_handler(move |url, _| {
+                        navigate(url, &on_window);
                         wry::NewWindowResponse::Deny
                     })
                     .build_as_child(frame)
@@ -190,6 +245,7 @@ mod native {
                 *shown = Some(Shown {
                     webview,
                     page: hash,
+                    current,
                     bounds,
                     visible: true,
                 });
@@ -218,16 +274,44 @@ mod tests {
             network,
         };
         assert_eq!(policy(&s(true, true)), None);
-        assert_eq!(policy(&s(false, true)).unwrap(), "script-src 'none'");
+        assert_eq!(
+            policy(&s(false, true)).unwrap(),
+            "base-uri 'none'; script-src 'none'"
+        );
         let offline = policy(&s(true, false)).unwrap();
         assert!(offline.starts_with("default-src 'none'"), "{offline}");
         assert!(offline.contains("connect-src 'none'"), "{offline}");
+        assert!(offline.contains("base-uri 'none'"), "{offline}");
         assert!(offline.ends_with("script-src 'unsafe-inline' 'unsafe-eval' blob: data:"));
         assert!(
             policy(&s(false, false))
                 .unwrap()
                 .ends_with("script-src 'none'")
         );
+    }
+
+    #[test]
+    fn only_the_page_itself_loads_in_the_view() {
+        use base64::Engine as _;
+        let page = "<meta http-equiv=\"Content-Security-Policy\" content=\"x\"><p>hi</p>";
+        assert!(loads_in_view("about:blank", None));
+        assert!(loads_in_view("about:blank#top", None));
+        assert!(loads_in_view("about:srcdoc", None));
+        // WebView2 loads the page as a data: URL; only that exact page passes.
+        let b64 = base64::engine::general_purpose::STANDARD.encode(page);
+        let own = format!("data:text/html;charset=utf-8;base64,{b64}");
+        assert!(loads_in_view(&own, Some(page)));
+        assert!(loads_in_view(&format!("{own}#top"), Some(page)));
+        assert!(!loads_in_view(&own, None));
+        assert!(!loads_in_view(&own, Some("<p>other</p>")));
+        assert!(loads_in_view("data:text/html,%3Cp%3Ehi", Some("<p>hi")));
+        // A fresh data: document has no policy of its own.
+        assert!(!loads_in_view(
+            "data:text/html,<script>alert(1)</script>",
+            Some(page)
+        ));
+        assert!(!loads_in_view("about:config", Some(page)));
+        assert!(!loads_in_view("https://example.com/", Some(page)));
     }
 
     #[test]

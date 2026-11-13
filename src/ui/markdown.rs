@@ -190,6 +190,16 @@ pub fn segments<'a>(
     }
     parts.sort_by_key(|(r, _)| r.start);
     for (range, part) in parts {
+        // Artifact ranges come from an earlier parse; one that no longer fits this text (or
+        // overlaps the part before it) is skipped rather than sliced.
+        let fits = range.start >= pos
+            && range.start <= range.end
+            && range.end <= text.len()
+            && text.is_char_boundary(range.start)
+            && text.is_char_boundary(range.end);
+        if !fits {
+            continue;
+        }
         push_markdown(pos, range.start, &mut out);
         out.push(match part {
             Part::Drawing(kind, source, artifact) => Segment::Drawing {
@@ -474,6 +484,23 @@ mod tests {
                 .get(DrawingKind::Mermaid, "this is not mermaid")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn stale_artifact_ranges_are_skipped() {
+        let text = "Intro é\n\n```html\n<p>x</p>\n```\n";
+        let real = crate::artifacts::in_reply(0, text)[0].range.clone();
+        // Past the end, inside the two-byte `é`, and overlapping the real one.
+        let ranges = vec![real.clone(), 100..200, 7..9, real.start + 1..real.end];
+        let s = segments(text, false, &ranges);
+        assert_eq!(
+            s.iter()
+                .filter(|s| matches!(s, Segment::Artifact(_)))
+                .count(),
+            1,
+            "{s:?}"
+        );
+        assert!(matches!(&s[0], Segment::Markdown(m) if m.starts_with("Intro é")));
     }
 
     #[test]

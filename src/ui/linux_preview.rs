@@ -193,9 +193,10 @@ pub fn take_fallback_notice() -> bool {
     NOTICE_DUE.swap(false, Ordering::Relaxed)
 }
 
-/// Whether a link may load in the preview itself: the page and its in-page anchors.
+/// Whether a link may load in the preview itself: the page (loaded as `about:blank`) and its
+/// in-page anchors. Not other `data:` documents, which would start without the page's policy.
 pub fn loads_in_view(url: &str) -> bool {
-    url.starts_with("about:") || url.starts_with("data:")
+    webview::loads_in_view(url, None)
 }
 
 /// Whether a link opens in the browser instead (web links only, as on the other platforms).
@@ -649,7 +650,9 @@ mod tests {
     fn links_load_in_the_view_or_open_in_the_browser() {
         assert!(loads_in_view("about:blank"));
         assert!(loads_in_view("about:blank#top"));
-        assert!(loads_in_view("data:text/plain,hi"));
+        assert!(!loads_in_view("data:text/plain,hi"));
+        assert!(!loads_in_view("data:text/html,<script>alert(1)</script>"));
+        assert!(!loads_in_view("about:config"));
         assert!(!loads_in_view("https://example.com/"));
         assert!(!loads_in_view("file:///etc/passwd"));
         assert!(opens_in_browser("https://example.com/"));
